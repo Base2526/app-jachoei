@@ -1,0 +1,8 @@
+{
+  "name": "MyApp",
+  "displayName": "MyApp",
+  "plugins": [
+    "expo-asset",
+    "expo-sqlite"
+  ]
+}
