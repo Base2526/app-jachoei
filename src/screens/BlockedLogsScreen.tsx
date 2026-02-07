@@ -85,22 +85,6 @@ export const BlockedLogsScreen: React.FC = () => {
 
   return (
     <View style={styles.container}>
-      {/* Header */}
-      <Text style={styles.title}>Blocked Activity</Text>
-
-      {/* Search */}
-      <View style={styles.searchRow}>
-        <TextInput
-          style={styles.searchInput}
-          value={search}
-          onChangeText={setSearch}
-          placeholder="ค้นหาเบอร์ / รหัสประเทศ"
-          placeholderTextColor="#999"
-          returnKeyType="search"
-          onSubmitEditing={onSubmitSearch}
-        />
-      </View>
-
       {/* Filter Tabs */}
       <View style={styles.tabsRow}>
         <FilterTab

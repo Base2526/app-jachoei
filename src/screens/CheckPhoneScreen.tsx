@@ -1,4 +1,3 @@
-// src/screens/CheckPhoneScreen.tsx
 import React, { useState } from "react";
 import {
   View,
@@ -8,21 +7,20 @@ import {
   ActivityIndicator,
   StyleSheet,
 } from "react-native";
-// import { useApolloClient } from "@apollo/client-react";
-import { client } from "../apollo/client";
 
+import { client } from "../apollo/client";
 import { checkScamPhoneWithFallback } from "../lib/syncScamPhones";
 
-export const CheckPhoneScreen: React.FC = () => {
-  // const client = useApolloClient();
+type CheckResult = {
+  found: boolean;
+  risk: number;
+  reportCount: number;
+};
 
+export const CheckPhoneScreen: React.FC = () => {
   const [phone, setPhone] = useState("");
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{
-    found: boolean;
-    risk: number;
-    reportCount: number;
-  } | null>(null);
+  const [result, setResult] = useState<CheckResult | null>(null);
 
   const onCheck = async () => {
     setLoading(true);
@@ -44,13 +42,17 @@ export const CheckPhoneScreen: React.FC = () => {
       <TextInput
         style={styles.input}
         placeholder="กรอกเบอร์โทร"
+        placeholderTextColor="#777"
         keyboardType="phone-pad"
         value={phone}
         onChangeText={setPhone}
       />
 
       <Pressable
-        style={[styles.button, (loading || !phone.trim()) && styles.buttonDisabled]}
+        style={[
+          styles.button,
+          (loading || !phone.trim()) && styles.buttonDisabled,
+        ]}
         onPress={onCheck}
         disabled={loading || !phone.trim()}
       >

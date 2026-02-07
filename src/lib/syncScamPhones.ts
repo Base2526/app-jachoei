@@ -230,7 +230,7 @@ export async function deltaScamSync(
   let maxVersion: string | null = sinceVersion;
 
   while (true) {
-    const { data } = await client.query<ScamPhonesDeltaResponse>({
+    let { data } = await client.query<ScamPhonesDeltaResponse>({
       query: Q_SCAM_PHONES_DELTA,
       variables: { sinceVersion, cursor, limit: batchSize },
       fetchPolicy: "network-only",
@@ -238,7 +238,7 @@ export async function deltaScamSync(
 
     console.log("[deltaScamSync] = ", data);
 
-    const page = data?.scamPhonesDelta;
+    let page = data?.scamPhonesDelta;
     const items = page?.items ?? [];
     if (!items.length) break;
 
@@ -313,7 +313,7 @@ export async function checkScamPhoneWithFallback(
     const normalized = normalizePhone(phoneRaw);
     console.log("[checkScam] call server with =", normalized);
 
-    const { data } = await client.query({
+    const { data } = await client.query<any, any>({
       query: Q_SCAM_PHONES_SEARCH,
       variables: { q: normalized, limit: 10 },
       fetchPolicy: "network-only",

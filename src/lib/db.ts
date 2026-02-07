@@ -24,6 +24,7 @@ async function getDb(): Promise<SQLiteDatabase> {
 
     const anyDb = dbObj as any;
 
+    console.log("database =", anyDb);
     console.log("databaseFile =", anyDb.databaseFile);
     console.log("_dbFilename =", anyDb._dbFilename);
     console.log("_path =", anyDb._path);
