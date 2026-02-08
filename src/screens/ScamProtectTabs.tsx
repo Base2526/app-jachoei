@@ -1,7 +1,7 @@
 import React, { useMemo } from "react";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import Ionicons from "react-native-vector-icons/Ionicons";
-import { Text } from "react-native";
+import { Text, View } from "react-native";
 
 import { CheckPhoneScreen } from "./CheckPhoneScreen";
 import { BlockedNumbersScreen } from "./BlockedNumbersScreen";
@@ -9,6 +9,10 @@ import { BlockedLogsScreen } from "./BlockedLogsScreen";
 import { HeaderMenu } from "../components/HeaderMenu";
 
 import { HomeScreen } from "./HomeScreen";
+
+import { useAuth } from "../auth/AuthProvider"
+
+import { HeaderAccountButton } from "../components/HeaderAccountButton";
 
 type TabsParamList = {
   CheckPhone: undefined;
@@ -28,6 +32,10 @@ function useBadges() {
 
 export const ScamProtectTabs: React.FC = () => {
   const { blockedCount, logsCount } = useBadges();
+
+  const { isLoggedIn, user, logout } = useAuth();
+
+  // const isLoggedIn = false;
 
   const blockedBadge = useMemo<undefined | number | string>(() => {
     if (blockedCount <= 0) return undefined;
@@ -95,13 +103,74 @@ export const ScamProtectTabs: React.FC = () => {
 
            // 🔍 SEARCH BUTTON (ขวาบน)
           headerRight: () => (
-            <Ionicons
-              name="search-outline"
-              size={22}
-              color="#fff"
-              style={{ marginRight: 14 }}
-              onPress={() => navigation.navigate("BlockedLogsSearch")}
-            />
+             <View style={{ flexDirection: "row", alignItems: "center" }}>
+                <Ionicons
+                  name="add-outline"
+                  size={26}
+                  color="#fff"
+                  style={{ marginRight: 14 }}
+                  onPress={() => {
+                    if (!isLoggedIn) {
+                      // ❌ ยังไม่ login → เปิด SignIn modal
+                      navigation.navigate("SignIn");
+                      return;
+                    }
+
+                    console.log("auth = ", user);
+
+                    // ✅ login แล้ว → ไปหน้า add
+                    navigation.navigate("PostForm"); // หรือ AddPost / CreateScreen
+                  }}
+                />
+                {/* 💬 CHAT (แสดงเฉพาะ login แล้ว) */}
+                {isLoggedIn && (
+                  <View style={{ marginRight: 14 }}>
+                    <Ionicons
+                      name="chatbubble-ellipses-outline"
+                      size={22}
+                      color="#fff"
+                      onPress={() =>  navigation.navigate("Chat") }
+                    />
+
+                    {/* 🔴 BADGE */}
+                    {/* {chatBadge > 0 && (
+                      <View
+                        style={{
+                          position: "absolute",
+                          right: -6,
+                          top: -4,
+                          minWidth: 16,
+                          height: 16,
+                          borderRadius: 8,
+                          backgroundColor: "#ff3b30",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          paddingHorizontal: 4,
+                        }}
+                      >
+                        <Text
+                          style={{
+                            color: "#fff",
+                            fontSize: 10,
+                            fontWeight: "900",
+                          }}
+                        >
+                          {chatBadge > 99 ? "99+" : chatBadge}
+                        </Text>
+                      </View>
+                    )} */}
+                  </View>
+                )}
+
+                <Ionicons
+                  name="search-outline"
+                  size={22}
+                  color="#fff"
+                  style={{ marginRight: 16 }}
+                  onPress={() => navigation.navigate("BlockedLogsSearch")}
+                />
+                <HeaderAccountButton />
+              </View>
           ),
         })}
       />
@@ -133,13 +202,36 @@ export const ScamProtectTabs: React.FC = () => {
 
           // 🔍 SEARCH BUTTON (ขวาบน)
           headerRight: () => (
-            <Ionicons
-              name="search-outline"
-              size={22}
-              color="#fff"
-              style={{ marginRight: 14 }}
-              onPress={() => navigation.navigate("BlockedLogsSearch")}
-            />
+             <View style={{ flexDirection: "row", alignItems: "center" }}>
+                {/* 🔍 SEARCH */}
+                <Ionicons
+                  name="search-outline"
+                  size={22}
+                  color="#fff"
+                  style={{ marginRight: 16 }}
+                  onPress={() => navigation.navigate("BlockedLogsSearch")}
+                />
+
+                {/* ➕ ADD */}
+                <Ionicons
+                  name="add-circle-outline"
+                  size={26}
+                  color="#fff"
+                  style={{ marginRight: 14 }}
+                  onPress={() => {
+                    if (!isLoggedIn) {
+                      // ❌ ยังไม่ login → เปิด SignIn modal
+                      navigation.navigate("SignIn");
+                      return;
+                    }
+
+                    // ✅ login แล้ว → ไปหน้า add
+                    navigation.navigate("PostView"); // หรือ AddPost / CreateScreen
+                  }}
+                />
+
+                <HeaderAccountButton />
+              </View>
           ),
         })}
       />
@@ -196,6 +288,11 @@ export const ScamProtectTabs: React.FC = () => {
 
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="ban-outline" size={size} color={color} />
+          ),
+          headerRight: () => (
+             <View style={{ flexDirection: "row", alignItems: "center" }}>
+                <HeaderAccountButton />
+              </View>
           ),
         }}
       />

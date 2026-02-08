@@ -19,6 +19,7 @@ import ImageViewing from "react-native-image-viewing";
 import type { RootStackParamList } from "../navigation/types";
 
 import { ENV } from "../config/env";
+import { CommentsSection } from "../components/comments/CommentsSection";
 
 export type PostRecord = {
   id: string;
@@ -299,6 +300,16 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
           />
         </>
       )}
+
+      <View style={[styles.commentsCol, { marginTop: 0 }]}>
+        <View style={[styles.sectionHeader, { marginBottom: 12 }]}>
+          <Text style={styles.sectionTitle}>ความคิดเห็น</Text>
+          <View style={styles.dividerLine} />
+        </View>
+
+        <CommentsSection postId={String(post.id)} currentUserId={currentUserId} />
+      </View>
+
     </ScrollView>
   );
 };
@@ -358,6 +369,7 @@ const RowItem = ({
         <Text style={styles.rowText}>{display}</Text>
         {display !== "-" ? <Text style={styles.copyHintSmall}>แตะเพื่อคัดลอก</Text> : null}
       </Pressable>
+      
     </View>
   );
 };
@@ -471,4 +483,32 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginTop: 2,
   },
+  commentsCol: {
+  // ถ้าอยากให้ดูเหมือน "คอลัมน์ขวา" แยกเป็น card เล็ก ๆ
+  backgroundColor: "#0f1117",
+  borderWidth: 1,
+  borderColor: "#222",
+  borderRadius: 14,
+  padding: 12,
+},
+
+sectionHeader: {
+  flexDirection: "row",
+  alignItems: "center",
+  gap: 10,
+},
+
+// sectionTitle: {
+//   color: "#fff",
+//   fontWeight: "800",
+//   fontSize: 15,
+// },
+
+dividerLine: {
+  flex: 1,
+  height: StyleSheet.hairlineWidth,
+  backgroundColor: "#222",
+  marginTop: 2,
+},
+
 });

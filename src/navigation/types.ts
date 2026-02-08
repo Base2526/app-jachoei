@@ -2,9 +2,13 @@
 import { PostItem } from "../types/PostItem";
 
 export type RootStackParamList = {
+  SignIn: undefined; 
   ScamProtect: undefined;
   BlockedLogsSearch: undefined;
-
-  // ✅ ส่ง post เข้ามาแบบนี้
   PostView: { post: PostItem, currentUserId?: string };
+  Profile: { id: string };
+  Chat: { to: string };
+
+  PostForm: undefined;
+  Setting: undefined;
 };
