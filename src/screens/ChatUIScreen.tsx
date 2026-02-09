@@ -1,5 +1,12 @@
 // src/screens/ChatScreen.tsx
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   View,
   Text,
@@ -17,8 +24,10 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { RootStackParamList } from "../navigation/types";
 import { client } from "../apollo/client";
 import SendMessageSection, { UploadImage } from "../components/SendMessageSection";
-
 import { ENV } from "../config/env";
+
+// ✅ Zustand global unread/currentChat sync (RN)
+import { useGlobalChatStore } from "../store/globalChatStore";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Chat">;
 
@@ -150,6 +159,12 @@ const MUT_SEND = gql`
   ${MESSAGE_FIELDS}
 `;
 
+const MUT_MARK_READ = gql`
+  mutation ($message_id: ID!) {
+    markMessageRead(message_id: $message_id)
+  }
+`;
+
 const MUT_MARK_UPTO = gql`
   mutation ($chat_id: ID!, $cursor: String!) {
     markChatReadUpTo(chat_id: $chat_id, cursor: $cursor)
@@ -193,7 +208,12 @@ type Chat = {
   last_message?: any | null;
 };
 
-type MsgImage = { id?: string; url?: string | null; file_id?: string | null; mime?: string | null };
+type MsgImage = {
+  id?: string;
+  url?: string | null;
+  file_id?: string | null;
+  mime?: string | null;
+};
 
 type Message = {
   id: string;
@@ -263,7 +283,21 @@ export default function ChatScreen({ navigation }: Props) {
 
   const meId = me?.id;
 
-  const selectedChat = useMemo(() => chats.find((c) => c.id === sel) ?? null, [chats, sel]);
+  // ✅ Zustand sync (เหมือน web)
+  const setCurrentChat = useGlobalChatStore((s: any) => s.setCurrentChat);
+  const clearUnread = useGlobalChatStore((s: any) => s.clearUnread);
+
+  useEffect(() => {
+    // cleanup: ออกจากหน้า chat ให้ clear currentChat
+    return () => {
+      setCurrentChat(null);
+    };
+  }, [setCurrentChat]);
+
+  const selectedChat = useMemo(
+    () => chats.find((c) => c.id === sel) ?? null,
+    [chats, sel]
+  );
 
   const otherMembers = useMemo(() => {
     const ms = selectedChat?.members ?? [];
@@ -300,24 +334,36 @@ export default function ChatScreen({ navigation }: Props) {
   const loadMeAndChats = useCallback(async () => {
     setLoadingChats(true);
     try {
-      const meRes = await client.query<{ me: Me }>({ query: Q_ME, fetchPolicy: "network-only" });
+      const meRes = await client.query<{ me: Me }>({
+        query: Q_ME,
+        fetchPolicy: "network-only",
+      });
       setMe(meRes.data?.me ?? null);
 
-      const chatsRes = await client.query<{ myChats: Chat[] }>({ query: Q_CHATS, fetchPolicy: "network-only" });
+      const chatsRes = await client.query<{ myChats: Chat[] }>({
+        query: Q_CHATS,
+        fetchPolicy: "network-only",
+      });
+
       const list = chatsRes.data?.myChats ?? [];
       const sorted = [...list].sort((a, b) => {
         const at = a.last_message_at ? safeDate(a.last_message_at).getTime() : 0;
         const bt = b.last_message_at ? safeDate(b.last_message_at).getTime() : 0;
         return bt - at;
       });
+
       setChats(sorted);
 
-      if (!sel && sorted.length) setSel(sorted[0].id);
+      if (!sel && sorted.length) {
+        // auto open first chat
+        openChatById(sorted[0].id);
+      }
     } catch (e: any) {
       Alert.alert("Load error", e?.message || "unknown");
     } finally {
       setLoadingChats(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sel]);
 
   useEffect(() => {
@@ -326,56 +372,94 @@ export default function ChatScreen({ navigation }: Props) {
   }, []);
 
   /** ===== load messages for chat ===== */
-  const loadMessages = useCallback(async (chatId: string, mode: "replace" | "append", offset: number) => {
-    if (!chatId) return;
+  const loadMessages = useCallback(
+    async (chatId: string, mode: "replace" | "append", offset: number) => {
+      if (!chatId) return;
 
-    if (mode === "replace") setLoadingMsgs(true);
-    else setLoadingMore(true);
+      if (mode === "replace") setLoadingMsgs(true);
+      else setLoadingMore(true);
 
-    try {
-      const res = await client.query<{ messages: Message[] }>({
-        query: Q_MSGS,
-        variables: { chat_id: chatId, limit: PAGE_SIZE, offset },
-        fetchPolicy: "network-only",
-      });
-
-      const got = res.data?.messages ?? [];
-      const sorted = [...got].sort((a, b) => safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime());
-      setHasMore(got.length >= PAGE_SIZE);
-
-      if (mode === "replace") {
-        setMessages(sorted);
-      } else {
-        setMessages((prev) => {
-          const map = new Map<string, Message>();
-          for (const m of [...sorted, ...prev]) map.set(m.id, m);
-          return Array.from(map.values()).sort(
-            (a, b) => safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime()
-          );
+      try {
+        const res = await client.query<{ messages: Message[] }>({
+          query: Q_MSGS,
+          variables: { chat_id: chatId, limit: PAGE_SIZE, offset },
+          fetchPolicy: "network-only",
         });
-      }
 
-      const last = sorted[sorted.length - 1];
-      if (last?.created_at) {
-        client.mutate({ mutation: MUT_MARK_UPTO, variables: { chat_id: chatId, cursor: last.created_at } }).catch(() => {});
+        const got = res.data?.messages ?? [];
+        const sorted = [...got].sort(
+          (a, b) => safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime()
+        );
+        setHasMore(got.length >= PAGE_SIZE);
+
+        if (mode === "replace") {
+          setMessages(sorted);
+        } else {
+          setMessages((prev) => {
+            const map = new Map<string, Message>();
+            for (const m of [...sorted, ...prev]) map.set(m.id, m);
+            return Array.from(map.values()).sort(
+              (a, b) => safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime()
+            );
+          });
+        }
+
+        // ✅ mark read up to last (เหมือน web)
+        const last = sorted[sorted.length - 1];
+        if (last?.created_at) {
+          client
+            .mutate({
+              mutation: MUT_MARK_UPTO,
+              variables: { chat_id: chatId, cursor: last.created_at },
+            })
+            .catch(() => {});
+        }
+      } catch (e: any) {
+        Alert.alert("Load messages error", e?.message || "unknown");
+      } finally {
+        if (mode === "replace") setLoadingMsgs(false);
+        else setLoadingMore(false);
       }
-    } catch (e: any) {
-      Alert.alert("Load messages error", e?.message || "unknown");
-    } finally {
-      if (mode === "replace") setLoadingMsgs(false);
-      else setLoadingMore(false);
-    }
-  }, []);
+    },
+    []
+  );
+
+  /** ===== open chat ===== */
+  const openChatById = useCallback(
+    async (chatId: string) => {
+      setSel(chatId);
+      setChatsModalOpen(false);
+
+      // ✅ sync global store (เหมือน web)
+      setCurrentChat(chatId);
+      clearUnread(chatId);
+
+      setReplyTarget(null);
+      setText("");
+      setHasMore(true);
+
+      await loadMessages(chatId, "replace", 0);
+    },
+    [loadMessages, setCurrentChat, clearUnread]
+  );
 
   /** ===== subscribe when sel changes ===== */
   useEffect(() => {
     if (!sel) return;
 
+    // reset UI
     setReplyTarget(null);
     setText("");
     setHasMore(true);
+
+    // ensure global store current chat
+    setCurrentChat(sel);
+    clearUnread(sel);
+
+    // (re)load messages
     loadMessages(sel, "replace", 0);
 
+    // cleanup old subs
     try {
       subAddedRef.current?.unsubscribe?.();
     } catch {}
@@ -383,6 +467,7 @@ export default function ChatScreen({ navigation }: Props) {
       subDeletedRef.current?.unsubscribe?.();
     } catch {}
 
+    // ✅ SUB: messageAdded
     subAddedRef.current = client
       .subscribe<{ messageAdded: Message }>({ query: SUB_ADDED, variables: { chat_id: sel } })
       .subscribe({
@@ -392,9 +477,12 @@ export default function ChatScreen({ navigation }: Props) {
 
           setMessages((prev) => {
             if (prev.some((x) => x.id === m.id)) return prev;
-            return [...prev, m].sort((a, b) => safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime());
+            return [...prev, m].sort(
+              (a, b) => safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime()
+            );
           });
 
+          // update chat list last_message
           setChats((prev) =>
             prev
               .map((c) => {
@@ -418,13 +506,17 @@ export default function ChatScreen({ navigation }: Props) {
               })
           );
 
-          if (m.created_at) {
-            client.mutate({ mutation: MUT_MARK_UPTO, variables: { chat_id: sel, cursor: m.created_at } }).catch(() => {});
+          // ✅ ถ้าอยู่ห้องนี้ → mark read message นี้ทันที
+          if (m.chat_id === sel) {
+            client
+              .mutate({ mutation: MUT_MARK_READ, variables: { message_id: m.id } })
+              .catch(() => {});
           }
         },
         error: (err) => console.warn("[SUB_ADDED] error", err),
       });
 
+    // ✅ SUB: messageDeleted
     subDeletedRef.current = client
       .subscribe<{ messageDeleted: string }>({ query: SUB_DELETED, variables: { chat_id: sel } })
       .subscribe({
@@ -444,7 +536,7 @@ export default function ChatScreen({ navigation }: Props) {
         subDeletedRef.current?.unsubscribe?.();
       } catch {}
     };
-  }, [sel, loadMessages]);
+  }, [sel, loadMessages, setCurrentChat, clearUnread]);
 
   /** ===== load older (pagination) ===== */
   const loadOlder = useCallback(async () => {
@@ -456,15 +548,15 @@ export default function ChatScreen({ navigation }: Props) {
     await loadMessages(sel, "append", offset);
   }, [sel, loadingMore, loadingMsgs, hasMore, messages.length, loadMessages]);
 
-  /** ===== open chat ===== */
-  const openChatById = useCallback((chatId: string) => {
-    setSel(chatId);
-    setChatsModalOpen(false);
-  }, []);
-
   /** ===== send message ===== */
   const onSend = useCallback(
-    async (args: { chat_id: string; text: string; to_user_ids: string[]; images?: UploadImage[]; reply_to_id?: string | null }) => {
+    async (args: {
+      chat_id: string;
+      text: string;
+      to_user_ids: string[];
+      images?: UploadImage[];
+      reply_to_id?: string | null;
+    }) => {
       const uploadFiles = (args.images ?? []).map((f) => ({
         uri: f.uri,
         name: f.name || `img-${Date.now()}.jpg`,
@@ -487,10 +579,19 @@ export default function ChatScreen({ navigation }: Props) {
 
       setMessages((prev) => {
         if (prev.some((x) => x.id === newMsg.id)) return prev;
-        return [...prev, newMsg].sort((a, b) => safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime());
+        return [...prev, newMsg].sort(
+          (a, b) => safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime()
+        );
       });
+
+      // ✅ หลังส่ง ให้ mark up to ตัวล่าสุดทันที (กัน badge ค้าง)
+      if (sel && newMsg.created_at) {
+        client
+          .mutate({ mutation: MUT_MARK_UPTO, variables: { chat_id: sel, cursor: newMsg.created_at } })
+          .catch(() => {});
+      }
     },
-    []
+    [sel]
   );
 
   /** ===== delete message ===== */
@@ -515,7 +616,7 @@ export default function ChatScreen({ navigation }: Props) {
   /** ===== image preview ===== */
   const [previewUri, setPreviewUri] = useState<string | null>(null);
 
-  /** ===== Header (moved chat button into navigator header) ===== */
+  /** ===== Header ===== */
   useLayoutEffect(() => {
     navigation.setOptions({
       headerShown: true,
@@ -543,11 +644,12 @@ export default function ChatScreen({ navigation }: Props) {
       ),
       headerRight: () => (
         <View style={{ flexDirection: "row", gap: 10, marginRight: 8 }}>
-          {/* ✅ ย้ายปุ่ม chat list มาไว้ navigator header */}
+          {/* ✅ chat list */}
           <Pressable onPress={() => setChatsModalOpen(true)} style={styles.headerBtn}>
             <Ionicons name="chatbubbles-outline" size={20} color="#fff" />
           </Pressable>
 
+          {/* ✅ refresh */}
           <Pressable onPress={loadMeAndChats} style={styles.headerBtn}>
             {loadingChats ? <ActivityIndicator /> : <Ionicons name="refresh-outline" size={20} color="#fff" />}
           </Pressable>
@@ -569,7 +671,9 @@ export default function ChatScreen({ navigation }: Props) {
       const lastImages = Array.isArray(last?.images) ? last.images : [];
       const lastText =
         last?.text?.trim()
-          ? (String(last.text).trim().length > 44 ? String(last.text).trim().slice(0, 41) + "…" : String(last.text).trim())
+          ? String(last.text).trim().length > 44
+            ? String(last.text).trim().slice(0, 41) + "…"
+            : String(last.text).trim()
           : lastImages.length
           ? lastImages.length === 1
             ? "📷 Photo"
@@ -615,6 +719,16 @@ export default function ChatScreen({ navigation }: Props) {
       const timeLabel = formatTime(item.created_at);
       const hasText = !!item.text?.trim();
       const imgs = Array.isArray(item.images) ? item.images : [];
+
+      const markThisRead = () => {
+        // ✅ แตะเพื่อ mark read รายตัว (เหมือน web double click)
+        client
+          .mutate({
+            mutation: MUT_MARK_READ,
+            variables: { message_id: item.id },
+          })
+          .catch(() => {});
+      };
 
       return (
         <View style={[styles.msgRow, { justifyContent: isMine ? "flex-end" : "flex-start" }]}>
@@ -681,9 +795,11 @@ export default function ChatScreen({ navigation }: Props) {
             ) : null}
 
             {hasText ? (
-              <View style={[styles.msgBubble, { backgroundColor: isMine ? "#1677ff" : "#f3f4f6" }]}>
-                <Text style={[styles.msgText, { color: isMine ? "#fff" : "#111827" }]}>{item.text}</Text>
-              </View>
+              <Pressable onPress={markThisRead}>
+                <View style={[styles.msgBubble, { backgroundColor: isMine ? "#1677ff" : "#f3f4f6" }]}>
+                  <Text style={[styles.msgText, { color: isMine ? "#fff" : "#111827" }]}>{item.text}</Text>
+                </View>
+              </Pressable>
             ) : null}
 
             <View style={styles.msgMetaRow}>
@@ -809,7 +925,7 @@ const styles = StyleSheet.create({
   body: { flex: 1 },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
 
-  // ✅ header buttons in navigator header
+  // header buttons
   headerBtn: {
     width: 40,
     height: 40,
@@ -819,7 +935,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
 
-  // ✅ custom header title styles
+  // header title
   navTitle: { color: "#fff", fontSize: 15, fontWeight: "900" },
   navSub: { color: "#9ca3af", fontSize: 11, marginTop: 2 },
 
@@ -886,7 +1002,16 @@ const styles = StyleSheet.create({
     position: "relative",
   },
   imgTileImg: { width: "100%", height: "100%" },
-  imgOverlay: { position: "absolute", inset: 0, backgroundColor: "rgba(0,0,0,0.35)", alignItems: "center", justifyContent: "center" },
+  imgOverlay: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: "rgba(0,0,0,0.35)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   imgOverlayText: { color: "#fff", fontWeight: "900", fontSize: 18 },
 
   msgBubble: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 16 },
@@ -896,7 +1021,12 @@ const styles = StyleSheet.create({
   msgMeta: { color: "#9ca3af", fontSize: 11 },
 
   // preview
-  previewBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.85)", alignItems: "center", justifyContent: "center" },
+  previewBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.85)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   previewInner: { width: "100%", height: "100%", alignItems: "center", justifyContent: "center" },
   previewImg: { width: "92%", height: "82%" },
   previewClose: { position: "absolute", top: 46, right: 16 },

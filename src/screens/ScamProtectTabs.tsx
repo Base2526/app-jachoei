@@ -9,10 +9,11 @@ import { BlockedLogsScreen } from "./BlockedLogsScreen";
 import { HeaderMenu } from "../components/HeaderMenu";
 
 import { HomeScreen } from "./HomeScreen";
-
-import { useAuth } from "../auth/AuthProvider"
-
+import { useAuth } from "../auth/AuthProvider";
 import { HeaderAccountButton } from "../components/HeaderAccountButton";
+
+// ✅ NEW: zustand unread store
+import { useGlobalChatStore } from "../store/globalChatStore";
 
 type TabsParamList = {
   CheckPhone: undefined;
@@ -25,17 +26,30 @@ const Tab = createBottomTabNavigator<TabsParamList>();
 
 function useBadges() {
   // ตัวอย่างนับแบบ mock (คุณจะไปดึงจาก SQLite/GraphQL/Redux ก็ได้)
-  const blockedCount = 12; // เช่น จำนวนเบอร์ที่บล็อก
-  const logsCount = 3; // เช่น จำนวน log ใหม่
+  const blockedCount = 12;
+  const logsCount = 3;
   return { blockedCount, logsCount };
 }
 
 export const ScamProtectTabs: React.FC = () => {
   const { blockedCount, logsCount } = useBadges();
+  const { isLoggedIn, user } = useAuth();
 
-  const { isLoggedIn, user, logout } = useAuth();
+  // ✅ NEW: รวม unread ทุกห้อง
+  const totalUnread = useGlobalChatStore((s: any) =>
+    Object.values(s.unreadByChat || {}).reduce(
+      (sum: number, n: any) => sum + (n || 0),
+      0
+    )
+  );
 
-  // const isLoggedIn = false;
+  // ✅ ทำ badge ให้เป็น undefined / 99+
+  const chatBadge = useMemo<undefined | number | string>(() => {
+    if (!isLoggedIn) return undefined;
+    if (!totalUnread || totalUnread <= 0) return undefined;
+    if (totalUnread > 99) return "99+";
+    return totalUnread;
+  }, [isLoggedIn, totalUnread]);
 
   const blockedBadge = useMemo<undefined | number | string>(() => {
     if (blockedCount <= 0) return undefined;
@@ -56,15 +70,12 @@ export const ScamProtectTabs: React.FC = () => {
         headerTintColor: "#fff",
         headerTitleAlign: "center",
 
-        tabBarStyle: {
-          backgroundColor: "#111",
-          borderTopColor: "#222",
-        },
+        tabBarStyle: { backgroundColor: "#111", borderTopColor: "#222" },
         tabBarActiveTintColor: "#1e90ff",
         tabBarInactiveTintColor: "#888",
       }}
     >
-      {/* ================= Blocked Logs ================= */}
+      {/* ================= Home ================= */}
       <Tab.Screen
         name="HomeScreen"
         component={HomeScreen}
@@ -83,8 +94,9 @@ export const ScamProtectTabs: React.FC = () => {
             </Text>
           ),
 
-          // ✅ BADGE
-          tabBarLabel: "Home", 
+          tabBarLabel: "Home",
+
+          // (ของเดิม) badge ของ Home ใช้ logsBadge ได้
           tabBarBadge: logsBadge,
           tabBarBadgeStyle: {
             backgroundColor: "#34c759",
@@ -94,96 +106,88 @@ export const ScamProtectTabs: React.FC = () => {
           },
 
           tabBarIcon: ({ color, size }) => (
-            <Ionicons
-              name="home-outline"
-              size={size}
-              color={color}
-            />
+            <Ionicons name="home-outline" size={size} color={color} />
           ),
 
-           // 🔍 SEARCH BUTTON (ขวาบน)
           headerRight: () => (
-             <View style={{ flexDirection: "row", alignItems: "center" }}>
-                <Ionicons
-                  name="add-outline"
-                  size={26}
-                  color="#fff"
-                  style={{ marginRight: 14 }}
-                  onPress={() => {
-                    if (!isLoggedIn) {
-                      // ❌ ยังไม่ login → เปิด SignIn modal
-                      navigation.navigate("SignIn");
-                      return;
-                    }
+            <View style={{ flexDirection: "row", alignItems: "center" }}>
+              {/* ➕ ADD */}
+              <Ionicons
+                name="add-outline"
+                size={26}
+                color="#fff"
+                style={{ marginRight: 14 }}
+                onPress={() => {
+                  if (!isLoggedIn) {
+                    navigation.navigate("SignIn");
+                    return;
+                  }
+                  navigation.navigate("PostForm");
+                }}
+              />
 
-                    console.log("auth = ", user);
+              {/* 💬 CHAT + BADGE (แสดงเฉพาะ login แล้ว) */}
+              {isLoggedIn && (
+                <View style={{ marginRight: 14 }}>
+                  <Ionicons
+                    name="chatbubble-ellipses-outline"
+                    size={22}
+                    color="#fff"
+                    onPress={() => navigation.navigate("Chat")}
+                  />
 
-                    // ✅ login แล้ว → ไปหน้า add
-                    navigation.navigate("PostForm"); // หรือ AddPost / CreateScreen
-                  }}
-                />
-                {/* 💬 CHAT (แสดงเฉพาะ login แล้ว) */}
-                {isLoggedIn && (
-                  <View style={{ marginRight: 14 }}>
-                    <Ionicons
-                      name="chatbubble-ellipses-outline"
-                      size={22}
-                      color="#fff"
-                      onPress={() =>  navigation.navigate("Chat") }
-                    />
-
-                    {/* 🔴 BADGE */}
-                    {/* {chatBadge > 0 && (
-                      <View
+                  {/* 🔴 BADGE */}
+                  {!!chatBadge && (
+                    <View
+                      style={{
+                        position: "absolute",
+                        right: -8,
+                        top: -6,
+                        minWidth: 16,
+                        height: 16,
+                        borderRadius: 8,
+                        backgroundColor: "#ff3b30",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        paddingHorizontal: 4,
+                      }}
+                    >
+                      <Text
                         style={{
-                          position: "absolute",
-                          right: -6,
-                          top: -4,
-                          minWidth: 16,
-                          height: 16,
-                          borderRadius: 8,
-                          backgroundColor: "#ff3b30",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          paddingHorizontal: 4,
+                          color: "#fff",
+                          fontSize: 10,
+                          fontWeight: "900",
                         }}
                       >
-                        <Text
-                          style={{
-                            color: "#fff",
-                            fontSize: 10,
-                            fontWeight: "900",
-                          }}
-                        >
-                          {chatBadge > 99 ? "99+" : chatBadge}
-                        </Text>
-                      </View>
-                    )} */}
-                  </View>
-                )}
+                        {chatBadge}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              )}
 
-                <Ionicons
-                  name="search-outline"
-                  size={22}
-                  color="#fff"
-                  style={{ marginRight: 16 }}
-                  onPress={() => navigation.navigate("BlockedLogsSearch")}
-                />
-                <HeaderAccountButton />
-              </View>
+              {/* 🔍 SEARCH */}
+              <Ionicons
+                name="search-outline"
+                size={22}
+                color="#fff"
+                style={{ marginRight: 16 }}
+                onPress={() => navigation.navigate("BlockedLogsSearch")}
+              />
+
+              <HeaderAccountButton />
+            </View>
           ),
         })}
       />
 
-
-       {/* ================= Blocked Logs ================= */}
+      {/* ================= Blocked Logs ================= */}
       <Tab.Screen
         name="BlockedLogs"
         component={BlockedLogsScreen}
         options={({ navigation }) => ({
           title: "Blocked",
 
-          // ✅ BADGE
           tabBarBadge: logsBadge,
           tabBarBadgeStyle: {
             backgroundColor: "#34c759",
@@ -193,72 +197,40 @@ export const ScamProtectTabs: React.FC = () => {
           },
 
           tabBarIcon: ({ color, size }) => (
-            <Ionicons
-              name="shield-checkmark-outline"
-              size={size}
-              color={color}
-            />
+            <Ionicons name="shield-checkmark-outline" size={size} color={color} />
           ),
 
-          // 🔍 SEARCH BUTTON (ขวาบน)
           headerRight: () => (
-             <View style={{ flexDirection: "row", alignItems: "center" }}>
-                {/* 🔍 SEARCH */}
-                <Ionicons
-                  name="search-outline"
-                  size={22}
-                  color="#fff"
-                  style={{ marginRight: 16 }}
-                  onPress={() => navigation.navigate("BlockedLogsSearch")}
-                />
+            <View style={{ flexDirection: "row", alignItems: "center" }}>
+              <Ionicons
+                name="search-outline"
+                size={22}
+                color="#fff"
+                style={{ marginRight: 16 }}
+                onPress={() => navigation.navigate("BlockedLogsSearch")}
+              />
 
-                {/* ➕ ADD */}
-                <Ionicons
-                  name="add-circle-outline"
-                  size={26}
-                  color="#fff"
-                  style={{ marginRight: 14 }}
-                  onPress={() => {
-                    if (!isLoggedIn) {
-                      // ❌ ยังไม่ login → เปิด SignIn modal
-                      navigation.navigate("SignIn");
-                      return;
-                    }
+              <Ionicons
+                name="add-circle-outline"
+                size={26}
+                color="#fff"
+                style={{ marginRight: 14 }}
+                onPress={() => {
+                  if (!isLoggedIn) {
+                    navigation.navigate("SignIn");
+                    return;
+                  }
+                  navigation.navigate("PostView");
+                }}
+              />
 
-                    // ✅ login แล้ว → ไปหน้า add
-                    navigation.navigate("PostView"); // หรือ AddPost / CreateScreen
-                  }}
-                />
-
-                <HeaderAccountButton />
-              </View>
+              <HeaderAccountButton />
+            </View>
           ),
         })}
       />
 
-
-      {/* ================= เช็กเบอร์ ================= */}
-      {/* <Tab.Screen
-        name="CheckPhone"
-        component={CheckPhoneScreen}
-        options={{
-          title: "เช็กเบอร์",
-          headerLeft: () => (
-            <HeaderMenu
-              items={[
-                { label: "รีเฟรชข้อมูล", onPress: () => console.log("refresh") },
-                { label: "ประวัติการค้นหา", onPress: () => console.log("history") },
-                { label: "ตั้งค่า", onPress: () => console.log("settings") },
-              ]}
-            />
-          ),
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="search-outline" size={size} color={color} />
-          ),
-        }}
-      /> */}
-
-      {/* ================= เบอร์ที่บล็อก ================= */}
+      {/* ================= Blocked Numbers ================= */}
       <Tab.Screen
         name="BlockedNumbers"
         component={BlockedNumbersScreen}
@@ -277,10 +249,9 @@ export const ScamProtectTabs: React.FC = () => {
             />
           ),
 
-          // ✅ BADGE
           tabBarBadge: blockedBadge,
           tabBarBadgeStyle: {
-            backgroundColor: "#ff3b30", // แดง
+            backgroundColor: "#ff3b30",
             color: "#fff",
             fontSize: 10,
             fontWeight: "800",
@@ -289,15 +260,14 @@ export const ScamProtectTabs: React.FC = () => {
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="ban-outline" size={size} color={color} />
           ),
+
           headerRight: () => (
-             <View style={{ flexDirection: "row", alignItems: "center" }}>
-                <HeaderAccountButton />
-              </View>
+            <View style={{ flexDirection: "row", alignItems: "center" }}>
+              <HeaderAccountButton />
+            </View>
           ),
         }}
       />
-
-     
     </Tab.Navigator>
   );
 };
