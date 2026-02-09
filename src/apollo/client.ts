@@ -1,10 +1,13 @@
-// apollo/client.ts
 import {
   ApolloClient,
   InMemoryCache,
-  HttpLink,
   ApolloLink,
+  HttpLink,
+  split,
 } from "@apollo/client";
+import { getMainDefinition } from "@apollo/client/utilities";
+import { GraphQLWsLink } from "@apollo/client/link/subscriptions";
+import { createClient } from "graphql-ws";
 import { ErrorLink } from "@apollo/client/link/error";
 import {
   CombinedGraphQLErrors,
@@ -12,76 +15,96 @@ import {
 } from "@apollo/client/errors";
 
 import { ENV } from "../config/env";
-
 import { getCachedDeviceInfo } from "../device/deviceInfo";
+import { loadAuth } from "../auth/auth.storage";
 
-// fetch(`${ENV.apiBase}/api/graphql`);
-
+// ================= Error Link (HTTP only) =================
 const errorLink = new ErrorLink(({ error, operation }) => {
-  // GraphQL errors (จาก server)
   if (CombinedGraphQLErrors.is(error)) {
     error.errors.forEach((e) => {
       console.log(
         "[GraphQL error]",
-        "\n message:", e.message,
-        "\n locations:", e.locations,
-        "\n path:", e.path,
-        "\n operation:", operation.operationName
+        e.message,
+        e.path,
+        operation.operationName
       );
     });
     return;
   }
 
-  // Protocol errors (response shape ผิด spec)
   if (CombinedProtocolErrors.is(error)) {
     error.errors.forEach((e) => {
-      console.log(
-        "[Protocol error]",
-        "\n message:", e.message,
-        "\n extensions:", e.extensions
-      );
+      console.log("[Protocol error]", e.message);
     });
     return;
   }
 
-  // Network / unknown
   if (error) console.log("[Network error]", error);
 });
 
-const headerLink = new ApolloLink((operation, forward) => {
-
-  const device = getCachedDeviceInfo();
-
-  operation.setContext(({ headers = {} }) => ({
-    headers: {
-      ...headers,
-      "x-scope": "android",
-      "x-app": ENV.appName,
-       // ===== device info =====
-      ...(device && {
-        "x-device-id": device.deviceId,
-        "x-device-name": device.deviceName,
-        "x-os": device.systemName,
-        "x-os-version": device.systemVersion,
-        "x-app-version": device.appVersion,
-        "x-build-number": device.buildNumber,
-        "x-platform": device.platform,
-        "x-emulator": String(device.isEmulator),
-      }),
-    },
-  }));
-
-  // console.log("[headerLink] outgoing headers:", operation.getContext().headers);
-
-  if (!forward) {
-    console.log("[headerLink] forward is undefined");
-    return null as any;
-  }
-  return forward(operation);
+// ================= HTTP Link =================
+const httpLink = new HttpLink({
+  uri: `${ENV.apiBase}/api/graphql`,
 });
 
-const httpLink = new HttpLink({ uri: `${ENV.apiBase}/api/graphql` });
+// ================= WS Link =================
+// ⚠️ ต้องตรงกับ WS server
+// const WS_URL = "ws://10.0.2.2:8081/graphql";
+console.log("[API_BASE] =", ENV.apiBase);
+console.log("[WS_URL] =", ENV.wsUrl);
+
+const wsLink = new GraphQLWsLink(
+  createClient({
+    url: ENV.wsUrl,
+    lazy: true,
+    retryAttempts: Infinity,
+
+    connectionParams: async () => {
+      const { token } = await loadAuth();
+      const device = getCachedDeviceInfo();
+
+      return {
+        Authorization: token ? `Bearer ${token}` : "",
+        "x-scope": "android",
+        "x-app": ENV.appName,
+
+        ...(device && {
+          "x-device-id": device.deviceId,
+          "x-device-name": device.deviceName,
+          "x-os": device.systemName,
+          "x-os-version": device.systemVersion,
+          "x-app-version": device.appVersion,
+          "x-build-number": device.buildNumber,
+          "x-platform": device.platform,
+          "x-emulator": String(device.isEmulator),
+        }),
+      };
+    },
+
+    on: {
+      connected: () => console.log("[WS] connected"),
+      closed: (e) =>
+        console.log("[WS] closed", e),
+      error: (e) => console.log("[WS] error", e),
+    },
+  })
+);
+
+// ================= Split =================
+const splitLink = split(
+  ({ query }) => {
+    const def = getMainDefinition(query);
+    return (
+      def.kind === "OperationDefinition" &&
+      def.operation === "subscription"
+    );
+  },
+  wsLink,
+  ApolloLink.from([errorLink, httpLink])
+);
+
+// ================= Apollo Client =================
 export const client = new ApolloClient({
-  link: ApolloLink.from([errorLink, headerLink, httpLink]),
+  link: splitLink,
   cache: new InMemoryCache(),
 });

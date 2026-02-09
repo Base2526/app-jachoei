@@ -36,6 +36,8 @@ import type { RootStackParamList } from "./src/navigation/types";
 
 import { AuthProvider } from "./src/auth/AuthProvider";
 
+import { GlobalWiresWrapper } from "./src/components/GlobalWiresWrapper";
+
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -156,6 +158,7 @@ export default function App() {
     <ApolloProvider client={client}>
       <AuthProvider>
       <NavigationContainer ref={navigationRef}>
+        <GlobalWiresWrapper />
         <StatusBar barStyle="light-content" backgroundColor="#0b0b0f" />
 
         <View style={{ flex: 1 }}>
