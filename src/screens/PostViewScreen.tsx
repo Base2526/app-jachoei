@@ -1,4 +1,4 @@
-import React, { useMemo, useLayoutEffect, useCallback } from "react";
+import React, { useMemo, useLayoutEffect, useCallback, useEffect } from "react";
 import {
   View,
   Text,
@@ -10,16 +10,96 @@ import {
   Share,
   Alert,
   Linking,
+  ActivityIndicator,
 } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 import Clipboard from "@react-native-clipboard/clipboard";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import ImageViewing from "react-native-image-viewing";
+import { gql } from "@apollo/client";
 
 import type { RootStackParamList } from "../navigation/types";
-
+import { client } from "../apollo/client";
 import { ENV } from "../config/env";
 import { CommentsSection } from "../components/comments/CommentsSection";
+import { useAuth } from "../auth/AuthProvider";
+
+/* =======================
+ * GraphQL
+ * ======================= */
+
+const Q_POST = gql`
+  query ($id: ID!) {
+    post(id: $id) {
+      detail
+      transfer_amount
+      transfer_date
+      updated_at
+      website
+      is_bookmarked
+      tel_numbers {
+        id
+        tel
+      }
+      status
+      seller_accounts {
+        bank_id
+        bank_name
+        id
+        seller_account
+      }
+      province_name
+      province_id
+      title
+      images {
+        id
+        url
+      }
+      id_card
+      id
+      first_last_name
+      created_at
+      author {
+        avatar
+        created_at
+        email
+        id
+        name
+        phone
+        role
+      }
+      fb_permalink_url
+      fb_published_at
+      fb_status
+      fb_social_post_id
+    }
+  }
+`;
+
+const M_TOGGLE_BOOKMARK = gql`
+  mutation ToggleBookmark($postId: ID!) {
+    toggleBookmark(postId: $postId) {
+      status
+      isBookmarked
+    }
+  }
+`;
+
+const DELETE_POST = gql`
+  mutation ($id: ID!) {
+    deletePost(id: $id)
+  }
+`;
+
+const CLONE_POST = gql`
+  mutation ($id: ID!) {
+    clonePost(id: $id)
+  }
+`;
+
+/* =======================
+ * Types
+ * ======================= */
 
 export type PostRecord = {
   id: string;
@@ -52,53 +132,94 @@ export type PostRecord = {
 
 type Props = NativeStackScreenProps<RootStackParamList, "PostView">;
 
-export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
-  // ✅ รับค่าจาก route.params
-  const { post, currentUserId } = route.params as {
-    post: PostRecord;
-    currentUserId?: string;
-  };
+/* =======================
+ * Screen
+ * ======================= */
 
-  // ===== IMAGES + FULLSCREEN PREVIEW =====
+export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
+  const { id, currentUserId } = route.params;
+
+  const { isLoggedIn } = useAuth();
+
+  const [post, setPost] = React.useState<PostRecord | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+
+  // bookmark busy
+  const [bookmarkBusy, setBookmarkBusy] = React.useState(false);
+
+  // images preview
   const [previewVisible, setPreviewVisible] = React.useState(false);
   const [previewIndex, setPreviewIndex] = React.useState(0);
 
-  // แปลง image list ให้ ImageViewing ใช้
   const previewImages = React.useMemo(
     () =>
-      (post.images || []).map((img) => ({
+      (post?.images || []).map((img) => ({
         uri: `${ENV.apiBase}${img.url}`,
       })),
-    [post.images]
+    [post?.images]
   );
 
+  /* =======================
+   * Load post by id
+   * ======================= */
+  const fetchPost = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const { data } = await client.query({
+        query: Q_POST,
+        variables: { id },
+        fetchPolicy: "network-only",
+      });
+
+      const p = data?.post ?? null;
+      setPost(p);
+    } catch (e: any) {
+      setError(e?.message || "โหลดข้อมูลโพสต์ไม่สำเร็จ");
+      setPost(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    fetchPost();
+  }, [fetchPost]);
+
+  /* =======================
+   * Header title
+   * ======================= */
   useLayoutEffect(() => {
     navigation.setOptions({
       headerShown: true,
       title: post?.title ? String(post.title) : "รายละเอียดโพสต์",
-      headerStyle: {
-        backgroundColor: "#0b0b0f",
-      },
+      headerStyle: { backgroundColor: "#0b0b0f" },
       headerTintColor: "#fff",
     });
   }, [navigation, post?.title]);
 
-  const isOwner = !!currentUserId && currentUserId === post.author?.id;
+  /* =======================
+   * Helpers
+   * ======================= */
+
+  const isOwner = !!currentUserId && currentUserId === post?.author?.id;
 
   const isFbPublished =
-    String(post.fb_status || "").toUpperCase() === "PUBLISHED" &&
-    !!post.fb_permalink_url;
+    String(post?.fb_status || "").toUpperCase() === "PUBLISHED" &&
+    !!post?.fb_permalink_url;
 
   const sharePayload = useMemo(() => {
-    const url = `https://jachoei.com/post/${post.id}`;
-    const title = post.title || "จ่าเฉย (JACHOEI)";
-    const text = post.detail
+    const url = `https://jachoei.com/post/${id}`;
+    const title = post?.title || "จ่าเฉย (JACHOEI)";
+    const text = post?.detail
       ? `${title}\n\n${String(post.detail).slice(0, 180)}${
           String(post.detail).length > 180 ? "..." : ""
         }`
       : title;
-    return { url, title, text };
-  }, [post]);
+    return { url, title, message: text };
+  }, [post?.title, post?.detail, id]);
 
   const openUrl = useCallback(async (url?: string) => {
     if (!url) return;
@@ -128,6 +249,104 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
     Clipboard.setString(String(v));
     Alert.alert("คัดลอกแล้ว");
   }, []);
+
+  /* =======================
+   * ✅ Bookmark toggle (top button)
+   * ======================= */
+  const onToggleBookmark = useCallback(async () => {
+    if (!post?.id) return;
+
+    if (!isLoggedIn) {
+      Alert.alert("ต้องเข้าสู่ระบบ", "กรุณา login ก่อนใช้งาน bookmark");
+      return;
+    }
+
+    if (bookmarkBusy) return;
+
+    const prevVal = !!post.is_bookmarked;
+
+    // optimistic
+    setBookmarkBusy(true);
+    setPost((p) => (p ? { ...p, is_bookmarked: !prevVal } : p));
+
+    try {
+      const { data } = await client.mutate({
+        mutation: M_TOGGLE_BOOKMARK,
+        variables: { postId: String(post.id) },
+      });
+
+      const ok = !!data?.toggleBookmark?.isBookmarked;
+
+      // sync from server
+      setPost((p) => (p ? { ...p, is_bookmarked: ok } : p));
+    } catch (e: any) {
+      // rollback
+      setPost((p) => (p ? { ...p, is_bookmarked: prevVal } : p));
+      Alert.alert(
+        "Bookmark error",
+        e?.message || "Please login first or try again."
+      );
+    } finally {
+      setBookmarkBusy(false);
+    }
+  }, [post?.id, post?.is_bookmarked, isLoggedIn, bookmarkBusy]);
+
+  /* =======================
+   * Delete / Clone (optional)
+   * ======================= */
+
+  const handleDelete = useCallback(async () => {
+    Alert.alert("ลบโพสต์", "ต้องการลบโพสต์นี้ใช่ไหม?", [
+      { text: "ยกเลิก", style: "cancel" },
+      {
+        text: "ลบ",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            const { data } = await client.mutate({
+              mutation: DELETE_POST,
+              variables: { id },
+            });
+
+            if (data?.deletePost) {
+              Alert.alert("สำเร็จ", "ลบโพสต์เรียบร้อย");
+              navigation.goBack();
+            } else {
+              Alert.alert("ไม่สำเร็จ", "ลบไม่สำเร็จ");
+            }
+          } catch (e: any) {
+            Alert.alert("เกิดข้อผิดพลาด", e?.message || "Delete error");
+          }
+        },
+      },
+    ]);
+  }, [id, navigation]);
+
+  const handleClone = useCallback(async () => {
+    try {
+      const { data } = await client.mutate({
+        mutation: CLONE_POST,
+        variables: { id },
+      });
+
+      const newId = data?.clonePost;
+      if (newId) {
+        Alert.alert("สำเร็จ", "Clone สำเร็จ");
+        navigation.replace("PostView", {
+          id: String(newId),
+          currentUserId,
+        });
+      } else {
+        Alert.alert("ไม่สำเร็จ", "Clone ไม่สำเร็จ");
+      }
+    } catch (e: any) {
+      Alert.alert("เกิดข้อผิดพลาด", e?.message || "Clone error");
+    }
+  }, [id, navigation, currentUserId]);
+
+  /* =======================
+   * Render list items
+   * ======================= */
 
   const renderTelItem = useCallback(
     ({ item, index }: { item: { id: string; tel: string }; index: number }) => (
@@ -162,8 +381,50 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
     [copyText]
   );
 
+  /* =======================
+   * UI: Loading / Error
+   * ======================= */
+
+  if (loading) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator color="#fff" />
+        <Text style={[styles.emptyText, { marginTop: 10 }]}>
+          กำลังโหลดข้อมูลโพสต์…
+        </Text>
+      </View>
+    );
+  }
+
+  if (error || !post) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.errorText}>{error || "ไม่พบโพสต์"}</Text>
+
+        <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
+          <Pressable style={styles.btnPrimary} onPress={fetchPost}>
+            <Text style={styles.btnPrimaryText}>ลองใหม่</Text>
+          </Pressable>
+
+          <Pressable style={styles.btnGhost} onPress={() => navigation.goBack()}>
+            <Text style={styles.btnGhostText}>กลับ</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
+  /* =======================
+   * UI: Post view
+   * ======================= */
+
+  const isBookmarked = !!post.is_bookmarked;
+
   return (
-    <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 28 }}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={{ paddingBottom: 28 }}
+    >
       {/* ===== HEADER ACTIONS ===== */}
       <View style={styles.headerRow}>
         <Text style={styles.title} numberOfLines={2}>
@@ -171,13 +432,46 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
         </Text>
 
         <View style={styles.actions}>
+          {/* ✅ BOOKMARK (อยู่บนสุดตามที่ขอ) */}
+
+          {
+            !isOwner && 
+            <Pressable
+              onPress={onToggleBookmark}
+              hitSlop={10}
+              disabled={bookmarkBusy}
+              style={({ pressed }) => [
+                pressed && { opacity: 0.75 },
+                bookmarkBusy && { opacity: 0.4 },
+              ]}
+            >
+              {bookmarkBusy ? (
+                <ActivityIndicator />
+              ) : (
+                <Ionicons
+                  name={isBookmarked ? "bookmark" : "bookmark-outline"}
+                  size={22}
+                  color={isBookmarked ? "#60a5fa" : "#fff"}
+                />
+              )}
+            </Pressable>
+          }
+          
+
           {isFbPublished && (
             <Pressable
               onPress={() => {
-                Alert.alert("Open Facebook", "ต้องการเปิดโพสต์บน Facebook ไหม?", [
-                  { text: "Cancel", style: "cancel" },
-                  { text: "Open", onPress: () => openUrl(post.fb_permalink_url) },
-                ]);
+                Alert.alert(
+                  "Open Facebook",
+                  "ต้องการเปิดโพสต์บน Facebook ไหม?",
+                  [
+                    { text: "Cancel", style: "cancel" },
+                    {
+                      text: "Open",
+                      onPress: () => openUrl(post.fb_permalink_url),
+                    },
+                  ]
+                );
               }}
               hitSlop={10}
             >
@@ -190,12 +484,24 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
           </Pressable>
 
           {isOwner && (
-            <Pressable
-              onPress={() => Alert.alert("TODO", "ปุ่มแก้ไข (คุณค่อยผูกหน้าต่อได้)")}
-              hitSlop={10}
-            >
-              <Ionicons name="create-outline" size={22} color="#fff" />
-            </Pressable>
+            <>
+              <Pressable
+                onPress={() => {
+                  navigation.navigate("PostForm", { id: String(post.id) });
+                }}
+                hitSlop={10}
+              >
+                <Ionicons name="create-outline" size={22} color="#fff" />
+              </Pressable>
+
+              {/* <Pressable onPress={handleClone} hitSlop={10}>
+                <Ionicons name="copy-outline" size={22} color="#fff" />
+              </Pressable> */}
+
+              <Pressable onPress={handleDelete} hitSlop={10}>
+                <Ionicons name="trash-outline" size={22} color="#ff3b30" />
+              </Pressable>
+            </>
           )}
         </View>
       </View>
@@ -226,7 +532,7 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
             data={post.tel_numbers}
             keyExtractor={(i) => i.id}
             renderItem={renderTelItem}
-            scrollEnabled={false} // ✅ ไม่ชน ScrollView
+            scrollEnabled={false}
           />
         </>
       )}
@@ -239,32 +545,12 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
             data={post.seller_accounts}
             keyExtractor={(i) => i.id}
             renderItem={renderAccountItem}
-            scrollEnabled={false} // ✅ ไม่ชน ScrollView
+            scrollEnabled={false}
           />
         </>
       )}
 
       {/* ===== IMAGES ===== */}
-      {/* {!!post.images?.length && (
-        <>
-          <SectionTitle title="รูปภาพแนบ" />
-          <View style={styles.imageGrid}>
-            {post.images.map((img) => {
-
-              console.log("img =", img);
-              return <Pressable
-                        key={String(img.id)}
-                        onPress={() => openUrl(`${ENV.apiBase}${img.url}`)}
-                        style={styles.imageWrap}
-                      >
-                        <Image source={{ uri: `${ENV.apiBase}${img.url}` }} style={styles.image} />
-                    </Pressable>
-            })}
-          </View>
-          <Text style={styles.hint}>แตะรูปเพื่อเปิดดู</Text>
-        </>
-      )} */}
-
       {!!post.images?.length && (
         <>
           <SectionTitle title="รูปภาพแนบ" />
@@ -289,7 +575,6 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
 
           <Text style={styles.hint}>แตะรูปเพื่อดูแบบเต็มจอ</Text>
 
-          {/* ===== FULLSCREEN IMAGE PREVIEW ===== */}
           <ImageViewing
             images={previewImages}
             imageIndex={previewIndex}
@@ -301,15 +586,18 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
         </>
       )}
 
+      {/* ===== COMMENTS ===== */}
       <View style={[styles.commentsCol, { marginTop: 0 }]}>
         <View style={[styles.sectionHeader, { marginBottom: 12 }]}>
           <Text style={styles.sectionTitle}>ความคิดเห็น</Text>
           <View style={styles.dividerLine} />
         </View>
 
-        <CommentsSection postId={String(post.id)} currentUserId={currentUserId} />
+        <CommentsSection
+          postId={String(post.id)}
+          currentUserId={currentUserId}
+        />
       </View>
-
     </ScrollView>
   );
 };
@@ -329,7 +617,8 @@ const InfoRow = ({
   copyable?: boolean;
   onCopy?: (v?: string) => void;
 }) => {
-  const display = value != null && String(value).trim() !== "" ? String(value) : "-";
+  const display =
+    value != null && String(value).trim() !== "" ? String(value) : "-";
 
   return (
     <View style={styles.infoRow}>
@@ -367,9 +656,10 @@ const RowItem = ({
       <Text style={styles.rowIndex}>{index + 1}.</Text>
       <Pressable onPress={onCopy} hitSlop={10} style={{ flex: 1 }}>
         <Text style={styles.rowText}>{display}</Text>
-        {display !== "-" ? <Text style={styles.copyHintSmall}>แตะเพื่อคัดลอก</Text> : null}
+        {display !== "-" ? (
+          <Text style={styles.copyHintSmall}>แตะเพื่อคัดลอก</Text>
+        ) : null}
       </Pressable>
-      
     </View>
   );
 };
@@ -384,6 +674,32 @@ const styles = StyleSheet.create({
     backgroundColor: "#0b0b0f",
     padding: 14,
   },
+
+  center: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#0b0b0f",
+    paddingHorizontal: 18,
+  },
+  emptyText: { color: "#6b7280", fontSize: 14 },
+  errorText: { color: "#ff3b30", fontSize: 14, textAlign: "center" },
+
+  btnPrimary: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: "#2563eb",
+  },
+  btnPrimaryText: { color: "#fff", fontWeight: "800" },
+  btnGhost: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#2b2b2b",
+  },
+  btnGhostText: { color: "#e5e7eb", fontWeight: "800" },
 
   headerRow: {
     flexDirection: "row",
@@ -406,30 +722,11 @@ const styles = StyleSheet.create({
     paddingTop: 2,
   },
 
-  infoRow: {
-    flexDirection: "row",
-    marginBottom: 10,
-  },
-  infoLabel: {
-    width: 120,
-    color: "#9ca3af",
-    fontSize: 13,
-  },
-  infoValue: {
-    color: "#fff",
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  copyHint: {
-    fontSize: 11,
-    color: "#60a5fa",
-    marginTop: 2,
-  },
-  copyHintSmall: {
-    fontSize: 11,
-    color: "#60a5fa",
-    marginTop: 2,
-  },
+  infoRow: { flexDirection: "row", marginBottom: 10 },
+  infoLabel: { width: 120, color: "#9ca3af", fontSize: 13 },
+  infoValue: { color: "#fff", fontSize: 14, lineHeight: 20 },
+  copyHint: { fontSize: 11, color: "#60a5fa", marginTop: 2 },
+  copyHintSmall: { fontSize: 11, color: "#60a5fa", marginTop: 2 },
 
   sectionTitle: {
     color: "#fff",
@@ -444,71 +741,32 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     marginBottom: 10,
   },
-  rowIndex: {
-    width: 22,
-    color: "#9ca3af",
-    marginTop: 2,
-  },
-  rowText: {
-    color: "#fff",
-    fontSize: 14,
-    lineHeight: 18,
-  },
-  imageGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
+  rowIndex: { width: 22, color: "#9ca3af", marginTop: 2 },
+  rowText: { color: "#fff", fontSize: 14, lineHeight: 18 },
 
-  imageWrap: {
-    borderRadius: 8,
-    overflow: "hidden",
-    backgroundColor: "#111",
-  },
+  imageGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  imageWrap: { borderRadius: 8, overflow: "hidden", backgroundColor: "#111" },
+  image: { width: 110, height: 110, borderRadius: 8, backgroundColor: "#111" },
+  hint: { marginTop: 8, color: "#6b7280", fontSize: 12 },
 
-  image: {
-    width: 110,
-    height: 110,
-    borderRadius: 8,
-    backgroundColor: "#111",
-  },
+  copyText: { color: "#60a5fa", fontSize: 13, marginTop: 2 },
 
-  hint: {
-    marginTop: 8,
-    color: "#6b7280",
-    fontSize: 12,
-  },
-  copyText: {
-    color: "#60a5fa",
-    fontSize: 13,
-    marginTop: 2,
-  },
   commentsCol: {
-  // ถ้าอยากให้ดูเหมือน "คอลัมน์ขวา" แยกเป็น card เล็ก ๆ
-  backgroundColor: "#0f1117",
-  borderWidth: 1,
-  borderColor: "#222",
-  borderRadius: 14,
-  padding: 12,
-},
-
-sectionHeader: {
-  flexDirection: "row",
-  alignItems: "center",
-  gap: 10,
-},
-
-// sectionTitle: {
-//   color: "#fff",
-//   fontWeight: "800",
-//   fontSize: 15,
-// },
-
-dividerLine: {
-  flex: 1,
-  height: StyleSheet.hairlineWidth,
-  backgroundColor: "#222",
-  marginTop: 2,
-},
-
+    backgroundColor: "#0f1117",
+    borderWidth: 1,
+    borderColor: "#222",
+    borderRadius: 14,
+    padding: 12,
+  },
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  dividerLine: {
+    flex: 1,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "#222",
+    marginTop: 2,
+  },
 });

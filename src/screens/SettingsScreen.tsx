@@ -674,7 +674,7 @@ export default function SettingsScreen() {
             </View>
 
             <View style={{ gap: 8 }}>
-              <Pressable style={styles.smallBtn} onPress={() => navigation.navigate("PostView", { id: p.id })}>
+              <Pressable style={styles.smallBtn} onPress={() => navigation.navigate("PostView", { id: String(p.id) })}>
                 <Text style={styles.smallBtnText}>View</Text>
               </Pressable>
 

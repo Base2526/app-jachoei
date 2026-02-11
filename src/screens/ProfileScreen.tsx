@@ -18,6 +18,7 @@ import type { RootStackParamList } from "../navigation/types";
 
 import { useAuth } from "../auth/AuthProvider"
 
+
 // ✅ ถ้าคุณมี useSessionCtx แบบเว็บ ให้เปลี่ยนเป็นระบบ auth ของ RN เอง
 // ตัวอย่างนี้ทำเป็น currentUserId แบบ mock: ปรับให้ดึงจาก store/context ของคุณ
 // import { useSessionCtx } from "../session/session-context";
@@ -188,7 +189,7 @@ export const ProfileScreen: React.FC<Props> = ({ route, navigation }) => {
   const onOpenPost = useCallback(
     (p: PostItem) => {
       // ✅ ปรับ route ชื่อ "PostView" ให้ตรงของคุณ
-      navigation.navigate("PostView", { post: p as any });
+      navigation.navigate("PostView", { id: String(p.id), currentUserId: user?.id });
     },
     [navigation]
   );
