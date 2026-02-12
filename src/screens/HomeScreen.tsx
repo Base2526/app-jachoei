@@ -1,35 +1,34 @@
 // src/screens/HomeScreen.tsx
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
   StyleSheet,
   FlatList,
-  Image,
   TouchableOpacity,
   RefreshControl,
   ActivityIndicator,
   Alert,
-  Modal,
   Pressable,
   Dimensions,
   Platform,
   Share,
   Linking,
+  Image,
+  GestureResponderEvent,
 } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 import { gql } from "@apollo/client";
 
-import { useNavigation } from "@react-navigation/native";
+import { useNavigation, useFocusEffect } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 
 import { ThumbGrid } from "../components/ThumbGrid";
-// import { Dimensions } from "react-native";
-
 import { client } from "../apollo/client";
 import { ENV } from "../config/env";
 
 import type { RootStackParamList } from "../navigation/types";
+import { useAuth } from "../auth/AuthProvider";
 
 const Q_POSTS_PAGED = gql`
   query ($q: String, $limit: Int!, $offset: Int!) {
@@ -41,6 +40,10 @@ const Q_POSTS_PAGED = gql`
         detail
         status
         created_at
+
+        # ✅ bookmark
+        is_bookmarked
+
         images {
           id
           url
@@ -67,7 +70,14 @@ const Q_POSTS_PAGED = gql`
   }
 `;
 
-type Img = { id: string | number; url: string };
+const M_TOGGLE_BOOKMARK = gql`
+  mutation ToggleBookmark($postId: ID!) {
+    toggleBookmark(postId: $postId) {
+      status
+      isBookmarked
+    }
+  }
+`;
 
 type PostItem = {
   id: string;
@@ -76,8 +86,9 @@ type PostItem = {
   status?: string | null;
   created_at?: string | null;
 
-  images?: Array<{ id: string; url: string }> | null;
+  is_bookmarked?: boolean | null;
 
+  images?: Array<{ id: string; url: string }> | null;
   author?: { id: string; name?: string | null; avatar?: string | null } | null;
 
   tel_numbers?: Array<{ id: string; tel: string }> | null;
@@ -146,15 +157,9 @@ function buildSharePayload(r: PostItem) {
   return { url, title, text };
 }
 
-// type RootStackParamList = {
-//   Home: undefined;
-//   PostView: { post: object };
-// };
-
-/** =========================================================
- * HomeScreen
- * ========================================================= */
 export const HomeScreen: React.FC = () => {
+  const { isLoggedIn, user } = useAuth();
+
   const [items, setItems] = useState<PostItem[]>([]);
   const [total, setTotal] = useState(0);
 
@@ -164,9 +169,13 @@ export const HomeScreen: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
 
+  // ✅ กันกด bookmark รัว ๆ (per post id)
+  const [bookmarkBusyMap, setBookmarkBusyMap] = useState<Record<string, boolean>>({});
+
   const canLoadMore = items.length < total;
 
-  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const navigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
 
   const openUrl = useCallback(async (url?: string | null) => {
     if (!url) return;
@@ -219,6 +228,13 @@ export const HomeScreen: React.FC = () => {
     }
   }, [fetchPage]);
 
+  // useEffectับ refresh ตอนกลับมาหน้านี้ (ให้ bookmark/ข้อมูลทัน)
+  useFocusEffect(
+    useCallback(() => {
+      loadFirst();
+    }, [loadFirst])
+  );
+
   useEffect(() => {
     loadFirst();
   }, [loadFirst]);
@@ -259,177 +275,292 @@ export const HomeScreen: React.FC = () => {
     }
   }, []);
 
+  const onOpenProfile = useCallback(
+    (e: GestureResponderEvent, authorId?: string | null) => {
+      e.stopPropagation?.(); // ✅ กันไม่ให้ไปเปิด PostView
+      if (!authorId) return;
+      navigation.navigate("Profile", { id: authorId });
+    },
+    [navigation]
+  );
+
+  // ✅ helper: update list item bookmark
+  const applyBookmarkToList = useCallback((postId: string, isBookmarked: boolean) => {
+    setItems((prev) =>
+      prev.map((p) => (p.id === postId ? { ...p, is_bookmarked: isBookmarked } : p))
+    );
+  }, []);
+
+  // ✅ toggle bookmark (ใน card)
+  const toggleBookmark = useCallback(
+    async (e: GestureResponderEvent, postId: string) => {
+      e.stopPropagation?.();
+
+      if (!isLoggedIn) {
+        Alert.alert("ต้องเข้าสู่ระบบ", "กรุณา login ก่อนใช้งาน bookmark");
+        return;
+      }
+
+      if (bookmarkBusyMap[postId]) return;
+
+      const prevItem = items.find((x) => x.id === postId);
+      const prevVal = !!prevItem?.is_bookmarked;
+
+      setBookmarkBusyMap((m) => ({ ...m, [postId]: true }));
+
+      // optimistic
+      applyBookmarkToList(postId, !prevVal);
+
+      try {
+        const { data } = await client.mutate({
+          mutation: M_TOGGLE_BOOKMARK,
+          variables: { postId },
+        });
+
+        const ok = !!data?.toggleBookmark?.isBookmarked;
+        applyBookmarkToList(postId, ok);
+      } catch (err: any) {
+        applyBookmarkToList(postId, prevVal);
+        Alert.alert("Bookmark error", err?.message || "Please login first or try again.");
+      } finally {
+        setBookmarkBusyMap((m) => ({ ...m, [postId]: false }));
+      }
+    },
+    [isLoggedIn, bookmarkBusyMap, items, applyBookmarkToList]
+  );
+
+  // ✅ เปิด chat กับ author (แสดงเฉพาะ author != current user)
+  const openChatWithAuthor = useCallback(
+    (e: GestureResponderEvent, authorId?: string | null) => {
+      e.stopPropagation?.();
+      if (!authorId) return;
+
+      if (!isLoggedIn) {
+        Alert.alert("ต้องเข้าสู่ระบบ", "กรุณา login ก่อนใช้งาน chat");
+        return;
+      }
+
+      if (authorId === user?.id) return;
+
+      // RootStackParamList: Chat: { to: string }
+      navigation.navigate("Chat", { to: String(authorId) });
+    },
+    [isLoggedIn, navigation, user?.id]
+  );
+
   const renderPostItem = useCallback(
     ({ item }: { item: PostItem }) => {
-        const ts = formatDateTime(item.created_at);
-        const status = item.status || undefined;
-        const sc = statusColor(status);
+      const ts = formatDateTime(item.created_at);
+      const status = item.status || undefined;
+      const sc = statusColor(status);
 
-        const published = isFacebookPublished(item);
+      const published = isFacebookPublished(item);
 
-        const telList = (item.tel_numbers || [])
-        .map((t) => t.tel)
-        .filter(Boolean);
-
-        const bankList = (item.seller_accounts || [])
+      const telList = (item.tel_numbers || []).map((t) => t.tel).filter(Boolean);
+      const bankList = (item.seller_accounts || [])
         .map((a) => `${a.bank_name || "-"}: ${a.seller_account || "-"}`)
         .filter(Boolean);
 
-        const onOpenPost = () => {
+      const onOpenPost = () => {
+        navigation.navigate("PostView", {
+          id: String(item?.id),
+          currentUserId: user?.id,
+        });
+      };
 
-          console.log("onOpenPost = ", item);
+      const authorName = item.author?.name?.trim() || "Unknown";
+      const authorInitial = authorName?.[0]?.toUpperCase?.() || "?";
+      const authorAvatar = item.author?.avatar ? String(item.author.avatar) : null;
 
-          navigation.navigate("PostView", {
-            post: item
-          });
-        };
+      const isBookmarked = !!item.is_bookmarked;
+      const bookmarkBusy = !!bookmarkBusyMap[item.id];
 
-        return (
+      const showChatBtn =
+        !!item.author?.id && !!user?.id && String(item.author.id) !== String(user.id);
+
+      const showBookmarkBtn =
+        !!item.author?.id && !!user?.id && String(item.author.id) !== String(user.id);
+
+      return (
         <Pressable
-            onPress={onOpenPost}
-            android_ripple={{ color: "#222" }}
-            style={({ pressed }) => [
-            styles.card,
-            pressed && { opacity: 0.85 },
-            ]}
+          onPress={onOpenPost}
+          android_ripple={{ color: "#222" }}
+          style={({ pressed }) => [styles.card, pressed && { opacity: 0.85 }]}
         >
-            {/* ===== TOP ===== */}
-            <View style={styles.cardTop}>
+          {/* ===== TOP ===== */}
+          <View style={styles.cardTop}>
             <Text style={styles.title} numberOfLines={2}>
-                {item.title || "-"}
+              {item.title || "-"}
             </Text>
 
             {status ? (
-                <View style={[styles.tag, { backgroundColor: sc.bg }]}>
+              <View style={[styles.tag, { backgroundColor: sc.bg }]}>
                 <Text style={[styles.tagText, { color: sc.fg }]}>
-                    {String(status).toUpperCase()}
+                  {String(status).toUpperCase()}
                 </Text>
-                </View>
+              </View>
             ) : null}
-            </View>
+          </View>
 
+          {/* ===== META + AUTHOR (CLICKABLE) ===== */}
+          <View style={styles.metaRow}>
             <Text style={styles.meta} numberOfLines={1}>
-            {ts}
-            {item.author?.name ? ` • by ${item.author.name}` : ""}
+              {ts}
             </Text>
 
-            {/* ===== THUMB GRID ===== */}
-            <View style={{ marginTop: 10 }}>
+            {item.author?.id ? (
+              <Pressable
+                onPress={(e) => onOpenProfile(e, item.author?.id)}
+                style={({ pressed }) => [
+                  styles.authorChip,
+                  pressed && { opacity: 0.8 },
+                ]}
+                hitSlop={10}
+              >
+                {authorAvatar ? (
+                  <Image
+                    source={{ uri: authorAvatar }}
+                    style={styles.authorAvatar}
+                  />
+                ) : (
+                  <View style={styles.authorAvatarFallback}>
+                    <Text style={styles.authorAvatarText}>{authorInitial}</Text>
+                  </View>
+                )}
+                <Text style={styles.authorName} numberOfLines={1}>
+                  {authorName}
+                </Text>
+                <Ionicons name="chevron-forward" size={14} color="#9ca3af" />
+              </Pressable>
+            ) : (
+              <Text style={[styles.meta, { marginLeft: 8 }]} numberOfLines={1}>
+                • by {authorName}
+              </Text>
+            )}
+          </View>
+
+          {/* ===== THUMB GRID ===== */}
+          <View style={{ marginTop: 10 }}>
             <ThumbGrid
-                images={(item.images || []) as any}
-                width={Dimensions.get("window").width - 24 - 20}
-                height={160}
-                radius={14}
-                gap={6}
+              images={(item.images || []) as any}
+              width={Dimensions.get("window").width - 24 - 20}
+              height={160}
+              radius={14}
+              gap={6}
             />
-            </View>
+          </View>
 
-            {/* ===== DETAIL ===== */}
-            {item.detail ? (
+          {/* ===== DETAIL ===== */}
+          {item.detail ? (
             <Text style={styles.detail} numberOfLines={4}>
-                {item.detail}
+              {item.detail}
             </Text>
-            ) : null}
+          ) : null}
 
-            {/* ===== TEL ===== */}
-            <View style={styles.infoRow}>
+          {/* ===== TEL ===== */}
+          <View style={styles.infoRow}>
             <Ionicons name="call-outline" size={14} color="#9ca3af" />
             <Text style={styles.infoLabel}>Tel:</Text>
             <Text style={styles.infoValue} numberOfLines={1}>
-                {telList[0] || "-"}
+              {telList[0] || "-"}
             </Text>
             {telList.length > 1 ? (
-                <Text style={styles.moreText}> (+{telList.length - 1})</Text>
+              <Text style={styles.moreText}> (+{telList.length - 1})</Text>
             ) : null}
-            </View>
+          </View>
 
-            {/* ===== BANK ===== */}
-            <View style={styles.infoRow}>
+          {/* ===== BANK ===== */}
+          <View style={styles.infoRow}>
             <Ionicons name="card-outline" size={14} color="#9ca3af" />
             <Text style={styles.infoLabel}>Bank:</Text>
             <Text style={styles.infoValue} numberOfLines={1}>
-                {bankList[0] || "-"}
+              {bankList[0] || "-"}
             </Text>
             {bankList.length > 1 ? (
-                <Text style={styles.moreText}> (+{bankList.length - 1})</Text>
+              <Text style={styles.moreText}> (+{bankList.length - 1})</Text>
             ) : null}
-            </View>
+          </View>
 
-            {/* ===== ACTIONS ===== */}
-            <View style={styles.actionsRow}>
+          {/* ===== ACTIONS ===== */}
+          <View style={styles.actionsRow}>
             <IconButton
-                icon="logo-facebook"
-                disabled={!published}
-                onPress={() => {
-                  // e.stopPropagation();
-                  openUrl(item.fb_permalink_url);
-                }}
+              icon="logo-facebook"
+              disabled={!published}
+              onPress={() => openUrl(item.fb_permalink_url)}
             />
 
             <IconButton
-                icon="chatbubble-ellipses-outline"
-                badge={item.comments_count || 0}
-                onPress={() => {
-                // e.stopPropagation();
-                // navigation.navigate("PostView", { postId: item.id });
-                }}
+              icon="chatbox-outline"
+              badge={item.comments_count || 0}
+              onPress={onOpenPost}
             />
 
             <IconButton
-                icon="share-social-outline"
-                onPress={() => {
-                  // e.stopPropagation();
-                  // handleShare(item);
-                }}
+              icon="share-social-outline"
+              onPress={() => handleShare(item)}
             />
+
+            {/* ✅ CHAT (คุยกับผู้โพสต์) — แสดงเฉพาะ author != current user */}
+            {showChatBtn ? (
+              <IconButton
+                icon="chatbubbles-outline"
+                onPress={(e) => openChatWithAuthor(e as any, item.author?.id)}
+              />
+            ) : null}
 
             <View style={{ flex: 1 }} />
 
-            <IconButton
-                icon="link-outline"
-                onPress={() => {
-                  // e.stopPropagation();
-                  // openUrl(`${ENV.webBase ?? "https://jachoei.com"}/post/${item.id}`);
-                }}
-            />
-            </View>
+            {/* ✅ BOOKMARK — แสดงเฉพาะ author != current user */}
+            {showBookmarkBtn ? (
+              <IconButton
+                icon={isBookmarked ? "bookmark" : "bookmark-outline"}
+                onPress={(e) => toggleBookmark(e as any, item.id)}
+                disabled={bookmarkBusy}
+                active={isBookmarked}
+                loading={bookmarkBusy}
+              />
+            ) : null}
+          </View>
         </Pressable>
-        );
+      );
     },
-    [handleShare, openUrl, navigation]
+    [
+      handleShare,
+      openUrl,
+      navigation,
+      onOpenProfile,
+      user?.id,
+      toggleBookmark,
+      bookmarkBusyMap,
+      isLoggedIn,
+      openChatWithAuthor,
+    ]
   );
-
 
   const footer = useMemo(() => {
     if (!canLoadMore) return <View style={{ height: 24 }} />;
     return (
       <View style={styles.footer}>
         {loadingMore ? <ActivityIndicator /> : null}
-        <Text style={styles.footerText}>{loadingMore ? "กำลังโหลดเพิ่ม..." : ""}</Text>
+        <Text style={styles.footerText}>
+          {loadingMore ? "กำลังโหลดเพิ่ม..." : ""}
+        </Text>
       </View>
     );
   }, [canLoadMore, loadingMore]);
 
   return (
     <View style={styles.container}>
-      {/* header */}
-      {/* <View style={styles.header}>
-        <Text style={styles.headerTitle}>จ่าเฉย (JACHOEI)</Text>
-        <TouchableOpacity
-          onPress={() => openUrl(`${ENV.webBase ?? "https://jachoei.com"}/search`)}
-          style={styles.headerBtn}
-        >
-          <Ionicons name="search-outline" size={20} color="#fff" />
-        </TouchableOpacity>
-      </View> */}
-
       <FlatList
         data={items}
         keyExtractor={(it) => String(it.id)}
         renderItem={renderPostItem}
         contentContainerStyle={{ padding: 12, paddingBottom: 24 }}
         refreshControl={
-          <RefreshControl refreshing={loading && page === 1} onRefresh={onRefresh} />
+          <RefreshControl
+            refreshing={loading && page === 1}
+            onRefresh={onRefresh}
+          />
         }
         onEndReachedThreshold={0.5}
         onEndReached={onLoadMore}
@@ -449,22 +580,35 @@ export const HomeScreen: React.FC = () => {
 
 function IconButton(props: {
   icon: string;
-  onPress: () => void;
+  onPress: (e?: any) => void;
   disabled?: boolean;
   badge?: number;
+  active?: boolean;
+  loading?: boolean;
 }) {
-  const { icon, onPress, disabled, badge } = props;
+  const { icon, onPress, disabled, badge, active, loading } = props;
 
   return (
     <TouchableOpacity
       onPress={onPress}
       disabled={disabled}
-      style={[styles.iconBtn, disabled && { opacity: 0.35 }]}
+      style={[
+        styles.iconBtn,
+        active && styles.iconBtnActive,
+        disabled && { opacity: 0.35 },
+      ]}
     >
-      <Ionicons name={icon as any} size={18} color="#e5e7eb" />
+      {loading ? (
+        <ActivityIndicator />
+      ) : (
+        <Ionicons name={icon as any} size={18} color="#e5e7eb" />
+      )}
+
       {badge && badge > 0 ? (
         <View style={styles.badge}>
-          <Text style={styles.badgeText}>{badge > 99 ? "99+" : String(badge)}</Text>
+          <Text style={styles.badgeText}>
+            {badge > 99 ? "99+" : String(badge)}
+          </Text>
         </View>
       ) : null}
     </TouchableOpacity>
@@ -473,26 +617,6 @@ function IconButton(props: {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0b0b0f" },
-
-  header: {
-    height: 52,
-    paddingHorizontal: 12,
-    backgroundColor: "#111",
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#222",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  headerTitle: { color: "#fff", fontSize: 16, fontWeight: "900" },
-  headerBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#1d1d25",
-  },
 
   card: {
     backgroundColor: "#111116",
@@ -513,7 +637,43 @@ const styles = StyleSheet.create({
   },
   tagText: { fontSize: 10, fontWeight: "900" },
 
-  meta: { marginTop: 4, color: "#9ca3af", fontSize: 11 },
+  metaRow: {
+    marginTop: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  meta: { color: "#9ca3af", fontSize: 11, flex: 1 },
+
+  authorChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "#1d1d25",
+    borderWidth: 1,
+    borderColor: "#2a2a35",
+    maxWidth: 180,
+  },
+  authorAvatar: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "#111",
+  },
+  authorAvatarFallback: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "#2a2a35",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  authorAvatarText: { color: "#fff", fontSize: 10, fontWeight: "900" },
+  authorName: { color: "#e5e7eb", fontSize: 11, fontWeight: "800" },
+
   detail: { marginTop: 10, color: "#e5e7eb", fontSize: 12, lineHeight: 16 },
 
   infoRow: {
@@ -541,6 +701,10 @@ const styles = StyleSheet.create({
     borderColor: "#2a2a35",
     alignItems: "center",
     justifyContent: "center",
+  },
+  iconBtnActive: {
+    borderColor: "#3b82f6",
+    backgroundColor: "rgba(59,130,246,0.18)",
   },
 
   badge: {

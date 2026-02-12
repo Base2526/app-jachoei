@@ -1,10 +1,25 @@
-// src/navigation/types.ts
 import { PostItem } from "../types/PostItem";
 
+export type TabsParamList = {
+  HomeScreen: undefined;
+  CheckPhone: undefined;
+  BlockedNumbers: undefined;
+  BlockedLogs: undefined;
+};
+
 export type RootStackParamList = {
+  // Stack root
   ScamProtect: undefined;
+
+  // Modals / stack screens
+  SignIn: undefined;
   BlockedLogsSearch: undefined;
 
-  // ✅ ส่ง post เข้ามาแบบนี้
-  PostView: { post: PostItem, currentUserId?: string };
+  PostView: { id: string; currentUserId?: string };
+  Profile: { id: string };
+  Chat: { to: string };
+
+  // PostForm: undefined;
+  Setting: undefined;
+  PostForm: { id?: string } | undefined;
 };
