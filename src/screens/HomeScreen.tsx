@@ -20,7 +20,7 @@ import {
 import Ionicons from "react-native-vector-icons/Ionicons";
 import { gql } from "@apollo/client";
 
-import { useNavigation } from "@react-navigation/native";
+import { useNavigation, useFocusEffect } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 
 import { ThumbGrid } from "../components/ThumbGrid";
@@ -28,7 +28,7 @@ import { client } from "../apollo/client";
 import { ENV } from "../config/env";
 
 import type { RootStackParamList } from "../navigation/types";
-import { useAuth } from "../auth/AuthProvider"
+import { useAuth } from "../auth/AuthProvider";
 
 const Q_POSTS_PAGED = gql`
   query ($q: String, $limit: Int!, $offset: Int!) {
@@ -40,6 +40,10 @@ const Q_POSTS_PAGED = gql`
         detail
         status
         created_at
+
+        # ✅ bookmark
+        is_bookmarked
+
         images {
           id
           url
@@ -66,6 +70,15 @@ const Q_POSTS_PAGED = gql`
   }
 `;
 
+const M_TOGGLE_BOOKMARK = gql`
+  mutation ToggleBookmark($postId: ID!) {
+    toggleBookmark(postId: $postId) {
+      status
+      isBookmarked
+    }
+  }
+`;
+
 type PostItem = {
   id: string;
   title?: string | null;
@@ -73,8 +86,9 @@ type PostItem = {
   status?: string | null;
   created_at?: string | null;
 
-  images?: Array<{ id: string; url: string }> | null;
+  is_bookmarked?: boolean | null;
 
+  images?: Array<{ id: string; url: string }> | null;
   author?: { id: string; name?: string | null; avatar?: string | null } | null;
 
   tel_numbers?: Array<{ id: string; tel: string }> | null;
@@ -143,11 +157,9 @@ function buildSharePayload(r: PostItem) {
   return { url, title, text };
 }
 
-/** =========================================================
- * HomeScreen
- * ========================================================= */
 export const HomeScreen: React.FC = () => {
-  const { isLoggedIn, user, logout } = useAuth();
+  const { isLoggedIn, user } = useAuth();
+
   const [items, setItems] = useState<PostItem[]>([]);
   const [total, setTotal] = useState(0);
 
@@ -156,6 +168,9 @@ export const HomeScreen: React.FC = () => {
 
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+
+  // ✅ กันกด bookmark รัว ๆ (per post id)
+  const [bookmarkBusyMap, setBookmarkBusyMap] = useState<Record<string, boolean>>({});
 
   const canLoadMore = items.length < total;
 
@@ -213,6 +228,13 @@ export const HomeScreen: React.FC = () => {
     }
   }, [fetchPage]);
 
+  // useEffectับ refresh ตอนกลับมาหน้านี้ (ให้ bookmark/ข้อมูลทัน)
+  useFocusEffect(
+    useCallback(() => {
+      loadFirst();
+    }, [loadFirst])
+  );
+
   useEffect(() => {
     loadFirst();
   }, [loadFirst]);
@@ -262,6 +284,70 @@ export const HomeScreen: React.FC = () => {
     [navigation]
   );
 
+  // ✅ helper: update list item bookmark
+  const applyBookmarkToList = useCallback((postId: string, isBookmarked: boolean) => {
+    setItems((prev) =>
+      prev.map((p) => (p.id === postId ? { ...p, is_bookmarked: isBookmarked } : p))
+    );
+  }, []);
+
+  // ✅ toggle bookmark (ใน card)
+  const toggleBookmark = useCallback(
+    async (e: GestureResponderEvent, postId: string) => {
+      e.stopPropagation?.();
+
+      if (!isLoggedIn) {
+        Alert.alert("ต้องเข้าสู่ระบบ", "กรุณา login ก่อนใช้งาน bookmark");
+        return;
+      }
+
+      if (bookmarkBusyMap[postId]) return;
+
+      const prevItem = items.find((x) => x.id === postId);
+      const prevVal = !!prevItem?.is_bookmarked;
+
+      setBookmarkBusyMap((m) => ({ ...m, [postId]: true }));
+
+      // optimistic
+      applyBookmarkToList(postId, !prevVal);
+
+      try {
+        const { data } = await client.mutate({
+          mutation: M_TOGGLE_BOOKMARK,
+          variables: { postId },
+        });
+
+        const ok = !!data?.toggleBookmark?.isBookmarked;
+        applyBookmarkToList(postId, ok);
+      } catch (err: any) {
+        applyBookmarkToList(postId, prevVal);
+        Alert.alert("Bookmark error", err?.message || "Please login first or try again.");
+      } finally {
+        setBookmarkBusyMap((m) => ({ ...m, [postId]: false }));
+      }
+    },
+    [isLoggedIn, bookmarkBusyMap, items, applyBookmarkToList]
+  );
+
+  // ✅ เปิด chat กับ author (แสดงเฉพาะ author != current user)
+  const openChatWithAuthor = useCallback(
+    (e: GestureResponderEvent, authorId?: string | null) => {
+      e.stopPropagation?.();
+      if (!authorId) return;
+
+      if (!isLoggedIn) {
+        Alert.alert("ต้องเข้าสู่ระบบ", "กรุณา login ก่อนใช้งาน chat");
+        return;
+      }
+
+      if (authorId === user?.id) return;
+
+      // RootStackParamList: Chat: { to: string }
+      navigation.navigate("Chat", { to: String(authorId) });
+    },
+    [isLoggedIn, navigation, user?.id]
+  );
+
   const renderPostItem = useCallback(
     ({ item }: { item: PostItem }) => {
       const ts = formatDateTime(item.created_at);
@@ -276,12 +362,24 @@ export const HomeScreen: React.FC = () => {
         .filter(Boolean);
 
       const onOpenPost = () => {
-        navigation.navigate("PostView", { post: item, currentUserId: user?.id });
+        navigation.navigate("PostView", {
+          id: String(item?.id),
+          currentUserId: user?.id,
+        });
       };
 
       const authorName = item.author?.name?.trim() || "Unknown";
       const authorInitial = authorName?.[0]?.toUpperCase?.() || "?";
       const authorAvatar = item.author?.avatar ? String(item.author.avatar) : null;
+
+      const isBookmarked = !!item.is_bookmarked;
+      const bookmarkBusy = !!bookmarkBusyMap[item.id];
+
+      const showChatBtn =
+        !!item.author?.id && !!user?.id && String(item.author.id) !== String(user.id);
+
+      const showBookmarkBtn =
+        !!item.author?.id && !!user?.id && String(item.author.id) !== String(user.id);
 
       return (
         <Pressable
@@ -392,11 +490,9 @@ export const HomeScreen: React.FC = () => {
             />
 
             <IconButton
-              icon="chatbubble-ellipses-outline"
+              icon="chatbox-outline"
               badge={item.comments_count || 0}
-              onPress={() => {
-                // ใส่ทีหลังได้
-              }}
+              onPress={onOpenPost}
             />
 
             <IconButton
@@ -404,17 +500,41 @@ export const HomeScreen: React.FC = () => {
               onPress={() => handleShare(item)}
             />
 
+            {/* ✅ CHAT (คุยกับผู้โพสต์) — แสดงเฉพาะ author != current user */}
+            {showChatBtn ? (
+              <IconButton
+                icon="chatbubbles-outline"
+                onPress={(e) => openChatWithAuthor(e as any, item.author?.id)}
+              />
+            ) : null}
+
             <View style={{ flex: 1 }} />
 
-            <IconButton
-              icon="link-outline"
-              onPress={() => openUrl(`${ENV.webBase ?? "https://jachoei.com"}/post/${item.id}`)}
-            />
+            {/* ✅ BOOKMARK — แสดงเฉพาะ author != current user */}
+            {showBookmarkBtn ? (
+              <IconButton
+                icon={isBookmarked ? "bookmark" : "bookmark-outline"}
+                onPress={(e) => toggleBookmark(e as any, item.id)}
+                disabled={bookmarkBusy}
+                active={isBookmarked}
+                loading={bookmarkBusy}
+              />
+            ) : null}
           </View>
         </Pressable>
       );
     },
-    [handleShare, openUrl, navigation, onOpenProfile]
+    [
+      handleShare,
+      openUrl,
+      navigation,
+      onOpenProfile,
+      user?.id,
+      toggleBookmark,
+      bookmarkBusyMap,
+      isLoggedIn,
+      openChatWithAuthor,
+    ]
   );
 
   const footer = useMemo(() => {
@@ -460,19 +580,30 @@ export const HomeScreen: React.FC = () => {
 
 function IconButton(props: {
   icon: string;
-  onPress: () => void;
+  onPress: (e?: any) => void;
   disabled?: boolean;
   badge?: number;
+  active?: boolean;
+  loading?: boolean;
 }) {
-  const { icon, onPress, disabled, badge } = props;
+  const { icon, onPress, disabled, badge, active, loading } = props;
 
   return (
     <TouchableOpacity
       onPress={onPress}
       disabled={disabled}
-      style={[styles.iconBtn, disabled && { opacity: 0.35 }]}
+      style={[
+        styles.iconBtn,
+        active && styles.iconBtnActive,
+        disabled && { opacity: 0.35 },
+      ]}
     >
-      <Ionicons name={icon as any} size={18} color="#e5e7eb" />
+      {loading ? (
+        <ActivityIndicator />
+      ) : (
+        <Ionicons name={icon as any} size={18} color="#e5e7eb" />
+      )}
+
       {badge && badge > 0 ? (
         <View style={styles.badge}>
           <Text style={styles.badgeText}>
@@ -514,7 +645,6 @@ const styles = StyleSheet.create({
   },
   meta: { color: "#9ca3af", fontSize: 11, flex: 1 },
 
-  // ✅ author chip
   authorChip: {
     flexDirection: "row",
     alignItems: "center",
@@ -571,6 +701,10 @@ const styles = StyleSheet.create({
     borderColor: "#2a2a35",
     alignItems: "center",
     justifyContent: "center",
+  },
+  iconBtnActive: {
+    borderColor: "#3b82f6",
+    backgroundColor: "rgba(59,130,246,0.18)",
   },
 
   badge: {

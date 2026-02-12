@@ -16,8 +16,8 @@ import {
 } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { ApolloProvider } from "@apollo/client/react";
-
 import { GoogleSignin } from "@react-native-google-signin/google-signin";
+import BootSplash from "react-native-bootsplash";
 
 import { ScamProtectTabs } from "./src/screens/ScamProtectTabs";
 import { client } from "./src/apollo/client";
@@ -141,7 +141,17 @@ function Root() {
       <Stack.Screen
         name="PostForm"
         component={PostFormScreen}
-        options={{ headerShown: true, title: "สร้าง/แก้ไขรายการ" }}
+        // options={{ headerShown: true, title: "สร้าง/แก้ไขรายการ" }}
+
+        options={{
+          headerShown: false,
+          title: "สร้าง/แก้ไขรายการ",
+          presentation: "modal",
+
+          gestureEnabled: true,
+          animation: "slide_from_bottom", //Platform.OS === "ios" ? "slide_from_bottom" : "fade",
+          animationDuration: 250,
+        }}
       />
 
       <Stack.Screen
@@ -157,7 +167,9 @@ export default function App() {
   return (
     <ApolloProvider client={client}>
       <AuthProvider>
-      <NavigationContainer ref={navigationRef}>
+      <NavigationContainer 
+        ref={navigationRef}
+        onReady={() => { BootSplash.hide(); }}>
         <GlobalWiresWrapper />
         <StatusBar barStyle="light-content" backgroundColor="#0b0b0f" />
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState, useLayoutEffect } from "react";
+import React, { useEffect, useMemo, useRef, useState, useLayoutEffect, useCallback } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -18,12 +18,37 @@ import _ from "lodash";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { Picker } from "@react-native-picker/picker";
 import { launchImageLibrary, Asset } from "react-native-image-picker";
-import { useNavigation } from "@react-navigation/native";
+import { NativeStackScreenProps } from "@react-navigation/native-stack";
 
 import { gql } from "@apollo/client";
-import { client } from "../apollo/client"; // ✅ ปรับ path ให้ตรงโปรเจกต์คุณ
+import { client } from "../apollo/client";
+import type { RootStackParamList } from "../navigation/types";
+import { ENV } from "../config/env";
 
 // ====================== GraphQL ======================
+
+const Q_POST = gql`
+  query ($id: ID!) {
+    post(id: $id) {
+      id
+      title
+      status
+      auto_publish
+      first_last_name
+      id_card
+      transfer_amount
+      transfer_date
+      website
+      province_id
+      province_name
+      detail
+      tel_numbers { id tel }
+      seller_accounts { id bank_id bank_name seller_account }
+      images { id url }
+    }
+  }
+`;
+
 const UPSERT = gql`
   mutation Upsert($id: ID, $data: PostInput!, $images: [Upload!], $image_ids_delete: [ID!]) {
     upsertPost(id: $id, data: $data, images: $images, image_ids_delete: $image_ids_delete) {
@@ -36,6 +61,7 @@ const UPSERT = gql`
 `;
 
 // ====================== Types ======================
+
 export type ExistingImage = { id: number | string; url: string };
 
 export type PostRecord = {
@@ -80,6 +106,7 @@ type ProvinceItem = { id: string; name_th: string };
 type BankItem = { id: string; name_th: string; type: "bank" | "ewallet" };
 
 // ====================== dropdown data (ตัวอย่าง) ======================
+// ✅ ใส่ของจริงของคุณแทนได้
 const provinces: ProvinceItem[] = [
   { id: "1a6c...00001", name_th: "กรุงเทพมหานคร" },
   { id: "1a6c...00009", name_th: "ชลบุรี" },
@@ -96,6 +123,7 @@ const banks: BankItem[] = [
 ];
 
 // ====================== helpers ======================
+
 const makeLocalId = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -108,16 +136,37 @@ function toUploadFromAsset(a: Asset) {
   } as any;
 }
 
-// ====================== Props ======================
-type Props = {
-  initialData?: PostRecord | null;
-  title?: string;
-  onSaved?: (savedId: string | number) => void;
-};
+function normalizeDateFromApi(v?: string | null): Date | null {
+  if (!v) return null;
+  // รองรับ timestamp string
+  if (!isNaN(Number(v))) {
+    const d = new Date(Number(v));
+    return isNaN(d.getTime()) ? null : d;
+  }
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : d;
+}
 
-export default function PostFormScreen({ initialData, title, onSaved }: Props) {
-  const isEdit = !!initialData?.id;
-  const navigation = useNavigation<any>();
+function normalizeImageUrl(url: string): string {
+  // ถ้า backend ส่งเป็น full url อยู่แล้ว
+  if (/^https?:\/\//i.test(url)) return url;
+  // ถ้าเป็น /uploads/xxx
+  return `${ENV.apiBase}${url}`;
+}
+
+// ====================== Navigation props ======================
+// ✅ ต้องมีใน RootStackParamList:
+// PostForm: { id?: string }
+type Props = NativeStackScreenProps<RootStackParamList, "PostForm">;
+
+export default function PostFormScreen({ route, navigation }: Props) {
+  const id = route.params?.id ? String(route.params.id) : undefined;
+  const isEdit = !!id;
+
+  // ===== initial load state (สำคัญสำหรับ edit) =====
+  const [initialLoading, setInitialLoading] = useState<boolean>(!!isEdit);
+  const [initialError, setInitialError] = useState<string | null>(null);
+  const [initialData, setInitialData] = useState<PostRecord | null>(null);
 
   // ===== form states =====
   const [first_last_name, setFirstLastName] = useState("");
@@ -142,10 +191,19 @@ export default function PostFormScreen({ initialData, title, onSaved }: Props) {
   const initialSnapshotRef = useRef<any>(null);
 
   // ====================== normalize + dirty check ======================
-  const normalizeComparable = () => {
+
+  const normalizeComparable = useCallback(() => {
     const existing = files.filter((x: any) => x && "url" in x) as ExistingFile[];
-    const keepExistingIds = existing.filter((x) => !x.delete).map((x) => String(x._id)).sort();
-    const deleteExistingIds = existing.filter((x) => !!x.delete).map((x) => String(x._id)).sort();
+    const keepExistingIds = existing
+      .filter((x) => !x.delete)
+      .map((x) => String(x._id))
+      .sort();
+
+    const deleteExistingIds = existing
+      .filter((x) => !!x.delete)
+      .map((x) => String(x._id))
+      .sort();
+
     const newFilesCount = files.filter((x: any) => x && "uri" in x && !("url" in x)).length;
 
     return {
@@ -175,9 +233,23 @@ export default function PostFormScreen({ initialData, title, onSaved }: Props) {
         .sort((a, b) => (a.bank_name + a.seller_account).localeCompare(b.bank_name + b.seller_account)),
       files: { keepExistingIds, deleteExistingIds, newFilesCount },
     };
-  };
+  }, [
+    files,
+    telNumbers,
+    sellerAccounts,
+    first_last_name,
+    id_card,
+    postTitle,
+    transfer_amount,
+    transfer_date,
+    website,
+    province_id,
+    detail,
+    status,
+    auto_publish,
+  ]);
 
-  const recomputeDirty = () => {
+  const recomputeDirty = useCallback(() => {
     const snap = initialSnapshotRef.current;
     if (!snap) {
       setDirty(true);
@@ -195,23 +267,89 @@ export default function PostFormScreen({ initialData, title, onSaved }: Props) {
     const sellerChanged = !_.isEqual(snap.seller_accounts, current.seller_accounts);
 
     setDirty(filesChanged || formChanged || telChanged || sellerChanged);
-  };
+  }, [normalizeComparable]);
 
-  // ====================== init from initialData ======================
+  // ====================== fetch initialData (edit) ======================
+
+  const fetchInitial = useCallback(async () => {
+    if (!id) return;
+    setInitialLoading(true);
+    setInitialError(null);
+
+    try {
+      const { data } = await client.query({
+        query: Q_POST,
+        variables: { id },
+        fetchPolicy: "network-only",
+      });
+
+      const p = data?.post;
+      if (!p?.id) throw new Error("ไม่พบโพสต์");
+
+      const mapped: PostRecord = {
+        id: p.id,
+        title: p.title ?? "",
+        status: p.status ?? "public",
+        auto_publish: !!p.auto_publish,
+        first_last_name: p.first_last_name ?? "",
+        id_card: p.id_card ?? "",
+        transfer_amount: typeof p.transfer_amount === "number" ? p.transfer_amount : Number(p.transfer_amount || 0),
+        transfer_date: p.transfer_date ?? null,
+        website: p.website ?? "",
+        province_id: p.province_id ?? undefined,
+        detail: p.detail ?? "",
+        tel_numbers: (p.tel_numbers ?? []).map((t: any) => ({ id: t.id, tel: t.tel })),
+        seller_accounts: (p.seller_accounts ?? []).map((s: any) => ({
+          id: s.id,
+          bank_id: s.bank_id,
+          bank_name: s.bank_name,
+          seller_account: s.seller_account ?? "",
+        })),
+        images: (p.images ?? []).map((img: any) => ({ id: img.id, url: normalizeImageUrl(img.url) })),
+      };
+
+      setInitialData(mapped);
+    } catch (e: any) {
+      setInitialError(e?.message || "โหลดข้อมูลสำหรับแก้ไขไม่สำเร็จ");
+    } finally {
+      setInitialLoading(false);
+    }
+  }, [id]);
+
   useEffect(() => {
-    if (!initialData) {
-      setAutoPublish(true);
+    if (isEdit) fetchInitial();
+  }, [isEdit, fetchInitial]);
+
+  // ====================== init states from initialData ======================
+
+  useEffect(() => {
+    // create mode: set defaults + snapshot
+    if (!isEdit) {
+      setFirstLastName("");
+      setIdCard("");
+      setPostTitle("");
+      setTransferAmount("");
+      setTransferDate(null);
+      setWebsite("");
+      setProvinceId(undefined);
+      setDetail("");
       setStatus("public");
+      setAutoPublish(true);
+
       setTelNumbers([]);
       setSellerAccounts([]);
       setFiles([]);
 
+      // snapshot หลัง state set
       setTimeout(() => {
         initialSnapshotRef.current = normalizeComparable();
         setDirty(false);
       }, 0);
       return;
     }
+
+    // edit mode: รอ initialData
+    if (!initialData) return;
 
     setFirstLastName(initialData.first_last_name ?? "");
     setIdCard(initialData.id_card ?? "");
@@ -221,18 +359,11 @@ export default function PostFormScreen({ initialData, title, onSaved }: Props) {
       typeof initialData.transfer_amount === "number" ? String(initialData.transfer_amount) : ""
     );
 
-    if (initialData.transfer_date) {
-      const d = !isNaN(Number(initialData.transfer_date))
-        ? new Date(Number(initialData.transfer_date))
-        : new Date(initialData.transfer_date);
-      setTransferDate(isNaN(d.getTime()) ? null : d);
-    } else {
-      setTransferDate(null);
-    }
+    setTransferDate(normalizeDateFromApi(initialData.transfer_date));
 
     setWebsite(initialData.website ?? "");
     setProvinceId(initialData.province_id ?? undefined);
-    setDetail((initialData as any).detail ?? "");
+    setDetail(initialData.detail ?? "");
     setStatus(initialData.status ?? "public");
     setAutoPublish(typeof initialData.auto_publish === "boolean" ? initialData.auto_publish : true);
 
@@ -252,44 +383,36 @@ export default function PostFormScreen({ initialData, title, onSaved }: Props) {
     }));
     setSellerAccounts(sellerInit);
 
-    const ex: ExistingFile[] = (initialData.images || []).map((img) => ({ _id: img.id, url: img.url }));
+    const ex: ExistingFile[] = (initialData.images || []).map((img) => ({
+      _id: img.id,
+      url: img.url, // ✅ ตอน fetch เรา normalize แล้ว
+    }));
     setFiles(ex);
 
+    // snapshot หลัง state set
     setTimeout(() => {
       initialSnapshotRef.current = normalizeComparable();
       setDirty(false);
     }, 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialData?.id]);
+  }, [isEdit, initialData?.id]);
 
   // recompute dirty when anything changes
   useEffect(() => {
     if (!initialSnapshotRef.current) return;
     recomputeDirty();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    first_last_name,
-    id_card,
-    postTitle,
-    transfer_amount,
-    transfer_date,
-    website,
-    province_id,
-    detail,
-    status,
-    auto_publish,
-    telNumbers,
-    sellerAccounts,
-    files,
-  ]);
+  }, [recomputeDirty]);
 
   // ====================== actions ======================
+
   const addTelNumber = () => {
     setTelNumbers((prev) => [...prev, { id: makeLocalId("tel"), tel: "", mode: Mode.New }]);
   };
+
   const removeTelNumber = (index: number) => {
     setTelNumbers((prev) => prev.map((x, i) => (i === index ? { ...x, mode: Mode.Deleted } : x)));
   };
+
   const updateTel = (index: number, value: string) => {
     setTelNumbers((prev) => {
       const next = [...prev];
@@ -307,9 +430,11 @@ export default function PostFormScreen({ initialData, title, onSaved }: Props) {
       { id: makeLocalId("seller"), bank_id: "", bank_name: "", seller_account: "", mode: Mode.New },
     ]);
   };
+
   const removeSellerAccount = (index: number) => {
     setSellerAccounts((prev) => prev.map((x, i) => (i === index ? { ...x, mode: Mode.Deleted } : x)));
   };
+
   const updateSeller = (index: number, patch: Partial<ISellerAccount>) => {
     setSellerAccounts((prev) => {
       const next = [...prev];
@@ -356,6 +481,7 @@ export default function PostFormScreen({ initialData, title, onSaved }: Props) {
   };
 
   // ====================== submit ======================
+
   const onSubmit = async () => {
     if (saving) return;
 
@@ -389,7 +515,7 @@ export default function PostFormScreen({ initialData, title, onSaved }: Props) {
         }));
 
       const variables: any = {
-        id: isEdit ? String(initialData!.id) : null,
+        id: isEdit ? String(id) : null,
         data: {
           first_last_name: first_last_name.trim(),
           id_card: id_card.trim(),
@@ -419,10 +545,15 @@ export default function PostFormScreen({ initialData, title, onSaved }: Props) {
 
       Alert.alert(
         "สำเร็จ",
-        saved.auto_publish ? "บันทึกสำเร็จ และระบบจะเผยแพร่อัตโนมัติ" : "บันทึกสำเร็จ"
+        saved.auto_publish
+          ? (isEdit ? "บันทึกสำเร็จ และระบบจะเผยแพร่อัตโนมัติ" : "สร้างรายการสำเร็จ และระบบจะเผยแพร่อัตโนมัติ")
+          : (isEdit ? "บันทึกสำเร็จ" : "สร้างรายการสำเร็จ")
       );
 
-      const savedImgs: ExistingFile[] = (saved.images || []).map((img: any) => ({ _id: img.id, url: img.url }));
+      const savedImgs: ExistingFile[] = (saved.images || []).map((img: any) => ({
+        _id: img.id,
+        url: normalizeImageUrl(img.url),
+      }));
       setFiles(savedImgs);
 
       const nextTel = telNumbers
@@ -440,7 +571,11 @@ export default function PostFormScreen({ initialData, title, onSaved }: Props) {
         setDirty(false);
       }, 0);
 
-      onSaved?.(saved.id);
+      // ✅ หลัง save:
+      // - ถ้า create ใหม่ → replace ไปเป็น edit ของ id ใหม่ได้เลย
+      if (!isEdit) {
+        navigation.replace("PostForm", { id: String(saved.id) });
+      }
     } catch (e: any) {
       Alert.alert("Error", e?.message || "Save failed");
     } finally {
@@ -449,8 +584,9 @@ export default function PostFormScreen({ initialData, title, onSaved }: Props) {
   };
 
   // ====================== header config + Save button ======================
-  const headerTitle = title ?? (isEdit ? "แก้ไขรายการ" : "สร้างรายการใหม่");
-  const canSave = dirty && !saving;
+
+  const headerTitle = isEdit ? "แก้ไขรายการ" : "สร้างรายการใหม่";
+  const canSave = dirty && !saving && !initialLoading;
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -461,7 +597,6 @@ export default function PostFormScreen({ initialData, title, onSaved }: Props) {
       headerTitleStyle: { color: "#fff", fontWeight: "800" },
       headerBackTitleVisible: false,
 
-      // ✅ Save button in header
       headerRight: () => (
         <Pressable
           onPress={onSubmit}
@@ -471,29 +606,21 @@ export default function PostFormScreen({ initialData, title, onSaved }: Props) {
             (!canSave || pressed) && { opacity: !canSave ? 0.35 : 0.7 },
           ]}
         >
-          {saving ? (
-            <ActivityIndicator />
-          ) : (
-            <Text style={styles.headerBtnText}>Save</Text>
-          )}
+          {saving ? <ActivityIndicator /> : <Text style={styles.headerBtnText}>Save</Text>}
         </Pressable>
       ),
     });
-  }, [navigation, headerTitle, canSave, saving, dirty]);
+  }, [navigation, headerTitle, canSave, saving, dirty, initialLoading]);
 
-  // ✅ Optional: เตือนก่อนออก ถ้า dirty
+  // ✅ เตือนก่อนออก ถ้า dirty
   useEffect(() => {
     const unsub = navigation.addListener("beforeRemove", (e: any) => {
       if (!dirty || saving) return;
       e.preventDefault();
 
       Alert.alert("ยังไม่ได้บันทึก", "คุณแก้ไขข้อมูลแล้ว ต้องการออกโดยไม่บันทึกไหม?", [
-        { text: "อยู่ต่อ", style: "cancel", onPress: () => {} },
-        {
-          text: "ออกเลย",
-          style: "destructive",
-          onPress: () => navigation.dispatch(e.data.action),
-        },
+        { text: "อยู่ต่อ", style: "cancel" },
+        { text: "ออกเลย", style: "destructive", onPress: () => navigation.dispatch(e.data.action) },
       ]);
     });
 
@@ -501,6 +628,7 @@ export default function PostFormScreen({ initialData, title, onSaved }: Props) {
   }, [navigation, dirty, saving]);
 
   // ====================== UI ======================
+
   const showTransferDateLabel = useMemo(() => {
     if (!transfer_date) return "กรุณาเลือกวันโอนเงิน";
     return dayjs(transfer_date).format("DD/MM/YYYY");
@@ -508,11 +636,29 @@ export default function PostFormScreen({ initialData, title, onSaved }: Props) {
 
   const [showDatePicker, setShowDatePicker] = useState(false);
 
+  // ===== edit loading/error =====
+  if (initialLoading) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator color="#fff" />
+        <Text style={[styles.hint, { marginTop: 10 }]}>กำลังโหลดข้อมูลเพื่อแก้ไข…</Text>
+      </View>
+    );
+  }
+
+  if (initialError) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.errorText}>{initialError}</Text>
+        <Pressable style={[styles.outlineBtn, { marginTop: 12, width: 160 }]} onPress={fetchInitial}>
+          <Text style={styles.outlineText}>ลองใหม่</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.container}>
-      {/* (ไม่จำเป็นต้องมี H1 แล้ว เพราะ title อยู่ header แต่คงไว้ได้) */}
-      <Text style={styles.h1}>{headerTitle}</Text>
-
       <Field label="ชื่อ-นามสกุล คนขาย">
         <TextInput
           value={first_last_name}
@@ -747,14 +893,18 @@ export default function PostFormScreen({ initialData, title, onSaved }: Props) {
 
       <Field label="สถานะ">
         <View style={styles.pickerWrap}>
-          <Picker selectedValue={status} onValueChange={(v) => setStatus(v)} dropdownIconColor="#fff" style={styles.picker}>
+          <Picker
+            selectedValue={status}
+            onValueChange={(v) => setStatus(v)}
+            dropdownIconColor="#fff"
+            style={styles.picker}
+          >
             <Picker.Item label="public" value="public" />
             <Picker.Item label="unpublic" value="unpublic" />
           </Picker>
         </View>
       </Field>
 
-      {/* ✅ เอาปุ่มล่างออกได้แล้ว */}
       {!dirty && <Text style={styles.hint}>ยังไม่มีการแก้ไขข้อมูล</Text>}
       {dirty && <Text style={styles.hint}>มีการแก้ไขแล้ว (กด Save ด้านขวาบน)</Text>}
     </ScrollView>
@@ -762,6 +912,7 @@ export default function PostFormScreen({ initialData, title, onSaved }: Props) {
 }
 
 // ====================== UI helpers ======================
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <View style={{ marginBottom: 14 }}>
@@ -781,9 +932,13 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 // ====================== styles ======================
+
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#0b0b0b" },
   container: { padding: 16, paddingBottom: 40 },
+
+  center: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#0b0b0b", padding: 16 },
+  errorText: { color: "#ff6b6b", fontWeight: "900", textAlign: "center" },
 
   h1: { color: "white", fontSize: 18, fontWeight: "900", marginBottom: 12 },
 
@@ -888,7 +1043,6 @@ const styles = StyleSheet.create({
   thumb: { width: 110, height: 110, borderRadius: 12, backgroundColor: "#222" },
   thumbLabel: { color: "rgba(255,255,255,0.65)", fontSize: 12, marginTop: 6 },
 
-  // header button
   headerBtn: {
     paddingHorizontal: 12,
     paddingVertical: 8,
