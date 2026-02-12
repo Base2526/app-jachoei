@@ -230,12 +230,8 @@ export default function SendMessageSection({
                   const isLast = i === 2 && extra > 0;
 
                   return (
-                    <Pressable
-                      key={`${uri}-${i}`}
-                      onPress={() => setPreviewUri(uri)}
-                      style={styles.replyThumbWrap}
-                    >
-                      <Image source={{ uri }} style={[styles.replyThumb, isLast && { opacity: 0.7 }]} />
+                    <Pressable key={`${uri}-${i}`} onPress={() => setPreviewUri(uri)} style={styles.replyThumbWrap}>
+                      <Image source={{ uri }} style={[styles.replyThumb, isLast && { opacity: 0.75 }]} />
                       {isLast && (
                         <View style={styles.replyThumbOverlay}>
                           <Text style={styles.replyThumbOverlayText}>+{extra}</Text>
@@ -249,14 +245,14 @@ export default function SendMessageSection({
           </View>
 
           <Pressable onPress={() => setReplyTarget(null)} hitSlop={10} style={styles.replyCloseBtn}>
-            <Ionicons name="close" size={18} color="#666" />
+            <Ionicons name="close" size={18} color="#9ca3af" />
           </Pressable>
         </View>
       )}
 
       {/* ===== Selected Image Preview (horizontal) ===== */}
       {!!images.length && (
-        <View style={{ marginBottom: 8 }}>
+        <View style={{ marginBottom: 10 }}>
           <FlatList
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -288,19 +284,19 @@ export default function SendMessageSection({
           disabled={disabled || images.length >= MAX_IMAGES}
           style={({ pressed }) => [
             styles.iconBtn,
-            (disabled || images.length >= MAX_IMAGES) && { opacity: 0.4 },
-            pressed && { opacity: 0.7 },
+            (disabled || images.length >= MAX_IMAGES) && { opacity: 0.35 },
+            pressed && { opacity: 0.8 },
           ]}
         >
-          <Ionicons name="image-outline" size={20} color="#888" />
+          <Ionicons name="image-outline" size={20} color="#e5e7eb" />
         </Pressable>
 
         <Pressable
           onPress={onToggleEmoji}
           disabled={disabled}
-          style={({ pressed }) => [styles.iconBtn, disabled && { opacity: 0.4 }, pressed && { opacity: 0.7 }]}
+          style={({ pressed }) => [styles.iconBtn, disabled && { opacity: 0.35 }, pressed && { opacity: 0.8 }]}
         >
-          <Ionicons name="happy-outline" size={20} color="#888" />
+          <Ionicons name="happy-outline" size={20} color="#e5e7eb" />
         </Pressable>
 
         <TextInput
@@ -309,10 +305,9 @@ export default function SendMessageSection({
           onChangeText={setText}
           editable={!disabled}
           placeholder="Type a message..."
-          placeholderTextColor="#777"
+          placeholderTextColor="#6b7280"
           style={styles.input}
           multiline
-          // ✅ iOS: ทำให้ enter = newline (ไม่ block) / ส่งใช้ปุ่ม
           blurOnSubmit={false}
         />
 
@@ -322,10 +317,10 @@ export default function SendMessageSection({
           style={({ pressed }) => [
             styles.sendBtn,
             !canSend && { opacity: 0.45 },
-            pressed && canSend && { opacity: 0.85 },
+            pressed && canSend && { opacity: 0.88 },
           ]}
         >
-          <Ionicons name="send" size={18} color="#fff" />
+          <Ionicons name="send" size={18} color="#0b0b0f" />
         </Pressable>
       </View>
 
@@ -344,9 +339,7 @@ export default function SendMessageSection({
       <Modal visible={!!previewUri} transparent animationType="fade" onRequestClose={() => setPreviewUri(null)}>
         <Pressable style={styles.previewBackdrop} onPress={() => setPreviewUri(null)}>
           <View style={styles.previewInner}>
-            {previewUri ? (
-              <Image source={{ uri: previewUri }} style={styles.previewImg} resizeMode="contain" />
-            ) : null}
+            {previewUri ? <Image source={{ uri: previewUri }} style={styles.previewImg} resizeMode="contain" /> : null}
 
             <Pressable style={styles.previewClose} onPress={() => setPreviewUri(null)} hitSlop={10}>
               <Ionicons name="close-circle" size={30} color="#fff" />
@@ -359,128 +352,166 @@ export default function SendMessageSection({
 }
 
 const styles = StyleSheet.create({
+  // ✅ ดำทั้งแถบ (แทนสีขาวเดิม)
   wrap: {
     width: "100%",
-    padding: 10,
-    backgroundColor: "#fff",
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 10,
+    backgroundColor: "#0b0b0f",
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#eee",
+    borderTopColor: "#1f1f26",
     position: "relative",
   },
 
-  // reply
+  // ✅ reply เป็น dark chip
   replyBox: {
     flexDirection: "row",
-    gap: 8,
+    gap: 10,
     marginBottom: 10,
-    paddingVertical: 6,
+    paddingVertical: 8,
     paddingHorizontal: 10,
-    borderRadius: 12,
-    backgroundColor: "#f0f5ff",
+    borderRadius: 14,
+    backgroundColor: "#111116",
+    borderWidth: 1,
+    borderColor: "#1f1f26",
     borderLeftWidth: 3,
-    borderLeftColor: "#1677ff",
+    borderLeftColor: "#60a5fa",
     alignItems: "center",
   },
-  replyTitle: { fontWeight: "700", color: "#1677ff", marginBottom: 2, fontSize: 12 },
-  replyText: { color: "#555", fontSize: 12 },
+  replyTitle: { fontWeight: "900", color: "#93c5fd", marginBottom: 2, fontSize: 12 },
+  replyText: { color: "#e5e7eb", fontSize: 12 },
   replyCloseBtn: { padding: 2 },
 
-  replyThumbRow: { flexDirection: "row", gap: 6, marginTop: 6 },
-  replyThumbWrap: { width: 42, height: 42, borderRadius: 8, overflow: "hidden" },
+  replyThumbRow: { flexDirection: "row", gap: 6, marginTop: 8 },
+  replyThumbWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 10,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "#1f1f26",
+    backgroundColor: "#0b0b0f",
+  },
   replyThumb: { width: "100%", height: "100%" },
   replyThumbOverlay: {
     position: "absolute",
-    inset: 0,
-    backgroundColor: "rgba(0,0,0,0.4)",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: "rgba(0,0,0,0.45)",
     alignItems: "center",
     justifyContent: "center",
   },
-  replyThumbOverlayText: { color: "#fff", fontWeight: "800", fontSize: 12 },
+  replyThumbOverlayText: { color: "#fff", fontWeight: "900", fontSize: 12 },
 
-  // image chips
+  // ✅ image chips เป็น dark
   imgChip: {
     width: 78,
     height: 78,
-    borderRadius: 12,
+    borderRadius: 14,
     overflow: "hidden",
     borderWidth: 1,
-    borderColor: "#ddd",
-    backgroundColor: "#f5f5f5",
+    borderColor: "#1f1f26",
+    backgroundColor: "#111116",
   },
   imgChipImg: { width: "100%", height: "100%" },
   imgChipRemove: {
     position: "absolute",
-    right: 0,
-    top: 0,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    paddingHorizontal: 6,
-    paddingVertical: 4,
+    right: 6,
+    top: 6,
+    width: 26,
+    height: 26,
+    borderRadius: 9,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  counter: { marginTop: 6, fontSize: 12, color: "#666" },
+  counter: { marginTop: 8, fontSize: 12, color: "#9ca3af" },
 
-  // bar
+  // ✅ input bar (เหมือนในรูป: pill, shadow เบา ๆ, ดำ)
   bar: {
     flexDirection: "row",
     alignItems: "flex-end",
     gap: 8,
-    borderRadius: 24,
+    borderRadius: 26,
     paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingVertical: 10,
     borderWidth: 1,
-    borderColor: "#eee",
-    backgroundColor: "#fff",
+    borderColor: "#1f1f26",
+    backgroundColor: "#0f1117",
     ...Platform.select({
-      ios: { shadowColor: "#000", shadowOpacity: 0.08, shadowRadius: 6, shadowOffset: { width: 0, height: 2 } },
-      android: { elevation: 2 },
+      ios: {
+        shadowColor: "#000",
+        shadowOpacity: 0.25,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 6 },
+      },
+      android: { elevation: 4 },
     }),
   },
   iconBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 10,
-    backgroundColor: "transparent",
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: "#111116",
+    borderWidth: 1,
+    borderColor: "#1f1f26",
     alignItems: "center",
     justifyContent: "center",
   },
   input: {
     flex: 1,
-    maxHeight: 96,
-    minHeight: 36,
+    maxHeight: 110,
+    minHeight: 38,
     paddingTop: 8,
     paddingBottom: 6,
-    color: "#111",
+    color: "#e5e7eb",
     fontSize: 15,
     lineHeight: 20,
   },
+
+  // ✅ send button โทนฟ้าอ่อนแบบ iOS ในรูป
   sendBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "#1677ff",
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: "#93c5fd",
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
   },
 
-  // emoji box
+  // ✅ emoji box เป็น dark card
   emojiBox: {
     marginTop: 10,
     borderWidth: 1,
-    borderColor: "#eee",
-    borderRadius: 12,
+    borderColor: "#1f1f26",
+    borderRadius: 14,
     padding: 10,
-    backgroundColor: "#fff",
+    backgroundColor: "#111116",
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 10,
   },
-  emojiItem: { padding: 4 },
+  emojiItem: {
+    padding: 6,
+    borderRadius: 10,
+    backgroundColor: "#0f1117",
+    borderWidth: 1,
+    borderColor: "#1f1f26",
+  },
   emojiText: { fontSize: 22 },
 
   // preview modal
   previewBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.85)",
+    backgroundColor: "rgba(0,0,0,0.88)",
     alignItems: "center",
     justifyContent: "center",
   },

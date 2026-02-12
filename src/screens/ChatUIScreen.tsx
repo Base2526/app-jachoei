@@ -355,7 +355,6 @@ export default function ChatScreen({ navigation }: Props) {
       setChats(sorted);
 
       if (!sel && sorted.length) {
-        // auto open first chat
         openChatById(sorted[0].id);
       }
     } catch (e: any) {
@@ -388,7 +387,8 @@ export default function ChatScreen({ navigation }: Props) {
 
         const got = res.data?.messages ?? [];
         const sorted = [...got].sort(
-          (a, b) => safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime()
+          (a, b) =>
+            safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime()
         );
         setHasMore(got.length >= PAGE_SIZE);
 
@@ -399,12 +399,13 @@ export default function ChatScreen({ navigation }: Props) {
             const map = new Map<string, Message>();
             for (const m of [...sorted, ...prev]) map.set(m.id, m);
             return Array.from(map.values()).sort(
-              (a, b) => safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime()
+              (a, b) =>
+                safeDate(a.created_at).getTime() -
+                safeDate(b.created_at).getTime()
             );
           });
         }
 
-        // ✅ mark read up to last (เหมือน web)
         const last = sorted[sorted.length - 1];
         if (last?.created_at) {
           client
@@ -430,7 +431,6 @@ export default function ChatScreen({ navigation }: Props) {
       setSel(chatId);
       setChatsModalOpen(false);
 
-      // ✅ sync global store (เหมือน web)
       setCurrentChat(chatId);
       clearUnread(chatId);
 
@@ -447,19 +447,15 @@ export default function ChatScreen({ navigation }: Props) {
   useEffect(() => {
     if (!sel) return;
 
-    // reset UI
     setReplyTarget(null);
     setText("");
     setHasMore(true);
 
-    // ensure global store current chat
     setCurrentChat(sel);
     clearUnread(sel);
 
-    // (re)load messages
     loadMessages(sel, "replace", 0);
 
-    // cleanup old subs
     try {
       subAddedRef.current?.unsubscribe?.();
     } catch {}
@@ -467,9 +463,11 @@ export default function ChatScreen({ navigation }: Props) {
       subDeletedRef.current?.unsubscribe?.();
     } catch {}
 
-    // ✅ SUB: messageAdded
     subAddedRef.current = client
-      .subscribe<{ messageAdded: Message }>({ query: SUB_ADDED, variables: { chat_id: sel } })
+      .subscribe<{ messageAdded: Message }>({
+        query: SUB_ADDED,
+        variables: { chat_id: sel },
+      })
       .subscribe({
         next: (ev) => {
           const m = ev.data?.messageAdded;
@@ -478,11 +476,12 @@ export default function ChatScreen({ navigation }: Props) {
           setMessages((prev) => {
             if (prev.some((x) => x.id === m.id)) return prev;
             return [...prev, m].sort(
-              (a, b) => safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime()
+              (a, b) =>
+                safeDate(a.created_at).getTime() -
+                safeDate(b.created_at).getTime()
             );
           });
 
-          // update chat list last_message
           setChats((prev) =>
             prev
               .map((c) => {
@@ -506,19 +505,23 @@ export default function ChatScreen({ navigation }: Props) {
               })
           );
 
-          // ✅ ถ้าอยู่ห้องนี้ → mark read message นี้ทันที
           if (m.chat_id === sel) {
             client
-              .mutate({ mutation: MUT_MARK_READ, variables: { message_id: m.id } })
+              .mutate({
+                mutation: MUT_MARK_READ,
+                variables: { message_id: m.id },
+              })
               .catch(() => {});
           }
         },
         error: (err) => console.warn("[SUB_ADDED] error", err),
       });
 
-    // ✅ SUB: messageDeleted
     subDeletedRef.current = client
-      .subscribe<{ messageDeleted: string }>({ query: SUB_DELETED, variables: { chat_id: sel } })
+      .subscribe<{ messageDeleted: string }>({
+        query: SUB_DELETED,
+        variables: { chat_id: sel },
+      })
       .subscribe({
         next: (ev) => {
           const deletedId = ev.data?.messageDeleted;
@@ -580,14 +583,18 @@ export default function ChatScreen({ navigation }: Props) {
       setMessages((prev) => {
         if (prev.some((x) => x.id === newMsg.id)) return prev;
         return [...prev, newMsg].sort(
-          (a, b) => safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime()
+          (a, b) =>
+            safeDate(a.created_at).getTime() -
+            safeDate(b.created_at).getTime()
         );
       });
 
-      // ✅ หลังส่ง ให้ mark up to ตัวล่าสุดทันที (กัน badge ค้าง)
       if (sel && newMsg.created_at) {
         client
-          .mutate({ mutation: MUT_MARK_UPTO, variables: { chat_id: sel, cursor: newMsg.created_at } })
+          .mutate({
+            mutation: MUT_MARK_UPTO,
+            variables: { chat_id: sel, cursor: newMsg.created_at },
+          })
           .catch(() => {});
       }
     },
@@ -603,7 +610,10 @@ export default function ChatScreen({ navigation }: Props) {
         style: "destructive",
         onPress: async () => {
           try {
-            await client.mutate({ mutation: MUT_DELETE_MSG, variables: { message_id: m.id } });
+            await client.mutate({
+              mutation: MUT_DELETE_MSG,
+              variables: { message_id: m.id },
+            });
             setMessages((prev) => prev.filter((x) => x.id !== m.id));
           } catch (e: any) {
             Alert.alert("Delete failed", e?.message || "unknown");
@@ -644,14 +654,16 @@ export default function ChatScreen({ navigation }: Props) {
       ),
       headerRight: () => (
         <View style={{ flexDirection: "row", gap: 10, marginRight: 8 }}>
-          {/* ✅ chat list */}
           <Pressable onPress={() => setChatsModalOpen(true)} style={styles.headerBtn}>
             <Ionicons name="chatbubbles-outline" size={20} color="#fff" />
           </Pressable>
 
-          {/* ✅ refresh */}
           <Pressable onPress={loadMeAndChats} style={styles.headerBtn}>
-            {loadingChats ? <ActivityIndicator /> : <Ionicons name="refresh-outline" size={20} color="#fff" />}
+            {loadingChats ? (
+              <ActivityIndicator />
+            ) : (
+              <Ionicons name="refresh-outline" size={20} color="#fff" />
+            )}
           </Pressable>
         </View>
       ),
@@ -663,7 +675,10 @@ export default function ChatScreen({ navigation }: Props) {
     ({ item }: { item: Chat }) => {
       const isActive = item.id === sel;
 
-      const partnerUser = !item.is_group ? (item.members ?? []).find((m) => m.id !== meId) : null;
+      const partnerUser = !item.is_group
+        ? (item.members ?? []).find((m) => m.id !== meId)
+        : null;
+
       const name = item.is_group ? item.name?.trim() || "Group" : partnerUser?.name || "User";
       const initial = getInitial(name);
 
@@ -685,7 +700,10 @@ export default function ChatScreen({ navigation }: Props) {
           onPress={() => openChatById(item.id)}
           style={({ pressed }) => [
             styles.chatItem,
-            isActive && { backgroundColor: "rgba(22,119,255,0.10)", borderColor: "#1677ff" },
+            isActive && {
+              backgroundColor: "rgba(22,119,255,0.10)",
+              borderColor: "#1677ff",
+            },
             pressed && { opacity: 0.85 },
           ]}
         >
@@ -721,14 +739,13 @@ export default function ChatScreen({ navigation }: Props) {
       const imgs = Array.isArray(item.images) ? item.images : [];
 
       const markThisRead = () => {
-        // ✅ แตะเพื่อ mark read รายตัว (เหมือน web double click)
         client
-          .mutate({
-            mutation: MUT_MARK_READ,
-            variables: { message_id: item.id },
-          })
+          .mutate({ mutation: MUT_MARK_READ, variables: { message_id: item.id } })
           .catch(() => {});
       };
+
+      const bubbleStyle = isMine ? styles.bubbleMine : styles.bubbleOther;
+      const bubbleTextStyle = isMine ? styles.textMine : styles.textOther;
 
       return (
         <View style={[styles.msgRow, { justifyContent: isMine ? "flex-end" : "flex-start" }]}>
@@ -751,17 +768,29 @@ export default function ChatScreen({ navigation }: Props) {
                 onPress={() => Alert.alert("Reply", "ข้อความนี้เป็นการตอบกลับ")}
                 style={[
                   styles.replyPreview,
-                  {
-                    backgroundColor: isMine ? "rgba(255,255,255,0.14)" : "#e6f4ff",
-                    borderLeftColor: isMine ? "#fff" : "#1677ff",
-                  },
+                  isMine ? styles.replyMine : styles.replyOther,
                 ]}
               >
-                <Text style={[styles.replySender, { color: isMine ? "#fff" : "#1677ff" }]} numberOfLines={1}>
-                  {item.reply_to?.sender?.id === meId ? "You" : item.reply_to?.sender?.name || "User"}
+                <Text
+                  style={[
+                    styles.replySender,
+                    { color: isMine ? "#fff" : "#93c5fd" },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {item.reply_to?.sender?.id === meId
+                    ? "You"
+                    : item.reply_to?.sender?.name || "User"}
                 </Text>
+
                 {item.reply_to?.text ? (
-                  <Text style={[styles.replyText, { color: isMine ? "#f3f4f6" : "#374151" }]} numberOfLines={2}>
+                  <Text
+                    style={[
+                      styles.replyText,
+                      { color: isMine ? "#f3f4f6" : "#d1d5db" },
+                    ]}
+                    numberOfLines={2}
+                  >
                     {String(item.reply_to.text)}
                   </Text>
                 ) : null}
@@ -796,13 +825,13 @@ export default function ChatScreen({ navigation }: Props) {
 
             {hasText ? (
               <Pressable onPress={markThisRead}>
-                <View style={[styles.msgBubble, { backgroundColor: isMine ? "#1677ff" : "#f3f4f6" }]}>
-                  <Text style={[styles.msgText, { color: isMine ? "#fff" : "#111827" }]}>{item.text}</Text>
+                <View style={[styles.msgBubble, bubbleStyle]}>
+                  <Text style={[styles.msgText, bubbleTextStyle]}>{item.text}</Text>
                 </View>
               </Pressable>
             ) : null}
 
-            <View style={styles.msgMetaRow}>
+            <View style={[styles.msgMetaRow, isMine ? { justifyContent: "flex-end" } : { justifyContent: "flex-start" }]}>
               <Text style={styles.msgMeta}>{timeLabel}</Text>
 
               <Pressable onPress={() => setReplyTarget(item)} hitSlop={10} style={{ marginLeft: 10 }}>
@@ -826,7 +855,6 @@ export default function ChatScreen({ navigation }: Props) {
 
   return (
     <View style={styles.container}>
-      {/* ===== Body ===== */}
       <View style={styles.body}>
         {!sel ? (
           <View style={styles.center}>
@@ -851,7 +879,9 @@ export default function ChatScreen({ navigation }: Props) {
                 loadingMore ? (
                   <View style={{ paddingVertical: 10, alignItems: "center" }}>
                     <ActivityIndicator />
-                    <Text style={{ color: "#9ca3af", marginTop: 6, fontSize: 12 }}>Loading older…</Text>
+                    <Text style={{ color: "#9ca3af", marginTop: 6, fontSize: 12 }}>
+                      Loading older…
+                    </Text>
                   </View>
                 ) : null
               }
@@ -872,7 +902,11 @@ export default function ChatScreen({ navigation }: Props) {
       </View>
 
       {/* ===== Chats Modal ===== */}
-      <Modal visible={chatsModalOpen} animationType="slide" onRequestClose={() => setChatsModalOpen(false)}>
+      <Modal
+        visible={chatsModalOpen}
+        animationType="slide"
+        onRequestClose={() => setChatsModalOpen(false)}
+      >
         <View style={styles.modalWrap}>
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>Chats</Text>
@@ -903,11 +937,26 @@ export default function ChatScreen({ navigation }: Props) {
       </Modal>
 
       {/* ===== Image Preview ===== */}
-      <Modal visible={!!previewUri} transparent animationType="fade" onRequestClose={() => setPreviewUri(null)}>
+      <Modal
+        visible={!!previewUri}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPreviewUri(null)}
+      >
         <Pressable style={styles.previewBackdrop} onPress={() => setPreviewUri(null)}>
           <View style={styles.previewInner}>
-            {previewUri ? <Image source={{ uri: previewUri }} style={styles.previewImg} resizeMode="contain" /> : null}
-            <Pressable style={styles.previewClose} onPress={() => setPreviewUri(null)} hitSlop={10}>
+            {previewUri ? (
+              <Image
+                source={{ uri: previewUri }}
+                style={styles.previewImg}
+                resizeMode="contain"
+              />
+            ) : null}
+            <Pressable
+              style={styles.previewClose}
+              onPress={() => setPreviewUri(null)}
+              hitSlop={10}
+            >
               <Ionicons name="close-circle" size={30} color="#fff" />
             </Pressable>
           </View>
@@ -986,10 +1035,20 @@ const styles = StyleSheet.create({
     borderLeftWidth: 3,
     paddingVertical: 6,
     paddingHorizontal: 8,
-    borderRadius: 10,
+    borderRadius: 12,
     marginBottom: 6,
   },
-  replySender: { fontSize: 11, fontWeight: "700", marginBottom: 2 },
+  replyMine: {
+    backgroundColor: "rgba(255,255,255,0.12)",
+    borderLeftColor: "#fff",
+  },
+  replyOther: {
+    backgroundColor: "#10131a",
+    borderLeftColor: "#60a5fa",
+    borderWidth: 1,
+    borderColor: "#2a2a35",
+  },
+  replySender: { fontSize: 11, fontWeight: "800", marginBottom: 2 },
   replyText: { fontSize: 12 },
 
   imgGrid: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 6 },
@@ -1014,8 +1073,27 @@ const styles = StyleSheet.create({
   },
   imgOverlayText: { color: "#fff", fontWeight: "900", fontSize: 18 },
 
-  msgBubble: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 16 },
+  msgBubble: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+  },
+
+  // ✅ bubble colors
+  bubbleMine: {
+    backgroundColor: "#1677ff",
+  },
+  bubbleOther: {
+    backgroundColor: "#171a22", // ✅ dark (แทนสีขาว)
+    borderWidth: 1,
+    borderColor: "#2a2a35",
+  },
+
   msgText: { fontSize: 14, lineHeight: 18 },
+
+  // ✅ text colors
+  textMine: { color: "#fff" },
+  textOther: { color: "#e5e7eb" },
 
   msgMetaRow: { flexDirection: "row", alignItems: "center", marginTop: 4 },
   msgMeta: { color: "#9ca3af", fontSize: 11 },
@@ -1027,7 +1105,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  previewInner: { width: "100%", height: "100%", alignItems: "center", justifyContent: "center" },
+  previewInner: {
+    width: "100%",
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   previewImg: { width: "92%", height: "82%" },
   previewClose: { position: "absolute", top: 46, right: 16 },
 });

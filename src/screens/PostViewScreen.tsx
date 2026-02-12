@@ -138,7 +138,6 @@ type Props = NativeStackScreenProps<RootStackParamList, "PostView">;
 
 export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
   const { id, currentUserId } = route.params;
-
   const { isLoggedIn } = useAuth();
 
   const [post, setPost] = React.useState<PostRecord | null>(null);
@@ -189,18 +188,6 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
   }, [fetchPost]);
 
   /* =======================
-   * Header title
-   * ======================= */
-  useLayoutEffect(() => {
-    navigation.setOptions({
-      headerShown: true,
-      title: post?.title ? String(post.title) : "รายละเอียดโพสต์",
-      headerStyle: { backgroundColor: "#0b0b0f" },
-      headerTintColor: "#fff",
-    });
-  }, [navigation, post?.title]);
-
-  /* =======================
    * Helpers
    * ======================= */
 
@@ -209,6 +196,8 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
   const isFbPublished =
     String(post?.fb_status || "").toUpperCase() === "PUBLISHED" &&
     !!post?.fb_permalink_url;
+
+  const isBookmarked = !!post?.is_bookmarked;
 
   const sharePayload = useMemo(() => {
     const url = `https://jachoei.com/post/${id}`;
@@ -251,7 +240,7 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
   }, []);
 
   /* =======================
-   * ✅ Bookmark toggle (top button)
+   * ✅ Bookmark toggle
    * ======================= */
   const onToggleBookmark = useCallback(async () => {
     if (!post?.id) return;
@@ -276,16 +265,11 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
       });
 
       const ok = !!data?.toggleBookmark?.isBookmarked;
-
-      // sync from server
       setPost((p) => (p ? { ...p, is_bookmarked: ok } : p));
     } catch (e: any) {
       // rollback
       setPost((p) => (p ? { ...p, is_bookmarked: prevVal } : p));
-      Alert.alert(
-        "Bookmark error",
-        e?.message || "Please login first or try again."
-      );
+      Alert.alert("Bookmark error", e?.message || "Please login first or try again.");
     } finally {
       setBookmarkBusy(false);
     }
@@ -345,16 +329,107 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
   }, [id, navigation, currentUserId]);
 
   /* =======================
+   * ✅ Navigation header (do NOT use post.title here)
+   * ======================= */
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerShown: true,
+      // ✅ ไม่เอา title ไปไว้ที่ navigation
+      title: "",
+      headerStyle: { backgroundColor: "#0b0b0f" },
+      headerTintColor: "#fff",
+      headerRight: () => (
+        <View style={styles.navActions}>
+          {/* ✅ BOOKMARK (เงื่อนไขเดิม: !isOwner) */}
+          {!isOwner ? (
+            <Pressable
+              onPress={onToggleBookmark}
+              hitSlop={10}
+              disabled={bookmarkBusy}
+              style={({ pressed }) => [
+                styles.navBtn,
+                pressed && { opacity: 0.75 },
+                bookmarkBusy && { opacity: 0.4 },
+              ]}
+            >
+              {bookmarkBusy ? (
+                <ActivityIndicator />
+              ) : (
+                <Ionicons
+                  name={isBookmarked ? "bookmark" : "bookmark-outline"}
+                  size={22}
+                  color={isBookmarked ? "#60a5fa" : "#fff"}
+                />
+              )}
+            </Pressable>
+          ) : null}
+
+          {/* Facebook */}
+          {isFbPublished ? (
+            <Pressable
+              onPress={() => {
+                Alert.alert("Open Facebook", "ต้องการเปิดโพสต์บน Facebook ไหม?", [
+                  { text: "Cancel", style: "cancel" },
+                  { text: "Open", onPress: () => openUrl(post?.fb_permalink_url) },
+                ]);
+              }}
+              hitSlop={10}
+              style={styles.navBtn}
+            >
+              <Ionicons name="logo-facebook" size={22} color="#1877f2" />
+            </Pressable>
+          ) : null}
+
+          {/* Share */}
+          <Pressable onPress={onShare} hitSlop={10} style={styles.navBtn}>
+            <Ionicons name="share-outline" size={22} color="#fff" />
+          </Pressable>
+
+          {/* Owner actions */}
+          {isOwner ? (
+            <>
+              <Pressable
+                onPress={() => navigation.navigate("PostForm", { id: String(post?.id) })}
+                hitSlop={10}
+                style={styles.navBtn}
+              >
+                <Ionicons name="create-outline" size={22} color="#fff" />
+              </Pressable>
+
+              {/* <Pressable onPress={handleClone} hitSlop={10} style={styles.navBtn}>
+                <Ionicons name="copy-outline" size={22} color="#fff" />
+              </Pressable> */}
+
+              <Pressable onPress={handleDelete} hitSlop={10} style={styles.navBtn}>
+                <Ionicons name="trash-outline" size={22} color="#ff3b30" />
+              </Pressable>
+            </>
+          ) : null}
+        </View>
+      ),
+    });
+  }, [
+    navigation,
+    post?.id,
+    post?.fb_permalink_url,
+    isOwner,
+    isFbPublished,
+    isBookmarked,
+    bookmarkBusy,
+    onToggleBookmark,
+    onShare,
+    openUrl,
+    handleDelete,
+    handleClone,
+  ]);
+
+  /* =======================
    * Render list items
    * ======================= */
 
   const renderTelItem = useCallback(
     ({ item, index }: { item: { id: string; tel: string }; index: number }) => (
-      <RowItem
-        index={index}
-        value={item.tel}
-        onCopy={() => copyText(item.tel)}
-      />
+      <RowItem index={index} value={item.tel} onCopy={() => copyText(item.tel)} />
     ),
     [copyText]
   );
@@ -371,7 +446,6 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
         <Text style={styles.rowIndex}>{index + 1}.</Text>
         <View style={{ flex: 1 }}>
           <Text style={styles.rowText}>{item.bank_name || "-"}</Text>
-
           <Pressable onPress={() => copyText(item.seller_account || "")}>
             <Text style={styles.copyText}>{item.seller_account || "-"}</Text>
           </Pressable>
@@ -389,9 +463,7 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
     return (
       <View style={styles.center}>
         <ActivityIndicator color="#fff" />
-        <Text style={[styles.emptyText, { marginTop: 10 }]}>
-          กำลังโหลดข้อมูลโพสต์…
-        </Text>
+        <Text style={[styles.emptyText, { marginTop: 10 }]}>กำลังโหลดข้อมูลโพสต์…</Text>
       </View>
     );
   }
@@ -418,93 +490,12 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
    * UI: Post view
    * ======================= */
 
-  const isBookmarked = !!post.is_bookmarked;
-
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={{ paddingBottom: 28 }}
-    >
-      {/* ===== HEADER ACTIONS ===== */}
-      <View style={styles.headerRow}>
-        <Text style={styles.title} numberOfLines={2}>
-          {post.title || "-"}
-        </Text>
-
-        <View style={styles.actions}>
-          {/* ✅ BOOKMARK (อยู่บนสุดตามที่ขอ) */}
-
-          {
-            !isOwner && 
-            <Pressable
-              onPress={onToggleBookmark}
-              hitSlop={10}
-              disabled={bookmarkBusy}
-              style={({ pressed }) => [
-                pressed && { opacity: 0.75 },
-                bookmarkBusy && { opacity: 0.4 },
-              ]}
-            >
-              {bookmarkBusy ? (
-                <ActivityIndicator />
-              ) : (
-                <Ionicons
-                  name={isBookmarked ? "bookmark" : "bookmark-outline"}
-                  size={22}
-                  color={isBookmarked ? "#60a5fa" : "#fff"}
-                />
-              )}
-            </Pressable>
-          }
-          
-
-          {isFbPublished && (
-            <Pressable
-              onPress={() => {
-                Alert.alert(
-                  "Open Facebook",
-                  "ต้องการเปิดโพสต์บน Facebook ไหม?",
-                  [
-                    { text: "Cancel", style: "cancel" },
-                    {
-                      text: "Open",
-                      onPress: () => openUrl(post.fb_permalink_url),
-                    },
-                  ]
-                );
-              }}
-              hitSlop={10}
-            >
-              <Ionicons name="logo-facebook" size={22} color="#1877f2" />
-            </Pressable>
-          )}
-
-          <Pressable onPress={onShare} hitSlop={10}>
-            <Ionicons name="share-outline" size={22} color="#fff" />
-          </Pressable>
-
-          {isOwner && (
-            <>
-              <Pressable
-                onPress={() => {
-                  navigation.navigate("PostForm", { id: String(post.id) });
-                }}
-                hitSlop={10}
-              >
-                <Ionicons name="create-outline" size={22} color="#fff" />
-              </Pressable>
-
-              {/* <Pressable onPress={handleClone} hitSlop={10}>
-                <Ionicons name="copy-outline" size={22} color="#fff" />
-              </Pressable> */}
-
-              <Pressable onPress={handleDelete} hitSlop={10}>
-                <Ionicons name="trash-outline" size={22} color="#ff3b30" />
-              </Pressable>
-            </>
-          )}
-        </View>
-      </View>
+    <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 28 }}>
+      {/* ✅ TITLE อยู่ใน body ตามที่ขอ */}
+      <Text style={styles.bodyTitle} numberOfLines={3}>
+        {post.title || "-"}
+      </Text>
 
       {/* ===== BASIC INFO ===== */}
       <InfoRow label="รายละเอียด" value={post.detail} />
@@ -514,9 +505,7 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
         label="ยอดโอน"
         value={
           post.transfer_amount != null
-            ? Number(post.transfer_amount).toLocaleString("th-TH", {
-                minimumFractionDigits: 2,
-              })
+            ? Number(post.transfer_amount).toLocaleString("th-TH", { minimumFractionDigits: 2 })
             : "-"
         }
       />
@@ -565,10 +554,7 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
                   setPreviewVisible(true);
                 }}
               >
-                <Image
-                  source={{ uri: `${ENV.apiBase}${img.url}` }}
-                  style={styles.image}
-                />
+                <Image source={{ uri: `${ENV.apiBase}${img.url}` }} style={styles.image} />
               </Pressable>
             ))}
           </View>
@@ -593,10 +579,7 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
           <View style={styles.dividerLine} />
         </View>
 
-        <CommentsSection
-          postId={String(post.id)}
-          currentUserId={currentUserId}
-        />
+        <CommentsSection postId={String(post.id)} currentUserId={currentUserId} />
       </View>
     </ScrollView>
   );
@@ -617,15 +600,13 @@ const InfoRow = ({
   copyable?: boolean;
   onCopy?: (v?: string) => void;
 }) => {
-  const display =
-    value != null && String(value).trim() !== "" ? String(value) : "-";
+  const display = value != null && String(value).trim() !== "" ? String(value) : "-";
 
   return (
     <View style={styles.infoRow}>
       <Text style={styles.infoLabel}>{label}</Text>
       <View style={{ flex: 1 }}>
         <Text style={styles.infoValue}>{display}</Text>
-
         {copyable && display !== "-" ? (
           <Pressable onPress={() => onCopy?.(display)} hitSlop={10}>
             <Text style={styles.copyHint}>แตะเพื่อคัดลอก</Text>
@@ -636,9 +617,7 @@ const InfoRow = ({
   );
 };
 
-const SectionTitle = ({ title }: { title: string }) => (
-  <Text style={styles.sectionTitle}>{title}</Text>
-);
+const SectionTitle = ({ title }: { title: string }) => <Text style={styles.sectionTitle}>{title}</Text>;
 
 const RowItem = ({
   index,
@@ -656,9 +635,7 @@ const RowItem = ({
       <Text style={styles.rowIndex}>{index + 1}.</Text>
       <Pressable onPress={onCopy} hitSlop={10} style={{ flex: 1 }}>
         <Text style={styles.rowText}>{display}</Text>
-        {display !== "-" ? (
-          <Text style={styles.copyHintSmall}>แตะเพื่อคัดลอก</Text>
-        ) : null}
+        {display !== "-" ? <Text style={styles.copyHintSmall}>แตะเพื่อคัดลอก</Text> : null}
       </Pressable>
     </View>
   );
@@ -701,25 +678,31 @@ const styles = StyleSheet.create({
   },
   btnGhostText: { color: "#e5e7eb", fontWeight: "800" },
 
-  headerRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
+  // ✅ title in body
+  bodyTitle: {
+    fontSize: 18,
+    fontWeight: "900",
+    color: "#fff",
+    lineHeight: 24,
     marginBottom: 12,
   },
-  title: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: "#fff",
-    flex: 1,
-    paddingRight: 10,
-    lineHeight: 24,
-  },
-  actions: {
+
+  // ✅ actions in navigation
+  navActions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
-    paddingTop: 2,
+    gap: 10,
+    paddingRight: 6,
+  },
+  navBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    backgroundColor: "#1d1d25",
+    borderWidth: 1,
+    borderColor: "#2a2a35",
+    alignItems: "center",
+    justifyContent: "center",
   },
 
   infoRow: { flexDirection: "row", marginBottom: 10 },

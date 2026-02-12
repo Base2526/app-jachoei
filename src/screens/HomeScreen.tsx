@@ -20,7 +20,7 @@ import {
 import Ionicons from "react-native-vector-icons/Ionicons";
 import { gql } from "@apollo/client";
 
-import { useNavigation } from "@react-navigation/native";
+import { useNavigation, useFocusEffect } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 
 import { ThumbGrid } from "../components/ThumbGrid";
@@ -86,7 +86,6 @@ type PostItem = {
   status?: string | null;
   created_at?: string | null;
 
-  // ✅ bookmark flag (จาก query)
   is_bookmarked?: boolean | null;
 
   images?: Array<{ id: string; url: string }> | null;
@@ -158,9 +157,6 @@ function buildSharePayload(r: PostItem) {
   return { url, title, text };
 }
 
-/** =========================================================
- * HomeScreen
- * ========================================================= */
 export const HomeScreen: React.FC = () => {
   const { isLoggedIn, user } = useAuth();
 
@@ -174,9 +170,7 @@ export const HomeScreen: React.FC = () => {
   const [loadingMore, setLoadingMore] = useState(false);
 
   // ✅ กันกด bookmark รัว ๆ (per post id)
-  const [bookmarkBusyMap, setBookmarkBusyMap] = useState<Record<string, boolean>>(
-    {}
-  );
+  const [bookmarkBusyMap, setBookmarkBusyMap] = useState<Record<string, boolean>>({});
 
   const canLoadMore = items.length < total;
 
@@ -234,6 +228,13 @@ export const HomeScreen: React.FC = () => {
     }
   }, [fetchPage]);
 
+  // useEffectับ refresh ตอนกลับมาหน้านี้ (ให้ bookmark/ข้อมูลทัน)
+  useFocusEffect(
+    useCallback(() => {
+      loadFirst();
+    }, [loadFirst])
+  );
+
   useEffect(() => {
     loadFirst();
   }, [loadFirst]);
@@ -283,7 +284,7 @@ export const HomeScreen: React.FC = () => {
     [navigation]
   );
 
-  // ✅ helper: update list item bookmark (ใช้ทั้ง Home toggle + callback จาก PostView)
+  // ✅ helper: update list item bookmark
   const applyBookmarkToList = useCallback((postId: string, isBookmarked: boolean) => {
     setItems((prev) =>
       prev.map((p) => (p.id === postId ? { ...p, is_bookmarked: isBookmarked } : p))
@@ -293,7 +294,7 @@ export const HomeScreen: React.FC = () => {
   // ✅ toggle bookmark (ใน card)
   const toggleBookmark = useCallback(
     async (e: GestureResponderEvent, postId: string) => {
-      e.stopPropagation?.(); // ✅ กันไม่ให้กดแล้วเปิดโพสต์
+      e.stopPropagation?.();
 
       if (!isLoggedIn) {
         Alert.alert("ต้องเข้าสู่ระบบ", "กรุณา login ก่อนใช้งาน bookmark");
@@ -317,16 +318,10 @@ export const HomeScreen: React.FC = () => {
         });
 
         const ok = !!data?.toggleBookmark?.isBookmarked;
-
-        // sync
         applyBookmarkToList(postId, ok);
       } catch (err: any) {
-        // rollback
         applyBookmarkToList(postId, prevVal);
-        Alert.alert(
-          "Bookmark error",
-          err?.message || "Please login first or try again."
-        );
+        Alert.alert("Bookmark error", err?.message || "Please login first or try again.");
       } finally {
         setBookmarkBusyMap((m) => ({ ...m, [postId]: false }));
       }
@@ -334,12 +329,23 @@ export const HomeScreen: React.FC = () => {
     [isLoggedIn, bookmarkBusyMap, items, applyBookmarkToList]
   );
 
-  // ✅ callback ส่งให้ PostView เพื่ออัปเดต Home ทันทีตอนย้อนกลับ
-  const onBookmarkChangedFromPostView = useCallback(
-    (postId: string, isBookmarked: boolean) => {
-      applyBookmarkToList(String(postId), !!isBookmarked);
+  // ✅ เปิด chat กับ author (แสดงเฉพาะ author != current user)
+  const openChatWithAuthor = useCallback(
+    (e: GestureResponderEvent, authorId?: string | null) => {
+      e.stopPropagation?.();
+      if (!authorId) return;
+
+      if (!isLoggedIn) {
+        Alert.alert("ต้องเข้าสู่ระบบ", "กรุณา login ก่อนใช้งาน chat");
+        return;
+      }
+
+      if (authorId === user?.id) return;
+
+      // RootStackParamList: Chat: { to: string }
+      navigation.navigate("Chat", { to: String(authorId) });
     },
-    [applyBookmarkToList]
+    [isLoggedIn, navigation, user?.id]
   );
 
   const renderPostItem = useCallback(
@@ -359,10 +365,7 @@ export const HomeScreen: React.FC = () => {
         navigation.navigate("PostView", {
           id: String(item?.id),
           currentUserId: user?.id,
-
-          // ✅ ให้ PostView เรียกกลับมาทันทีหลัง toggle bookmark
-          onBookmarkChanged: onBookmarkChangedFromPostView,
-        } as any);
+        });
       };
 
       const authorName = item.author?.name?.trim() || "Unknown";
@@ -371,6 +374,12 @@ export const HomeScreen: React.FC = () => {
 
       const isBookmarked = !!item.is_bookmarked;
       const bookmarkBusy = !!bookmarkBusyMap[item.id];
+
+      const showChatBtn =
+        !!item.author?.id && !!user?.id && String(item.author.id) !== String(user.id);
+
+      const showBookmarkBtn =
+        !!item.author?.id && !!user?.id && String(item.author.id) !== String(user.id);
 
       return (
         <Pressable
@@ -409,7 +418,10 @@ export const HomeScreen: React.FC = () => {
                 hitSlop={10}
               >
                 {authorAvatar ? (
-                  <Image source={{ uri: authorAvatar }} style={styles.authorAvatar} />
+                  <Image
+                    source={{ uri: authorAvatar }}
+                    style={styles.authorAvatar}
+                  />
                 ) : (
                   <View style={styles.authorAvatarFallback}>
                     <Text style={styles.authorAvatarText}>{authorInitial}</Text>
@@ -478,11 +490,9 @@ export const HomeScreen: React.FC = () => {
             />
 
             <IconButton
-              icon="chatbubble-ellipses-outline"
+              icon="chatbox-outline"
               badge={item.comments_count || 0}
-              onPress={() => {
-                // ใส่ทีหลังได้
-              }}
+              onPress={onOpenPost}
             />
 
             <IconButton
@@ -490,12 +500,18 @@ export const HomeScreen: React.FC = () => {
               onPress={() => handleShare(item)}
             />
 
+            {/* ✅ CHAT (คุยกับผู้โพสต์) — แสดงเฉพาะ author != current user */}
+            {showChatBtn ? (
+              <IconButton
+                icon="chatbubbles-outline"
+                onPress={(e) => openChatWithAuthor(e as any, item.author?.id)}
+              />
+            ) : null}
+
             <View style={{ flex: 1 }} />
 
-            {/* ✅ BOOKMARK */}
-            {
-              item.author?.id != user?.id 
-              ? 
+            {/* ✅ BOOKMARK — แสดงเฉพาะ author != current user */}
+            {showBookmarkBtn ? (
               <IconButton
                 icon={isBookmarked ? "bookmark" : "bookmark-outline"}
                 onPress={(e) => toggleBookmark(e as any, item.id)}
@@ -503,9 +519,7 @@ export const HomeScreen: React.FC = () => {
                 active={isBookmarked}
                 loading={bookmarkBusy}
               />
-              : ""
-            }
-            
+            ) : null}
           </View>
         </Pressable>
       );
@@ -518,7 +532,8 @@ export const HomeScreen: React.FC = () => {
       user?.id,
       toggleBookmark,
       bookmarkBusyMap,
-      onBookmarkChangedFromPostView,
+      isLoggedIn,
+      openChatWithAuthor,
     ]
   );
 
@@ -630,7 +645,6 @@ const styles = StyleSheet.create({
   },
   meta: { color: "#9ca3af", fontSize: 11, flex: 1 },
 
-  // ✅ author chip
   authorChip: {
     flexDirection: "row",
     alignItems: "center",

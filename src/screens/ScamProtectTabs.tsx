@@ -23,7 +23,7 @@ const Tab = createBottomTabNavigator<TabsParamList>();
 
 function useBadges() {
   const blockedCount = 12;
-  const logsCount = 3;
+  const logsCount = 0;
   return { blockedCount, logsCount };
 }
 
@@ -142,7 +142,6 @@ export const ScamProtectTabs: React.FC = () => {
                       color="#fff"
                       onPress={() => goStack("Chat", { to: "support" })}
                     />
-
                     {!!chatBadge && (
                       <View
                         style={{
