@@ -6,12 +6,14 @@ import { Text, View } from "react-native";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
 
-import { CheckPhoneScreen } from "./CheckPhoneScreen";
-import { BlockedNumbersScreen } from "./BlockedNumbersScreen";
-import { BlockedLogsScreen } from "./BlockedLogsScreen";
+import PhoneCenterLookupTab from "./PhoneCenterLookupTab";
+// import { BlockedNumbersScreen } from "./BlockedNumbersScreen";
+// import { BlockedLogsScreen } from "./BlockedLogsScreen";
 import { HomeScreen } from "./HomeScreen";
 
-import { HeaderMenu } from "../components/HeaderMenu";
+import SafetyCenterMyListsTab from "./SafetyCenterMyListsTab";
+
+// import { HeaderMenu } from "../components/HeaderMenu";
 import { HeaderAccountButton } from "../components/HeaderAccountButton";
 
 import { useAuth } from "../auth/AuthProvider";
@@ -190,7 +192,7 @@ export const ScamProtectTabs: React.FC = () => {
       {/* ================= Check Phone ================= */}
       <Tab.Screen
         name="CheckPhone"
-        component={CheckPhoneScreen}
+        component={PhoneCenterLookupTab}
         options={{
           title: "ตรวจเบอร์",
           tabBarIcon: ({ color, size }) => (
@@ -202,7 +204,7 @@ export const ScamProtectTabs: React.FC = () => {
       {/* ================= Blocked Logs ================= */}
       <Tab.Screen
         name="BlockedLogs"
-        component={BlockedLogsScreen}
+        component={SafetyCenterMyListsTab}
         options={({ navigation }) => {
           const tabNav = navigation as BottomTabNavigationProp<TabsParamList>;
           const stackNav =
@@ -233,39 +235,39 @@ export const ScamProtectTabs: React.FC = () => {
                 color={color}
               />
             ),
-            headerRight: () => (
-              <View style={{ flexDirection: "row", alignItems: "center" }}>
-                <Ionicons
-                  name="search-outline"
-                  size={22}
-                  color="#fff"
-                  style={{ marginRight: 16 }}
-                  onPress={() => goStack("BlockedLogsSearch")}
-                />
+            // headerRight: () => (
+            //   <View style={{ flexDirection: "row", alignItems: "center" }}>
+            //     <Ionicons
+            //       name="search-outline"
+            //       size={22}
+            //       color="#fff"
+            //       style={{ marginRight: 16 }}
+            //       onPress={() => goStack("BlockedLogsSearch")}
+            //     />
 
-                <Ionicons
-                  name="add-circle-outline"
-                  size={26}
-                  color="#fff"
-                  style={{ marginRight: 14 }}
-                  onPress={() => {
-                    if (!isLoggedIn) {
-                      goStack("SignIn");
-                      return;
-                    }
-                    goStack("PostForm");
-                  }}
-                />
+            //     <Ionicons
+            //       name="add-circle-outline"
+            //       size={26}
+            //       color="#fff"
+            //       style={{ marginRight: 14 }}
+            //       onPress={() => {
+            //         if (!isLoggedIn) {
+            //           goStack("SignIn");
+            //           return;
+            //         }
+            //         goStack("PostForm");
+            //       }}
+            //     />
 
-                <HeaderAccountButton />
-              </View>
-            ),
+            //     <HeaderAccountButton />
+            //   </View>
+            // ),
           };
         }}
       />
 
       {/* ================= Blocked Numbers ================= */}
-      <Tab.Screen
+      {/* <Tab.Screen
         name="BlockedNumbers"
         component={BlockedNumbersScreen}
         options={{
@@ -298,7 +300,7 @@ export const ScamProtectTabs: React.FC = () => {
             </View>
           ),
         }}
-      />
+      /> */}
     </Tab.Navigator>
   );
 };

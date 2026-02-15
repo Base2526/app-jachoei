@@ -1,4 +1,4 @@
-import React, { useMemo, useLayoutEffect, useCallback, useEffect } from "react";
+import React, { useMemo, useLayoutEffect, useCallback, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -11,18 +11,30 @@ import {
   Alert,
   Linking,
   ActivityIndicator,
+  TouchableOpacity,
 } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 import Clipboard from "@react-native-clipboard/clipboard";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import ImageViewing from "react-native-image-viewing";
 import { gql } from "@apollo/client";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import type { RootStackParamList } from "../navigation/types";
 import { client } from "../apollo/client";
 import { ENV } from "../config/env";
 import { CommentsSection } from "../components/comments/CommentsSection";
 import { useAuth } from "../auth/AuthProvider";
+
+import {
+  BottomSheetBlockReportModal,
+  BottomSheetBlockReportModalRef,
+} from "../components/BottomSheetBlockReportModal";
+
+import {
+  BottomSheetReportBankModal,
+  BottomSheetReportBankModalRef,
+} from "../components/BottomSheetReportBankModal";
 
 /* =======================
  * GraphQL
@@ -133,6 +145,26 @@ export type PostRecord = {
 type Props = NativeStackScreenProps<RootStackParamList, "PostView">;
 
 /* =======================
+ * Local Storage (same as Home)
+ * ======================= */
+const BLOCKED_STORE_KEY = "jachoei.blocked_tel_v1";
+const REPORTED_BANK_STORE_KEY = "jachoei.reported_bank_v1";
+
+function normalizeTel(raw: string) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  const hasPlus = s.startsWith("+");
+  const digits = s.replace(/[^\d]/g, "");
+  return hasPlus ? `+${digits}` : digits;
+}
+
+function normalizeBankAccount(raw: string) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  return s.replace(/[^\d]/g, "");
+}
+
+/* =======================
  * Screen
  * ======================= */
 
@@ -150,6 +182,15 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
   // images preview
   const [previewVisible, setPreviewVisible] = React.useState(false);
   const [previewIndex, setPreviewIndex] = React.useState(0);
+
+  // ✅ blocked tel (local)
+  const [blockedMap, setBlockedMap] = React.useState<Record<string, true>>({});
+  // ✅ reported bank (local)
+  const [reportedBankMap, setReportedBankMap] = React.useState<Record<string, true>>({});
+
+  // ✅ sheets refs
+  const blockSheetRef = useRef<BottomSheetBlockReportModalRef>(null);
+  const reportBankSheetRef = useRef<BottomSheetReportBankModalRef>(null);
 
   const previewImages = React.useMemo(
     () =>
@@ -183,9 +224,65 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
     }
   }, [id]);
 
+  /* =======================
+   * ✅ Load local states (blocked/report)
+   * ======================= */
+  const loadBlocked = useCallback(async () => {
+    try {
+      const raw = await AsyncStorage.getItem(BLOCKED_STORE_KEY);
+      if (!raw) {
+        setBlockedMap({});
+        return;
+      }
+      const arr = JSON.parse(raw) as string[];
+      const next: Record<string, true> = {};
+      for (const t of arr || []) {
+        const n = normalizeTel(t);
+        if (n) next[n] = true;
+      }
+      setBlockedMap(next);
+    } catch {}
+  }, []);
+
+  const persistBlocked = useCallback(async (m: Record<string, true>) => {
+    try {
+      const arr = Object.keys(m);
+      await AsyncStorage.setItem(BLOCKED_STORE_KEY, JSON.stringify(arr));
+    } catch {}
+  }, []);
+
+  const loadReportedBank = useCallback(async () => {
+    try {
+      const raw = await AsyncStorage.getItem(REPORTED_BANK_STORE_KEY);
+      if (!raw) {
+        setReportedBankMap({});
+        return;
+      }
+      const arr = JSON.parse(raw) as string[];
+      const next: Record<string, true> = {};
+      for (const a of arr || []) {
+        const n = normalizeBankAccount(a);
+        if (n) next[n] = true;
+      }
+      setReportedBankMap(next);
+    } catch {}
+  }, []);
+
+  const persistReportedBank = useCallback(async (m: Record<string, true>) => {
+    try {
+      const arr = Object.keys(m);
+      await AsyncStorage.setItem(REPORTED_BANK_STORE_KEY, JSON.stringify(arr));
+    } catch {}
+  }, []);
+
   useEffect(() => {
     fetchPost();
   }, [fetchPost]);
+
+  useEffect(() => {
+    loadBlocked();
+    loadReportedBank();
+  }, [loadBlocked, loadReportedBank]);
 
   /* =======================
    * Helpers
@@ -239,6 +336,78 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
     Alert.alert("คัดลอกแล้ว");
   }, []);
 
+  // ✅ require login guard
+  const requireLoginOrGo = useCallback(() => {
+    if (isLoggedIn) return true;
+    navigation.navigate("SignIn");
+    return false;
+  }, [isLoggedIn, navigation]);
+
+  const isTelBlocked = useCallback(
+    (telRaw: string) => {
+      const n = normalizeTel(telRaw);
+      return !!(n && blockedMap[n]);
+    },
+    [blockedMap]
+  );
+
+  const isBankReported = useCallback(
+    (accRaw: string) => {
+      const n = normalizeBankAccount(accRaw);
+      return !!(n && reportedBankMap[n]);
+    },
+    [reportedBankMap]
+  );
+
+  const markBankReportedLocal = useCallback(
+    (accNormalized: string) => {
+      if (!accNormalized) return;
+      setReportedBankMap((prev) => {
+        const next = { ...prev, [accNormalized]: true };
+        persistReportedBank(next);
+        return next;
+      });
+    },
+    [persistReportedBank]
+  );
+
+  // ✅ open tel bottom sheet
+  const openBlockSheet = useCallback(
+    (telRaw: string) => {
+      if (!requireLoginOrGo()) return;
+
+      const tel = normalizeTel(telRaw);
+      if (!tel) return;
+
+      blockSheetRef.current?.open({
+        tel,
+        postId: String(post?.id || ""),
+        title: post?.title || undefined,
+        source: "POST_VIEW" as any, // ถ้า type จำกัดแค่ HOME/MODAL ให้เอาออกหรือใช้ "HOME"
+      });
+    },
+    [requireLoginOrGo, post?.id, post?.title]
+  );
+
+  // ✅ open bank bottom sheet
+  const openReportBankSheet = useCallback(
+    (bankName: string | null | undefined, accountRaw: string) => {
+      if (!requireLoginOrGo()) return;
+
+      const acc = normalizeBankAccount(accountRaw);
+      if (!acc) return;
+
+      reportBankSheetRef.current?.open({
+        bankName: bankName ?? null,
+        account: acc,
+        postId: String(post?.id || ""),
+        title: post?.title || undefined,
+        source: "POST_VIEW" as any,
+      });
+    },
+    [requireLoginOrGo, post?.id, post?.title]
+  );
+
   /* =======================
    * ✅ Bookmark toggle
    * ======================= */
@@ -246,7 +415,7 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
     if (!post?.id) return;
 
     if (!isLoggedIn) {
-      Alert.alert("ต้องเข้าสู่ระบบ", "กรุณา login ก่อนใช้งาน bookmark");
+      navigation.navigate("SignIn");
       return;
     }
 
@@ -273,7 +442,7 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
     } finally {
       setBookmarkBusy(false);
     }
-  }, [post?.id, post?.is_bookmarked, isLoggedIn, bookmarkBusy]);
+  }, [post?.id, post?.is_bookmarked, isLoggedIn, navigation, bookmarkBusy]);
 
   /* =======================
    * Delete / Clone (optional)
@@ -329,18 +498,16 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
   }, [id, navigation, currentUserId]);
 
   /* =======================
-   * ✅ Navigation header (do NOT use post.title here)
+   * ✅ Navigation header
    * ======================= */
   useLayoutEffect(() => {
     navigation.setOptions({
       headerShown: true,
-      // ✅ ไม่เอา title ไปไว้ที่ navigation
       title: "",
       headerStyle: { backgroundColor: "#0b0b0f" },
       headerTintColor: "#fff",
       headerRight: () => (
         <View style={styles.navActions}>
-          {/* ✅ BOOKMARK (เงื่อนไขเดิม: !isOwner) */}
           {!isOwner ? (
             <Pressable
               onPress={onToggleBookmark}
@@ -364,7 +531,6 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
             </Pressable>
           ) : null}
 
-          {/* Facebook */}
           {isFbPublished ? (
             <Pressable
               onPress={() => {
@@ -380,12 +546,10 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
             </Pressable>
           ) : null}
 
-          {/* Share */}
           <Pressable onPress={onShare} hitSlop={10} style={styles.navBtn}>
             <Ionicons name="share-outline" size={22} color="#fff" />
           </Pressable>
 
-          {/* Owner actions */}
           {isOwner ? (
             <>
               <Pressable
@@ -395,10 +559,6 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
               >
                 <Ionicons name="create-outline" size={22} color="#fff" />
               </Pressable>
-
-              {/* <Pressable onPress={handleClone} hitSlop={10} style={styles.navBtn}>
-                <Ionicons name="copy-outline" size={22} color="#fff" />
-              </Pressable> */}
 
               <Pressable onPress={handleDelete} hitSlop={10} style={styles.navBtn}>
                 <Ionicons name="trash-outline" size={22} color="#ff3b30" />
@@ -428,10 +588,35 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
    * ======================= */
 
   const renderTelItem = useCallback(
-    ({ item, index }: { item: { id: string; tel: string }; index: number }) => (
-      <RowItem index={index} value={item.tel} onCopy={() => copyText(item.tel)} />
-    ),
-    [copyText]
+    ({ item, index }: { item: { id: string; tel: string }; index: number }) => {
+      const tel = item.tel || "";
+      const blocked = isTelBlocked(tel);
+
+      return (
+        <View style={styles.rowItem}>
+          <Text style={styles.rowIndex}>{index + 1}.</Text>
+
+          <Pressable onPress={() => copyText(tel)} hitSlop={10} style={{ flex: 1 }}>
+            <Text style={styles.rowText}>{tel || "-"}</Text>
+            {tel ? <Text style={styles.copyHintSmall}>แตะเพื่อคัดลอก</Text> : null}
+          </Pressable>
+
+          <TouchableOpacity
+            onPress={() => openBlockSheet(tel)}
+            activeOpacity={0.85}
+            style={[styles.actionPill, blocked && styles.actionPillDanger]}
+          >
+            <Ionicons
+              name={blocked ? "lock-closed" : "lock-open-outline"}
+              size={14}
+              color="#fff"
+            />
+            <Text style={styles.actionPillText}>{blocked ? "บล็อกแล้ว" : "บล็อก"}</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    },
+    [copyText, isTelBlocked, openBlockSheet]
   );
 
   const renderAccountItem = useCallback(
@@ -441,18 +626,38 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
     }: {
       item: { id: string; bank_name?: string; seller_account?: string };
       index: number;
-    }) => (
-      <View style={styles.rowItem}>
-        <Text style={styles.rowIndex}>{index + 1}.</Text>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.rowText}>{item.bank_name || "-"}</Text>
-          <Pressable onPress={() => copyText(item.seller_account || "")}>
-            <Text style={styles.copyText}>{item.seller_account || "-"}</Text>
-          </Pressable>
+    }) => {
+      const accRaw = item.seller_account || "";
+      const acc = normalizeBankAccount(accRaw);
+      const reported = isBankReported(acc);
+
+      return (
+        <View style={styles.rowItem}>
+          <Text style={styles.rowIndex}>{index + 1}.</Text>
+
+          <View style={{ flex: 1 }}>
+            <Text style={styles.rowText}>{item.bank_name || "-"}</Text>
+            <Pressable onPress={() => copyText(accRaw)}>
+              <Text style={styles.copyText}>{accRaw || "-"}</Text>
+            </Pressable>
+          </View>
+
+          <TouchableOpacity
+            onPress={() => openReportBankSheet(item.bank_name, accRaw)}
+            activeOpacity={0.85}
+            style={[styles.actionPill, reported && styles.actionPillOk]}
+          >
+            <Ionicons
+              name={reported ? "checkmark-circle" : "megaphone-outline"}
+              size={14}
+              color="#fff"
+            />
+            <Text style={styles.actionPillText}>{reported ? "รายงานแล้ว" : "รายงาน"}</Text>
+          </TouchableOpacity>
         </View>
-      </View>
-    ),
-    [copyText]
+      );
+    },
+    [copyText, isBankReported, openReportBankSheet]
   );
 
   /* =======================
@@ -492,7 +697,6 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 28 }}>
-      {/* ✅ TITLE อยู่ใน body ตามที่ขอ */}
       <Text style={styles.bodyTitle} numberOfLines={3}>
         {post.title || "-"}
       </Text>
@@ -581,6 +785,40 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
 
         <CommentsSection postId={String(post.id)} currentUserId={currentUserId} />
       </View>
+
+      {/* ===== Bottom Sheet: Tel Block/Report ===== */}
+      <BottomSheetBlockReportModal
+        ref={blockSheetRef}
+        isBlocked={(telNormalized) => !!blockedMap[telNormalized]}
+        onBlock={async (telNormalized) => {
+          setBlockedMap((prev) => {
+            const next = { ...prev, [telNormalized]: true };
+            persistBlocked(next);
+            return next;
+          });
+        }}
+        onUnblock={async (telNormalized) => {
+          setBlockedMap((prev) => {
+            const next = { ...prev };
+            delete next[telNormalized];
+            persistBlocked(next);
+            return next;
+          });
+        }}
+        onReport={async ({ tel, category, note, postId }) => {
+          console.log("REPORT TEL", { tel, category, note, postId });
+        }}
+      />
+
+      {/* ===== Bottom Sheet: Bank Report ONLY ===== */}
+      <BottomSheetReportBankModal
+        ref={reportBankSheetRef}
+        isReported={(accNormalized) => !!reportedBankMap[accNormalized]}
+        onMarkReported={(accNormalized) => markBankReportedLocal(accNormalized)}
+        onReport={async ({ bankName, account, category, note, postId }) => {
+          console.log("REPORT BANK", { bankName, account, category, note, postId });
+        }}
+      />
     </ScrollView>
   );
 };
@@ -619,28 +857,6 @@ const InfoRow = ({
 
 const SectionTitle = ({ title }: { title: string }) => <Text style={styles.sectionTitle}>{title}</Text>;
 
-const RowItem = ({
-  index,
-  value,
-  onCopy,
-}: {
-  index: number;
-  value?: string;
-  onCopy?: () => void;
-}) => {
-  const display = value && String(value).trim() ? String(value) : "-";
-
-  return (
-    <View style={styles.rowItem}>
-      <Text style={styles.rowIndex}>{index + 1}.</Text>
-      <Pressable onPress={onCopy} hitSlop={10} style={{ flex: 1 }}>
-        <Text style={styles.rowText}>{display}</Text>
-        {display !== "-" ? <Text style={styles.copyHintSmall}>แตะเพื่อคัดลอก</Text> : null}
-      </Pressable>
-    </View>
-  );
-};
-
 /* ====================== */
 /* ===== STYLES ===== */
 /* ====================== */
@@ -678,7 +894,6 @@ const styles = StyleSheet.create({
   },
   btnGhostText: { color: "#e5e7eb", fontWeight: "800" },
 
-  // ✅ title in body
   bodyTitle: {
     fontSize: 18,
     fontWeight: "900",
@@ -687,7 +902,6 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
 
-  // ✅ actions in navigation
   navActions: {
     flexDirection: "row",
     alignItems: "center",
@@ -723,9 +937,25 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     marginBottom: 10,
+    gap: 10,
   },
   rowIndex: { width: 22, color: "#9ca3af", marginTop: 2 },
   rowText: { color: "#fff", fontSize: 14, lineHeight: 18 },
+
+  actionPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: "#374151",
+    borderWidth: 1,
+    borderColor: "#4b5563",
+  },
+  actionPillDanger: { backgroundColor: "#ef4444", borderColor: "#ef4444" },
+  actionPillOk: { backgroundColor: "#34c759", borderColor: "#34c759" },
+  actionPillText: { color: "#fff", fontSize: 12, fontWeight: "900" },
 
   imageGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   imageWrap: { borderRadius: 8, overflow: "hidden", backgroundColor: "#111" },

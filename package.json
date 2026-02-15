@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@apollo/client": "^4.0.9",
+    "@gorhom/bottom-sheet": "^5.2.8",
     "@react-native-async-storage/async-storage": "^2.2.0",
     "@react-native-clipboard/clipboard": "^1.16.3",
     "@react-native-community/datetimepicker": "^8.6.0",

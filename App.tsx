@@ -19,6 +19,7 @@ import { ApolloProvider } from "@apollo/client/react";
 import { GoogleSignin } from "@react-native-google-signin/google-signin";
 import BootSplash from "react-native-bootsplash";
 
+
 import { ScamProtectTabs } from "./src/screens/ScamProtectTabs";
 import { client } from "./src/apollo/client";
 import { useInitScamSync } from "./src/hooks/useInitScamSync";
