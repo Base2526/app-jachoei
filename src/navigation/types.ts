@@ -19,7 +19,8 @@ export type RootStackParamList = {
   Profile: { id: string };
   Chat: { to: string };
 
-  // PostForm: undefined;
   Setting: undefined;
   PostForm: { id?: string } | undefined;
+
+  NotificationPage: undefined;
 };

@@ -18,20 +18,19 @@ import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { ApolloProvider } from "@apollo/client/react";
 import { GoogleSignin } from "@react-native-google-signin/google-signin";
 import BootSplash from "react-native-bootsplash";
-
-
 import { ScamProtectTabs } from "./src/screens/ScamProtectTabs";
 import { client } from "./src/apollo/client";
 import { useInitScamSync } from "./src/hooks/useInitScamSync";
 import { loadDeviceInfo } from "./src/device/deviceInfo";
 import { PostViewScreen } from "./src/screens/PostViewScreen";
-
 import { BlockedLogsSearchScreen } from "./src/screens/BlockedLogsSearchScreen";
 import { ProfileScreen } from "./src/screens/ProfileScreen";
 import ChatScreen from "./src/screens/ChatUIScreen";
 import PostFormScreen from "./src/screens/PostFormScreen";
 import SignInScreen from "./src/screens/SignInScreen";
 import SettingScreen from "./src/screens/SettingsScreen";
+
+import NotificationPage from "./src/screens/NotificationPage";
 
 import type { RootStackParamList } from "./src/navigation/types";
 
@@ -159,6 +158,18 @@ function Root() {
         }}
       />
 
+       {/* Notifications Page */}
+      <Stack.Screen
+        name="Notifications"
+        component={NotificationPage}
+        options={{
+          headerShown: true,
+          title: "Notifications",
+          headerStyle: { backgroundColor: "#0b0b0f" },
+          headerTintColor: "#fff",
+        }}
+      />
+
       <Stack.Screen
         name="Setting"
         component={SettingScreen}
@@ -177,21 +188,8 @@ export default function App() {
         onReady={() => { BootSplash.hide(); }}>
         <GlobalWiresWrapper />
         <StatusBar barStyle="light-content" backgroundColor="#0b0b0f" />
-
         <View style={{ flex: 1 }}>
           <Root />
-
-          {/* ✅ ปุ่มลอย: กดเพื่อเปิด SignIn */}
-          {/* <Pressable
-            style={styles.fab}
-            onPress={() => {
-              if (navigationRef.isReady()) {
-                navigationRef.navigate("SignIn");
-              }
-            }}
-          >
-            <Text style={styles.fabText}>Sign In</Text>
-          </Pressable> */}
         </View>
       </NavigationContainer>
       </AuthProvider>

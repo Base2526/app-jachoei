@@ -7,19 +7,23 @@ import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
 
 import PhoneCenterLookupTab from "./PhoneCenterLookupTab";
-// import { BlockedNumbersScreen } from "./BlockedNumbersScreen";
-// import { BlockedLogsScreen } from "./BlockedLogsScreen";
 import { HomeScreen } from "./HomeScreen";
-
 import SafetyCenterMyListsTab from "./SafetyCenterMyListsTab";
 
-// import { HeaderMenu } from "../components/HeaderMenu";
 import { HeaderAccountButton } from "../components/HeaderAccountButton";
-
 import { useAuth } from "../auth/AuthProvider";
 import { useGlobalChatStore } from "../store/globalChatStore";
 
+import { client } from "../apollo/client";
+import { gql } from "@apollo/client";
 import type { TabsParamList, RootStackParamList } from "../navigation/types";
+
+// ===== GraphQL =====
+const Q_UNREAD_NOTIFICATION_COUNT = gql`
+  query MyUnreadNotificationCount {
+    myUnreadNotificationCount
+  }
+`;
 
 const Tab = createBottomTabNavigator<TabsParamList>();
 
@@ -40,6 +44,36 @@ export const ScamProtectTabs: React.FC = () => {
     )
   );
 
+  // --- Notification unread count state ---
+  const [notifUnreadCount, setNotifUnreadCount] = React.useState(0);
+
+  React.useEffect(() => {
+    let sub: any = undefined;
+    let observable: any = undefined;
+
+    if (isLoggedIn) {
+      observable = client.watchQuery({
+        query: Q_UNREAD_NOTIFICATION_COUNT,
+        fetchPolicy: "cache-and-network",
+      });
+      sub = observable.subscribe({
+        next: (result: any) => {
+          setNotifUnreadCount(result?.data?.myUnreadNotificationCount ?? 0);
+        },
+        error: () => {
+          setNotifUnreadCount(0);
+        },
+      });
+    } else {
+      setNotifUnreadCount(0);
+    }
+
+    return () => {
+      if (sub) sub.unsubscribe?.();
+      if (observable) observable.stopPolling?.();
+    };
+  }, [isLoggedIn]);
+
   const chatBadge = useMemo<undefined | number | string>(() => {
     if (!isLoggedIn) return undefined;
     if (!totalUnread || totalUnread <= 0) return undefined;
@@ -47,17 +81,26 @@ export const ScamProtectTabs: React.FC = () => {
     return totalUnread;
   }, [isLoggedIn, totalUnread]);
 
+  const notifBadge = useMemo<undefined | number | string>(() => {
+    if (!isLoggedIn) return undefined;
+    if (!notifUnreadCount || notifUnreadCount <= 0) return undefined;
+    if (notifUnreadCount > 99) return "99+";
+    return notifUnreadCount;
+  }, [isLoggedIn, notifUnreadCount]);
+
   const blockedBadge = useMemo<undefined | number | string>(() => {
     if (blockedCount <= 0) return undefined;
     if (blockedCount > 99) return "99+";
     return blockedCount;
   }, [blockedCount]);
 
+  // ✅ ถ้า BlockedLogs ต้อง auth เท่านั้น → ซ่อน badge เมื่อไม่ login (optional)
   const logsBadge = useMemo<undefined | number | string>(() => {
+    if (!isLoggedIn) return undefined;
     if (logsCount <= 0) return undefined;
     if (logsCount > 99) return "99+";
     return logsCount;
-  }, [logsCount]);
+  }, [isLoggedIn, logsCount]);
 
   return (
     <Tab.Navigator
@@ -75,10 +118,7 @@ export const ScamProtectTabs: React.FC = () => {
         name="HomeScreen"
         component={HomeScreen}
         options={({ navigation }) => {
-          // ✅ navigation ตรงนี้เป็นของ Tab
           const tabNav = navigation as BottomTabNavigationProp<TabsParamList>;
-
-          // ✅ เอา parent (Stack) มาจาก Tab
           const stackNav =
             tabNav.getParent<NativeStackNavigationProp<RootStackParamList>>();
 
@@ -87,7 +127,7 @@ export const ScamProtectTabs: React.FC = () => {
             params?: RootStackParamList[T]
           ) => {
             if (!stackNav) return;
-            // @ts-expect-error: params optional depending on route
+            // @ts-expect-error params optional depending on route
             stackNav.navigate(name, params);
           };
 
@@ -120,7 +160,7 @@ export const ScamProtectTabs: React.FC = () => {
 
             headerRight: () => (
               <View style={{ flexDirection: "row", alignItems: "center" }}>
-                {/* ➕ ADD (ไป PostForm ถ้า login แล้ว) */}
+                {/* ➕ ADD */}
                 <Ionicons
                   name="add-outline"
                   size={26}
@@ -173,7 +213,50 @@ export const ScamProtectTabs: React.FC = () => {
                   </View>
                 )}
 
-                {/* 🔍 SEARCH (Stack screen) */}
+                {/* 🔔 NOTIFICATIONS + BADGE */}
+                <View style={{ marginRight: 14 }}>
+                  <Ionicons
+                    name="notifications-outline"
+                    size={22}
+                    color="#fff"
+                    onPress={() => {
+                      if (!isLoggedIn) {
+                        goStack("SignIn");
+                        return;
+                      }
+                      // ✅ ปรับชื่อ route ให้ตรง RootStackParamList ของคุณ
+                      goStack("Notifications" as any);
+                    }}
+                  />
+                  {!!notifBadge && (
+                    <View
+                      style={{
+                        position: "absolute",
+                        right: -8,
+                        top: -6,
+                        minWidth: 16,
+                        height: 16,
+                        borderRadius: 8,
+                        backgroundColor: "#34c759",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        paddingHorizontal: 4,
+                      }}
+                    >
+                      <Text
+                        style={{
+                          color: "#111",
+                          fontSize: 10,
+                          fontWeight: "900",
+                        }}
+                      >
+                        {notifBadge}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+
+                {/* 🔍 SEARCH */}
                 <Ionicons
                   name="search-outline"
                   size={22}
@@ -201,106 +284,46 @@ export const ScamProtectTabs: React.FC = () => {
         }}
       />
 
-      {/* ================= Blocked Logs ================= */}
-      <Tab.Screen
-        name="BlockedLogs"
-        component={SafetyCenterMyListsTab}
-        options={({ navigation }) => {
-          const tabNav = navigation as BottomTabNavigationProp<TabsParamList>;
-          const stackNav =
-            tabNav.getParent<NativeStackNavigationProp<RootStackParamList>>();
+      {/* ================= Blocked Logs (AUTH ONLY) ================= */}
+      {isLoggedIn ? (
+        <Tab.Screen
+          name="BlockedLogs"
+          component={SafetyCenterMyListsTab}
+          options={({ navigation }) => {
+            const tabNav =
+              navigation as BottomTabNavigationProp<TabsParamList>;
+            const stackNav =
+              tabNav.getParent<NativeStackNavigationProp<RootStackParamList>>();
 
-          const goStack = <T extends keyof RootStackParamList>(
-            name: T,
-            params?: RootStackParamList[T]
-          ) => {
-            if (!stackNav) return;
-            // @ts-expect-error: params optional depending on route
-            stackNav.navigate(name, params);
-          };
+            const goStack = <T extends keyof RootStackParamList>(
+              name: T,
+              params?: RootStackParamList[T]
+            ) => {
+              if (!stackNav) return;
+              // @ts-expect-error params optional depending on route
+              stackNav.navigate(name, params);
+            };
 
-          return {
-            title: "Blocked",
-            tabBarBadge: logsBadge,
-            tabBarBadgeStyle: {
-              backgroundColor: "#34c759",
-              color: "#111",
-              fontSize: 10,
-              fontWeight: "900",
-            },
-            tabBarIcon: ({ color, size }) => (
-              <Ionicons
-                name="shield-checkmark-outline"
-                size={size}
-                color={color}
-              />
-            ),
-            // headerRight: () => (
-            //   <View style={{ flexDirection: "row", alignItems: "center" }}>
-            //     <Ionicons
-            //       name="search-outline"
-            //       size={22}
-            //       color="#fff"
-            //       style={{ marginRight: 16 }}
-            //       onPress={() => goStack("BlockedLogsSearch")}
-            //     />
-
-            //     <Ionicons
-            //       name="add-circle-outline"
-            //       size={26}
-            //       color="#fff"
-            //       style={{ marginRight: 14 }}
-            //       onPress={() => {
-            //         if (!isLoggedIn) {
-            //           goStack("SignIn");
-            //           return;
-            //         }
-            //         goStack("PostForm");
-            //       }}
-            //     />
-
-            //     <HeaderAccountButton />
-            //   </View>
-            // ),
-          };
-        }}
-      />
-
-      {/* ================= Blocked Numbers ================= */}
-      {/* <Tab.Screen
-        name="BlockedNumbers"
-        component={BlockedNumbersScreen}
-        options={{
-          title: "เบอร์ที่บล็อก",
-          headerLeft: () => (
-            <HeaderMenu
-              items={[
-                { label: "เพิ่มเบอร์ใหม่", onPress: () => console.log("add") },
-                {
-                  label: "ล้างทั้งหมด",
-                  destructive: true,
-                  onPress: () => console.log("clear"),
-                },
-              ]}
-            />
-          ),
-          tabBarBadge: blockedBadge,
-          tabBarBadgeStyle: {
-            backgroundColor: "#ff3b30",
-            color: "#fff",
-            fontSize: 10,
-            fontWeight: "800",
-          },
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="ban-outline" size={size} color={color} />
-          ),
-          headerRight: () => (
-            <View style={{ flexDirection: "row", alignItems: "center" }}>
-              <HeaderAccountButton />
-            </View>
-          ),
-        }}
-      /> */}
+            return {
+              title: "Blocked",
+              tabBarBadge: logsBadge,
+              tabBarBadgeStyle: {
+                backgroundColor: "#34c759",
+                color: "#111",
+                fontSize: 10,
+                fontWeight: "900",
+              },
+              tabBarIcon: ({ color, size }) => (
+                <Ionicons
+                  name="shield-checkmark-outline"
+                  size={size}
+                  color={color}
+                />
+              ),
+            };
+          }}
+        />
+      ) : null}
     </Tab.Navigator>
   );
 };

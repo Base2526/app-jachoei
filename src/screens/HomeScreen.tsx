@@ -16,7 +16,7 @@ import {
   Linking,
   Image,
   GestureResponderEvent,
-  Modal,
+  Modal
 } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 import { gql } from "@apollo/client";

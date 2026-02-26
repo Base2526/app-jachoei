@@ -270,10 +270,10 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
   const blockSheetRef = useRef<BottomSheetBlockReportModalRef>(null);
   const reportBankSheetRef = useRef<BottomSheetReportBankModalRef>(null);
 
-    // --- Device info helpers ---
-    const deviceModel = typeof navigator !== "undefined" && (navigator as any).userAgent ? (navigator as any).userAgent : "unknown";
-    const osVersion = typeof navigator !== "undefined" && (navigator as any).platform ? (navigator as any).platform : "unknown";
-    const appVersion = ENV.appVersion || "unknown";
+  // --- Device info helpers ---
+  const deviceModel = typeof navigator !== "undefined" && (navigator as any).userAgent ? (navigator as any).userAgent : "unknown";
+  const osVersion = typeof navigator !== "undefined" && (navigator as any).platform ? (navigator as any).platform : "unknown";
+  const appVersion = ENV.appVersion || "unknown";
 
   const previewImages = React.useMemo(
     () =>

@@ -22,12 +22,20 @@ import { client } from "../apollo/client";
 const MY_BLOCKED_PHONES = gql`
   query MyBlockedPhones($limit: Int!, $offset: Int!) {
     myBlockedPhones(limit: $limit, offset: $offset) {
-      phone
-      blocked_at
+       phone
+      phone_normalized
+
+      my_blocked
+      my_blocked_at
+
+      blocked_by_count
+      last_blocked_at
+
       report_count
+      last_report_at
+
       risk_level
-      tags
-      note
+      updated_at
     }
   }
 `;
@@ -305,7 +313,7 @@ export default function SafetyCenterMyListsTab() {
       ]);
 
       const phonesRaw = (pRes.data?.myReportedPhones ?? []) as any[];
-      const banksRaw = (bRes.data?.myReportedBankAccounts ?? []) as any[];
+      const banksRaw  = (bRes.data?.myReportedBankAccounts ?? []) as any[];
 
       const phoneItems: ReportItem[] = phonesRaw.map((x) => ({
         kind: "PHONE",
