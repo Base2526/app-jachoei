@@ -20,6 +20,7 @@ import { client } from "../apollo/client";
 import { checkScamPhoneWithFallback } from "../lib/syncScamPhones";
 import { useNavigation } from "@react-navigation/native";
 import { useHeaderHeight } from "@react-navigation/elements";
+import { useAuth } from "../auth/AuthProvider";
 
 // ======================================================
 // GraphQL (PHONE)
@@ -411,6 +412,10 @@ type InlinePanelProps = {
   reportCount?: number;
   riskScore?: number;
 
+  // ✅ login guard
+  isLoggedIn: boolean;
+  goStack: (screen: string, params?: any) => void;
+
   isBlocked: (telNormalized: string) => boolean;
   onBlock: (telNormalized: string, meta?: { postId?: string }) => Promise<void> | void;
   onUnblock: (telNormalized: string, meta?: { postId?: string }) => Promise<void> | void;
@@ -418,7 +423,7 @@ type InlinePanelProps = {
 };
 
 function InlineBlockReportPanel(props: InlinePanelProps) {
-  const { tel, postId, title, reportCount, riskScore, isBlocked, onBlock, onUnblock, onReport } = props;
+  const { tel, postId, title, reportCount, riskScore, isLoggedIn, goStack, isBlocked, onBlock, onUnblock, onReport } = props;
 
   const telNorm = useMemo(() => normalizeTel(tel), [tel]);
   const blockedNow = useMemo(() => (telNorm ? isBlocked(telNorm) : false), [telNorm, isBlocked]);
@@ -453,6 +458,12 @@ function InlineBlockReportPanel(props: InlinePanelProps) {
   }, [blockedNow, wantReport]);
 
   const onConfirm = useCallback(async () => {
+    // ✅ Login guard (เพิ่มตามที่ขอ)
+    if (!isLoggedIn) {
+      goStack("SignIn");
+      return;
+    }
+
     if (!telNorm) return;
     setBusy(true);
     try {
@@ -481,7 +492,7 @@ function InlineBlockReportPanel(props: InlinePanelProps) {
     } finally {
       setBusy(false);
     }
-  }, [telNorm, blockedNow, onBlock, onUnblock, onReport, wantReport, category, note, dontAskAgain, postId]);
+  }, [isLoggedIn, goStack, telNorm, blockedNow, onBlock, onUnblock, onReport, wantReport, category, note, dontAskAgain, postId]);
 
   const fallbackRiskScore = riskScore ?? clamp((reportCount ?? 0) * 10, 0, 100);
 
@@ -571,11 +582,7 @@ function InlineBlockReportPanel(props: InlinePanelProps) {
           disabled={busy}
         >
           <View style={ui.btnRow}>
-            <Ionicons
-              name={blockedNow ? "lock-open-outline" : "lock-closed"}
-              size={16}
-              color={blockedNow ? "#e5e7eb" : "#111"}
-            />
+            <Ionicons name={blockedNow ? "lock-open-outline" : "lock-closed"} size={16} color={blockedNow ? "#e5e7eb" : "#111"} />
             <Text style={[ui.btnPrimaryText, { color: blockedNow ? "#e5e7eb" : "#111" }]}>
               {busy ? "กำลังทำรายการ..." : primaryText}
             </Text>
@@ -608,6 +615,10 @@ function BankReportInlineForm(props: {
   account: string;
   bankName?: string | null;
 
+  // ✅ login guard
+  isLoggedIn: boolean;
+  goStack: (screen: string, params?: any) => void;
+
   riskLabel: string;
   riskTone: { bg: string; fg: string };
 
@@ -623,7 +634,8 @@ function BankReportInlineForm(props: {
     rememberLocal: boolean;
   }) => Promise<void>;
 }) {
-  const { userId, account, bankName, riskLabel, riskTone, fromPostTitle, onClose, onCancel, onSubmit } = props;
+  const { userId, account, bankName, isLoggedIn, goStack, riskLabel, riskTone, fromPostTitle, onClose, onCancel, onSubmit } =
+    props;
 
   const accNorm = useMemo(() => normalizeBankAccount(account), [account]);
 
@@ -658,6 +670,12 @@ function BankReportInlineForm(props: {
   }, [rememberLocal, userId, bankName, accNorm]);
 
   const submit = useCallback(async () => {
+    // ✅ Login guard (เพิ่มตามที่ขอ)
+    if (!isLoggedIn) {
+      goStack("SignIn");
+      return;
+    }
+
     if (!accNorm) return;
 
     setBusy(true);
@@ -684,7 +702,7 @@ function BankReportInlineForm(props: {
     }
 
     Alert.alert("ส่งรายงานแล้ว", "ขอบคุณที่ช่วยกันทำให้ระบบแม่นขึ้น 🙏");
-  }, [accNorm, onSubmit, bankName, category, note, rememberLocal, userId]);
+  }, [isLoggedIn, goStack, accNorm, onSubmit, bankName, category, note, rememberLocal, userId]);
 
   return (
     <View style={br.sheet}>
@@ -783,117 +801,23 @@ function BankReportInlineForm(props: {
 }
 
 // =======================
-// Not-found Action Cards (NO PSEUDO)
-// =======================
-function NotFoundPhoneAction(props: {
-  term: string;
-  checkResult: CheckResult | null;
-  loadingCheck: boolean;
-
-  isBlocked: (tel: string) => boolean;
-  onBlock: (tel: string) => Promise<void> | void;
-  onUnblock: (tel: string) => Promise<void> | void;
-  onReportPhone: (data: { tel: string; category: ReportCategory; note?: string; postId?: string }) => Promise<void> | void;
-}) {
-  const { term, checkResult, loadingCheck, isBlocked, onBlock, onUnblock, onReportPhone } = props;
-  const tel = normalizeTel(term);
-
-  const riskScore = clamp(Number(checkResult?.risk ?? 0), 0, 100);
-  const riskMeta = computeRiskLabel(checkResult?.reportCount ?? 0, riskScore);
-  const pillTone = toneStyle(riskMeta.tone);
-
-  return (
-    <View style={[styles.singleCard, { borderColor: "#2563eb", backgroundColor: "#0f1a39" }]}>
-      <View style={styles.cardHeaderRow}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.telText}>{tel || term}</Text>
-          <Text style={styles.subText}>
-            {loadingCheck ? "Checking..." : `Risk ${riskScore} • ${checkResult?.reportCount ?? 0} reports`}
-          </Text>
-          <Text style={[styles.subText, { marginTop: 6, color: "#cbd5e1" }]}>ไม่พบในผลค้นหา แต่ยัง Block/Report ได้</Text>
-        </View>
-
-        <View style={styles.headerRight}>
-          <View style={[styles.riskBadge, { backgroundColor: pillTone.bg, borderColor: "#27335f" }]}>
-            <Text style={[styles.riskBadgeText, { color: pillTone.fg }]}>{riskMeta.label}</Text>
-          </View>
-        </View>
-      </View>
-
-      <View style={styles.expandWrap}>
-        <InlineBlockReportPanel
-          tel={tel || term}
-          reportCount={checkResult?.reportCount ?? 0}
-          riskScore={riskScore}
-          isBlocked={isBlocked}
-          onBlock={onBlock}
-          onUnblock={onUnblock}
-          onReport={onReportPhone}
-        />
-      </View>
-    </View>
-  );
-}
-
-function NotFoundBankAction(props: {
-  userId: string;
-  term: string;
-  onReportBank: (data: {
-    account: string;
-    bankName?: string | null;
-    category: BankReportCategory;
-    note?: string;
-    postId?: string;
-  }) => Promise<void>;
-}) {
-  const { userId, term, onReportBank } = props;
-
-  const acc = normalizeBankAccount(term);
-  const riskMeta = computeRiskLabel(0, 0);
-  const pillTone = toneStyle(riskMeta.tone);
-
-  return (
-    <View style={[styles.singleCard, { borderColor: "#2563eb", backgroundColor: "#0f1a39" }]}>
-      <View style={styles.cardHeaderRow}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.telText}>{acc || term}</Text>
-          <Text style={styles.subText}>ไม่พบในผลค้นหา แต่ยัง Report ได้</Text>
-        </View>
-
-        <View style={styles.headerRight}>
-          <View style={[styles.riskBadge, { backgroundColor: pillTone.bg, borderColor: "#27335f" }]}>
-            <Text style={[styles.riskBadgeText, { color: pillTone.fg }]}>{riskMeta.label}</Text>
-          </View>
-        </View>
-      </View>
-
-      <View style={styles.expandWrap}>
-        <BankReportInlineForm
-          userId={userId}
-          account={acc || term}
-          bankName={null}
-          fromPostTitle={null}
-          riskLabel={riskMeta.label}
-          riskTone={pillTone}
-          onClose={() => {}}
-          onCancel={() => {}}
-          onSubmit={async ({ account, bankName, category, note }) => {
-            await onReportBank({ account, bankName, category, note, postId: undefined });
-          }}
-        />
-      </View>
-    </View>
-  );
-}
-
-// =======================
 // Screen
 // =======================
 export default function PhoneCenterLookupTab() {
   const navigation = useNavigation<any>();
   useHeaderHeight();
 
-  const userId = "guest";
+  // ✅ Auth
+  const { user, isLoggedIn } = useAuth();
+  const userId = String(user?.id ?? "guest");
+
+  // ✅ helper ตามที่คุณต้องการใช้
+  const goStack = useCallback(
+    (screen: string, params?: any) => {
+      navigation.navigate(screen, params);
+    },
+    [navigation]
+  );
 
   const [lookupType, setLookupType] = useState<LookupType>("PHONE");
 
@@ -940,19 +864,32 @@ export default function PhoneCenterLookupTab() {
     async (telNormalized: string) => {
       const tel = normalizeTel(telNormalized);
       if (!tel) return;
+
+      // ✅ เพิ่ม guard อีกชั้น (เผื่อถูกเรียกตรง ๆ)
+      if (!isLoggedIn) {
+        goStack("SignIn");
+        return;
+      }
+
       setBlockedMap((prev) => {
         const next = { ...prev, [tel]: true };
         persistBlockedMap(userId, next);
         return next;
       });
     },
-    [userId]
+    [userId, isLoggedIn, goStack]
   );
 
   const onUnblock = useCallback(
     async (telNormalized: string) => {
       const tel = normalizeTel(telNormalized);
       if (!tel) return;
+
+      if (!isLoggedIn) {
+        goStack("SignIn");
+        return;
+      }
+
       setBlockedMap((prev) => {
         const next = { ...prev };
         delete next[tel];
@@ -960,11 +897,17 @@ export default function PhoneCenterLookupTab() {
         return next;
       });
     },
-    [userId]
+    [userId, isLoggedIn, goStack]
   );
 
   const onReportPhone = useCallback(
     async (data: { tel: string; category: ReportCategory; note?: string; postId?: string }) => {
+      // ✅ Login guard สำหรับ "รายงาน" ด้วย
+      if (!isLoggedIn) {
+        goStack("SignIn");
+        return;
+      }
+
       const tel = normalizeTel(data.tel);
       if (!tel) return;
 
@@ -994,11 +937,17 @@ export default function PhoneCenterLookupTab() {
         setExpandedTel(norm);
       }
     },
-    [isBlocked]
+    [isLoggedIn, goStack, isBlocked]
   );
 
   const onReportBank = useCallback(
     async (data: { account: string; bankName?: string | null; category: BankReportCategory; note?: string; postId?: string }) => {
+      // ✅ Login guard สำหรับ "รายงาน" ด้วย
+      if (!isLoggedIn) {
+        goStack("SignIn");
+        return;
+      }
+
       const acc = normalizeBankAccount(data.account);
       if (!acc) return;
 
@@ -1035,7 +984,7 @@ export default function PhoneCenterLookupTab() {
         setExpandedAcc(norm);
       }
     },
-    []
+    [isLoggedIn, goStack]
   );
 
   const commitHistory = useCallback(
@@ -1096,7 +1045,6 @@ export default function PhoneCenterLookupTab() {
           const exact = list.find((x) => normalizeTel(x.phone) === normalizeTel(term)) || list[0];
           setExpandedTel(normalizeTel(exact.phone));
         } else {
-          // ✅ NO PSEUDO: ปล่อย list ว่าง แล้วให้ ListEmptyComponent แสดง action card
           setExpandedTel(null);
         }
       } else {
@@ -1119,13 +1067,10 @@ export default function PhoneCenterLookupTab() {
         const list = res.data?.searchScamBankAccounts ?? [];
         setBankItems(list);
 
-        console.log("[setBankItems] =", list);
-
         if (list.length > 0) {
           const exact = list.find((x) => normalizeBankAccount(x.account) === normalizeBankAccount(term)) || list[0];
           setExpandedAcc(normalizeBankAccount(exact.account));
         } else {
-          // ✅ NO PSEUDO
           setExpandedAcc(null);
         }
       }
@@ -1312,24 +1257,6 @@ export default function PhoneCenterLookupTab() {
           keyExtractor={(it) => normalizeTel(it.phone) || it.phone}
           keyboardShouldPersistTaps="handled"
           ListHeaderComponent={HeaderList}
-          // ListEmptyComponent={
-          //   phoneSearched && lastPhoneTerm ? (
-          //     <NotFoundPhoneAction
-          //       term={lastPhoneTerm}
-          //       checkResult={checkResult}
-          //       loadingCheck={loadingCheck}
-          //       isBlocked={isBlocked}
-          //       onBlock={onBlock}
-          //       onUnblock={onUnblock}
-          //       onReportPhone={onReportPhone}
-          //     />
-          //   ) : (
-          //     <View style={styles.emptyBox}>
-          //       <Text style={styles.muted}>ยังไม่มีผลลัพธ์</Text>
-          //     </View>
-          //   )
-          // }
-
           ListEmptyComponent={
             <View style={styles.emptyBox}>
               <Text style={styles.muted}>ไม่พบผลลัพธ์</Text>
@@ -1388,6 +1315,8 @@ export default function PhoneCenterLookupTab() {
                       title={undefined}
                       reportCount={item.report_count}
                       riskScore={riskScore}
+                      isLoggedIn={!!isLoggedIn}
+                      goStack={goStack}
                       isBlocked={isBlocked}
                       onBlock={onBlock}
                       onUnblock={onUnblock}
@@ -1405,15 +1334,6 @@ export default function PhoneCenterLookupTab() {
           keyExtractor={(it) => normalizeBankAccount(it.account) || it.account}
           keyboardShouldPersistTaps="handled"
           ListHeaderComponent={HeaderList}
-          // ListEmptyComponent={
-          //   bankSearched && lastBankTerm ? (
-          //     <NotFoundBankAction userId={userId} term={lastBankTerm} onReportBank={onReportBank} />
-          //   ) : (
-          //     <View style={styles.emptyBox}>
-          //       <Text style={styles.muted}>ยังไม่มีผลลัพธ์</Text>
-          //     </View>
-          //   )
-          // }
           ListEmptyComponent={
             <View style={styles.emptyBox}>
               <Text style={styles.muted}>ไม่พบผลลัพธ์</Text>
@@ -1466,6 +1386,8 @@ export default function PhoneCenterLookupTab() {
                       account={acc}
                       bankName={item.bank_name ?? null}
                       fromPostTitle={null}
+                      isLoggedIn={!!isLoggedIn}
+                      goStack={goStack}
                       riskLabel={riskMeta.label}
                       riskTone={pillTone}
                       onClose={() => setExpandedAcc(null)}
