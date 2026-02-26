@@ -136,7 +136,11 @@ function Root() {
       <Stack.Screen
         name="Chat"
         component={ChatScreen}
-        options={{ headerShown: true, title: "Chat", presentation: "card" }}
+        options={{ 
+          headerShown: true, 
+          title: "Chat", 
+          presentation: "card" 
+        }}
       />
 
       <Stack.Screen

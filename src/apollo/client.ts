@@ -5,6 +5,7 @@ import {
   HttpLink,
   split,
 } from "@apollo/client";
+import { setContext } from "@apollo/client/link/context";
 import { getMainDefinition } from "@apollo/client/utilities";
 import { GraphQLWsLink } from "@apollo/client/link/subscriptions";
 import { createClient } from "graphql-ws";
@@ -47,9 +48,35 @@ const httpLink = new HttpLink({
   uri: `${ENV.apiBase}/api/graphql`,
 });
 
+// ✅ Auth + Device headers for HTTP (สำคัญมาก)
+const authLink = setContext(async (_, { headers }) => {
+  const { token } = await loadAuth();
+  const device = getCachedDeviceInfo();
+
+  return {
+    headers: {
+      ...headers,
+      Authorization: token ? `Bearer ${token}` : "",
+
+      // scope/app headers
+      "x-scope": "android",
+      "x-app": ENV.appName,
+
+      ...(device && {
+        "x-device-id": device.deviceId,
+        "x-device-name": device.deviceName,
+        "x-os": device.systemName,
+        "x-os-version": device.systemVersion,
+        "x-app-version": device.appVersion,
+        "x-build-number": device.buildNumber,
+        "x-platform": device.platform,
+        "x-emulator": String(device.isEmulator),
+      }),
+    },
+  };
+});
+
 // ================= WS Link =================
-// ⚠️ ต้องตรงกับ WS server
-// const WS_URL = "ws://10.0.2.2:8081/graphql";
 console.log("[API_BASE] =", ENV.apiBase);
 console.log("[WS_URL] =", ENV.wsUrl);
 
@@ -83,14 +110,13 @@ const wsLink = new GraphQLWsLink(
 
     on: {
       connected: () => console.log("[WS] connected"),
-      closed: (e) =>
-        console.log("[WS] closed", e),
+      closed: (e) => console.log("[WS] closed", e),
       error: (e) => console.log("[WS] error", e),
     },
   })
 );
 
-// ================= Split =================
+// ================= Split (sub => ws, else => http) =================
 const splitLink = split(
   ({ query }) => {
     const def = getMainDefinition(query);
@@ -100,7 +126,11 @@ const splitLink = split(
     );
   },
   wsLink,
-  ApolloLink.from([errorLink, httpLink])
+  ApolloLink.from([
+    errorLink,          // log errors
+    authLink,           // ✅ ใส่ header token ที่นี่
+    httpLink,
+  ])
 );
 
 // ================= Apollo Client =================

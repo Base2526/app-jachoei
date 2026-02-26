@@ -22,7 +22,12 @@ import Ionicons from "react-native-vector-icons/Ionicons";
 import { gql } from "@apollo/client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-import { useNavigation, useFocusEffect } from "@react-navigation/native";
+import {
+  useNavigation,
+  useFocusEffect,
+  useRoute,
+  RouteProp,
+} from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 
 import { ThumbGrid } from "../components/ThumbGrid";
@@ -42,6 +47,9 @@ import {
   BottomSheetReportBankModalRef,
 } from "../components/BottomSheetReportBankModal";
 
+// =======================
+// GraphQL
+// =======================
 const Q_POSTS_PAGED = gql`
   query ($q: String, $limit: Int!, $offset: Int!) {
     postsPaged(search: $q, limit: $limit, offset: $offset) {
@@ -88,6 +96,75 @@ const M_TOGGLE_BOOKMARK = gql`
   }
 `;
 
+const M_REPORT_SCAM_BANK_ACCOUNT = gql`
+  mutation ReportScamBankAccount($input: ReportScamBankAccountInput!) {
+    reportScamBankAccount(input: $input) {
+      account
+      bank_name
+      report_count
+      last_report_at
+      risk_level
+      updated_at
+      is_deleted
+      post_ids
+      ctx
+      tags
+    }
+  }
+`;
+
+const M_UNREPORT_SCAM_BANK_ACCOUNT = gql`
+  mutation UnreportScamBankAccount($input: UnreportScamBankAccountInput!) {
+    unreportScamBankAccount(input: $input) {
+      account
+      bank_name
+      report_count
+      last_report_at
+      risk_level
+      updated_at
+      is_deleted
+      post_ids
+      ctx
+      tags
+    }
+  }
+`;
+
+const REPORT_SCAM_PHONE = gql`
+  mutation ReportScamPhone($input: ReportScamPhoneInput!) {
+    reportScamPhone(input: $input) {
+      phone
+      report_count
+      last_report_at
+      risk_level
+      updated_at
+      is_deleted
+      post_ids
+      ctx
+    }
+  }
+`;
+
+const UNBLOCK_SCAM_PHONE = gql`
+  mutation UnblockScamPhone($input: UnblockScamPhoneInput!) {
+    unblockScamPhone(input: $input) {
+      phone
+      report_count
+      last_report_at
+      risk_level
+      updated_at
+      is_deleted
+      post_ids
+      ctx
+    }
+  }
+`;
+
+// =======================
+// Types / Utils
+// =======================
+export type ReportCategory = "SPAM" | "SCAM" | "SALES" | "HARASS" | "OTHER";
+
 type PostItem = {
   id: string;
   title?: string | null;
@@ -127,6 +204,15 @@ const PAGE_SIZE = 10;
 // ====== Local storage ======
 const BLOCKED_STORE_KEY = "jachoei.blocked_tel_v1";
 const REPORTED_BANK_STORE_KEY = "jachoei.reported_bank_v1";
+
+function genClientId() {
+  // RN-safe UUID-ish (ไม่ใช้ uuidv4 เพื่อเลี่ยง crypto.getRandomValues)
+  const s4 = () =>
+    Math.floor((1 + Math.random()) * 0x10000)
+      .toString(16)
+      .substring(1);
+  return `${s4()}${s4()}-${s4()}-${s4()}-${s4()}-${s4()}${s4()}${s4()}`;
+}
 
 function normalizeTel(raw: string) {
   const s = String(raw || "").trim();
@@ -184,6 +270,78 @@ function buildSharePayload(r: PostItem) {
   return { url, title, text };
 }
 
+type HomeRoute = RouteProp<RootStackParamList, "Home">;
+
+
+// const DEVICE_CLIENT_ID_KEY = "jachoei.device_client_id_v1";
+// let _deviceClientIdCache: string | null = null;
+
+// async function getDeviceClientId(): Promise<string> {
+//   if (_deviceClientIdCache) return _deviceClientIdCache;
+
+//   const existed = await AsyncStorage.getItem(DEVICE_CLIENT_ID_KEY);
+//   if (existed) {
+//     _deviceClientIdCache = existed;
+//     return existed;
+//   }
+
+//   const created = genClientId();
+//   await AsyncStorage.setItem(DEVICE_CLIENT_ID_KEY, created);
+//   _deviceClientIdCache = created;
+//   return created;
+// }
+
+// async function reportBankOnServer(args: {
+//   bankName: string;
+//   accountNorm: string;
+//   note?: string | null;
+// }) {
+//   const client_id = await getDeviceClientId();
+
+//   const input = {
+//     bank_name: String(args.bankName || "").trim() || "UNKNOWN",
+//     account: args.accountNorm,
+//     note: args.note ?? null,
+//     client_id,
+//     device_model: Platform.OS,
+//     os_version: String(Platform.Version),
+//     app_version: "1.0.0",
+//   };
+
+//   const { data } = await client.mutate({
+//     mutation: M_REPORT_SCAM_BANK_ACCOUNT,
+//     variables: { input },
+//   });
+
+//   return data?.reportScamBankAccount;
+// }
+
+// async function unreportBankOnServer(args: {
+//   bankName: string;
+//   accountNorm: string;
+//   reason?: string | null;
+// }) {
+//   const client_id = await getDeviceClientId();
+
+//   const input = {
+//     bank_name: String(args.bankName || "").trim() || "UNKNOWN",
+//     account: args.accountNorm,
+//     client_id,
+//     device_model: Platform.OS,
+//     os_version: String(Platform.Version),
+//     app_version: "1.0.0",
+//     reason: args.reason ?? null,
+//   };
+
+//   const { data } = await client.mutate({
+//     mutation: M_UNREPORT_SCAM_BANK_ACCOUNT,
+//     variables: { input },
+//   });
+
+//   return data?.unreportScamBankAccount;
+// }
+
+
 export const HomeScreen: React.FC = () => {
   const { isLoggedIn, user } = useAuth();
 
@@ -230,6 +388,7 @@ export const HomeScreen: React.FC = () => {
 
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const route = useRoute<HomeRoute>();
 
   // ✅ sheets refs
   const blockSheetRef = useRef<BottomSheetBlockReportModalRef>(null);
@@ -241,7 +400,6 @@ export const HomeScreen: React.FC = () => {
       e?.stopPropagation?.();
       if (isLoggedIn) return true;
 
-      // ปิด modal ที่อาจเปิดอยู่ เพื่อกัน UI ค้าง
       setTelModalVisible(false);
       setBankModalVisible(false);
 
@@ -341,20 +499,19 @@ export const HomeScreen: React.FC = () => {
     [persistReportedBank]
   );
 
-  // ✅ toggle tel block (no confirm; sheet confirm)
-  const doToggleBlockNoConfirm = useCallback(
-    async (telNormalized: string) => {
-      if (!telNormalized) return;
-      setBlockedMap((prev) => {
+  const unmarkBankReportedLocal = useCallback(
+    (accNormalized: string) => {
+      if (!accNormalized) return;
+      setReportedBankMap((prev) => {
         const next = { ...prev };
-        if (next[telNormalized]) delete next[telNormalized];
-        else next[telNormalized] = true;
-        persistBlocked(next);
+        delete next[accNormalized];
+        persistReportedBank(next);
         return next;
       });
     },
-    [persistBlocked]
+    [persistReportedBank]
   );
+
 
   const openBlockSheet = useCallback(
     (
@@ -377,7 +534,6 @@ export const HomeScreen: React.FC = () => {
     [requireLoginOrGo]
   );
 
-  // ✅ open report bank sheet (report-only)
   const openReportBankSheet = useCallback(
     (
       e: any,
@@ -454,6 +610,26 @@ export const HomeScreen: React.FC = () => {
   useEffect(() => {
     loadFirst();
   }, [loadFirst]);
+
+  // ✅ รับผล bookmark ที่ยิงมาจาก PostView (merge params)
+  useEffect(() => {
+    const p: any = route.params as any;
+    if (!p?.bookmarkPing || !p?.bookmarkPostId) return;
+
+    const postId = String(p.bookmarkPostId);
+    const val = !!p.bookmarkValue;
+
+    setItems((prev) =>
+      prev.map((x) => (x.id === postId ? { ...x, is_bookmarked: val } : x))
+    );
+
+    // clear ping (กันยิงซ้ำ)
+    navigation.setParams({
+      bookmarkPing: undefined,
+      bookmarkPostId: undefined,
+      bookmarkValue: undefined,
+    } as any);
+  }, [route.params, navigation]);
 
   const onRefresh = useCallback(async () => {
     await loadFirst();
@@ -559,7 +735,7 @@ export const HomeScreen: React.FC = () => {
 
       if (authorId === user?.id) return;
 
-      navigation.navigate("Chat", { to: String(authorId) });
+      navigation.navigate("Chat", { to: String(authorId) } as any);
     },
     [isLoggedIn, navigation, user?.id]
   );
@@ -588,6 +764,115 @@ export const HomeScreen: React.FC = () => {
     []
   );
 
+  // ใช้เช็ค blocked
+  const isBlocked = useCallback(
+    (telNormalized: string) => {
+      const n = normalizeTel(telNormalized);
+      return !!(n && blockedMap[n]);
+    },
+    [blockedMap]
+  );
+
+  // ✅ REPORT TEL -> ยิง reportScamPhone
+  const reportTel = useCallback(
+    async (payload: { tel: string; category: ReportCategory; note?: string; postId?: string }) => {
+      const tel = normalizeTel(payload.tel);
+      if (!tel) {
+        Alert.alert("เบอร์ไม่ถูกต้อง", "กรุณาลองใหม่");
+        return;
+      }
+
+      const input = {
+        phone: tel,
+        note: payload.note?.trim() ? payload.note.trim() : null,
+        local_blocked: isBlocked(tel),
+        client_id: genClientId(),
+        device_model: Platform.OS,
+        os_version: String(Platform.Version),
+        app_version: "1.0.0",
+        category: payload.category,
+      };
+
+      try {
+        const res = await client.mutate({
+          mutation: REPORT_SCAM_PHONE,
+          variables: { input },
+        });
+
+        Alert.alert("ส่งรายงานแล้ว", "ขอบคุณที่ช่วยกันทำให้ระบบแม่นขึ้น 🙏");
+        return res.data?.reportScamPhone;
+      } catch (e: any) {
+        console.log("REPORT TEL ERROR", e?.message || e);
+        Alert.alert("รายงานไม่สำเร็จ", e?.message || "กรุณาลองใหม่");
+      }
+    },
+    [isBlocked]
+  );
+
+  async function unblockTelOnServer(phone: string) {
+    const input = {
+      phone,
+      client_id: genClientId(),
+      device_model: Platform.OS,
+      os_version: String(Platform.Version),
+      app_version: "1.0.0",
+    };
+
+    const res = await client.mutate({
+      mutation: UNBLOCK_SCAM_PHONE,
+      variables: { input },
+    });
+
+    return res.data?.unblockScamPhone;
+  }
+
+  // ✅ Bank: report/unreport helpers
+  async function reportBankOnServer(args: {
+    bankName: string;
+    accountNorm: string;
+    note?: string | null;
+  }) {
+    const input = {
+      bank_name: String(args.bankName || "").trim() || "UNKNOWN",
+      account: args.accountNorm,
+      note: args.note ?? null,
+      client_id: genClientId(),
+      device_model: Platform.OS,
+      os_version: String(Platform.Version),
+      app_version: "1.0.0",
+    };
+
+    const { data } = await client.mutate({
+      mutation: M_REPORT_SCAM_BANK_ACCOUNT,
+      variables: { input },
+    });
+
+    return data?.reportScamBankAccount;
+  }
+
+  async function unreportBankOnServer(args: {
+    bankName: string;
+    accountNorm: string;
+    reason?: string | null;
+  }) {
+    const input = {
+      bank_name: String(args.bankName || "").trim() || "UNKNOWN",
+      account: args.accountNorm,
+      client_id: genClientId(),
+      device_model: Platform.OS,
+      os_version: String(Platform.Version),
+      app_version: "1.0.0",
+      reason: args.reason ?? null,
+    };
+
+    const { data } = await client.mutate({
+      mutation: M_UNREPORT_SCAM_BANK_ACCOUNT,
+      variables: { input },
+    });
+
+    return data?.unreportScamBankAccount;
+  }
+
   const renderPostItem = useCallback(
     ({ item }: { item: PostItem }) => {
       const ts = formatDateTime(item.created_at);
@@ -614,7 +899,7 @@ export const HomeScreen: React.FC = () => {
         navigation.navigate("PostView", {
           id: String(item?.id),
           currentUserId: user?.id,
-        });
+        } as any);
       };
 
       const authorName = item.author?.name?.trim() || "Unknown";
@@ -630,7 +915,6 @@ export const HomeScreen: React.FC = () => {
         !!item.author?.id &&
         !!user?.id &&
         String(item.author.id) !== String(user.id);
-      // const showBookmarkBtn = showChatBtn;
 
       const INLINE_MAX_TELS = 3;
       const inlineTels = telList.slice(0, INLINE_MAX_TELS);
@@ -781,7 +1065,7 @@ export const HomeScreen: React.FC = () => {
             )}
           </View>
 
-          {/* BANK chips (REPORT ONLY) */}
+          {/* BANK chips (REPORT/UNREPORT) */}
           <View style={styles.infoRow}>
             <Ionicons name="card-outline" size={14} color="#9ca3af" />
             <Text style={styles.infoLabel}>Bank:</Text>
@@ -819,16 +1103,12 @@ export const HomeScreen: React.FC = () => {
 
                       <View style={styles.chipRight}>
                         <Ionicons
-                          name={
-                            reported
-                              ? "checkmark-circle"
-                              : "megaphone-outline"
-                          }
+                          name={reported ? "close-circle" : "megaphone-outline"}
                           size={12}
-                          color={reported ? "#34c759" : "#e5e7eb"}
+                          color={reported ? "#ef4444" : "#e5e7eb"}
                         />
-                        <Text style={styles.chipRightText}>
-                          {reported ? "รายงานแล้ว" : "รายงาน"}
+                        <Text style={[styles.chipRightText, reported && { color: "#ef4444" }]}>
+                          {reported ? "ยกเลิกรายงาน" : "รายงาน"}
                         </Text>
                       </View>
                     </TouchableOpacity>
@@ -875,21 +1155,21 @@ export const HomeScreen: React.FC = () => {
             {showChatBtn ? (
               <IconButton
                 icon="chatbubbles-outline"
-                onPress={(e) =>
-                  openChatWithAuthor(e as any, item.author?.id)
-                }
+                onPress={(e) => openChatWithAuthor(e as any, item.author?.id)}
               />
             ) : null}
 
             <View style={{ flex: 1 }} />
 
-            <IconButton
-              icon={isBookmarked ? "bookmark" : "bookmark-outline"}
-              onPress={(e) => toggleBookmark(e as any, item.id)}
-              disabled={bookmarkBusy}
-              active={isBookmarked}
-              loading={bookmarkBusy}
-            />
+            {showChatBtn ? (
+              <IconButton
+                icon={isBookmarked ? "bookmark" : "bookmark-outline"}
+                onPress={(e) => toggleBookmark(e as any, item.id)}
+                disabled={bookmarkBusy}
+                active={isBookmarked}
+                loading={bookmarkBusy}
+              />
+            ) : null}
           </View>
         </Pressable>
       );
@@ -922,6 +1202,7 @@ export const HomeScreen: React.FC = () => {
       </View>
     );
   }, [canLoadMore, loadingMore]);
+  
 
   return (
     <View style={styles.container}>
@@ -931,7 +1212,10 @@ export const HomeScreen: React.FC = () => {
         renderItem={renderPostItem}
         contentContainerStyle={{ padding: 12, paddingBottom: 24 }}
         refreshControl={
-          <RefreshControl refreshing={loading && page === 1} onRefresh={onRefresh} />
+          <RefreshControl
+            refreshing={loading && page === 1}
+            onRefresh={onRefresh}
+          />
         }
         onEndReachedThreshold={0.5}
         onEndReached={onLoadMore}
@@ -953,13 +1237,19 @@ export const HomeScreen: React.FC = () => {
         animationType="fade"
         onRequestClose={() => setTelModalVisible(false)}
       >
-        <Pressable style={styles.modalOverlay} onPress={() => setTelModalVisible(false)}>
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setTelModalVisible(false)}
+        >
           <Pressable style={styles.modalCard} onPress={() => {}}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle} numberOfLines={2}>
                 {telModalTitle || "เบอร์โทร"}
               </Text>
-              <TouchableOpacity onPress={() => setTelModalVisible(false)} style={styles.modalClose}>
+              <TouchableOpacity
+                onPress={() => setTelModalVisible(false)}
+                style={styles.modalClose}
+              >
                 <Ionicons name="close" size={18} color="#e5e7eb" />
               </TouchableOpacity>
             </View>
@@ -981,11 +1271,20 @@ export const HomeScreen: React.FC = () => {
                           source: "MODAL",
                         })
                       }
-                      style={[styles.modalBtn, blocked && styles.modalBtnBlocked]}
+                      style={[
+                        styles.modalBtn,
+                        blocked && styles.modalBtnBlocked,
+                      ]}
                       activeOpacity={0.85}
                     >
-                      <Ionicons name={blocked ? "lock-closed" : "lock-open-outline"} size={14} color="#fff" />
-                      <Text style={styles.modalBtnText}>{blocked ? "บล็อกแล้ว" : "บล็อก"}</Text>
+                      <Ionicons
+                        name={blocked ? "lock-closed" : "lock-open-outline"}
+                        size={14}
+                        color="#fff"
+                      />
+                      <Text style={styles.modalBtnText}>
+                        {blocked ? "บล็อกแล้ว" : "บล็อก"}
+                      </Text>
                     </TouchableOpacity>
                   </View>
                 );
@@ -1002,13 +1301,19 @@ export const HomeScreen: React.FC = () => {
         animationType="fade"
         onRequestClose={() => setBankModalVisible(false)}
       >
-        <Pressable style={styles.modalOverlay} onPress={() => setBankModalVisible(false)}>
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setBankModalVisible(false)}
+        >
           <Pressable style={styles.modalCard} onPress={() => {}}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle} numberOfLines={2}>
                 {bankModalTitle || "บัญชีธนาคาร"}
               </Text>
-              <TouchableOpacity onPress={() => setBankModalVisible(false)} style={styles.modalClose}>
+              <TouchableOpacity
+                onPress={() => setBankModalVisible(false)}
+                style={styles.modalClose}
+              >
                 <Ionicons name="close" size={18} color="#e5e7eb" />
               </TouchableOpacity>
             </View>
@@ -1033,11 +1338,20 @@ export const HomeScreen: React.FC = () => {
                           source: "MODAL",
                         })
                       }
-                      style={[styles.modalBtn, reported && styles.modalBtnReported]}
+                      style={[
+                        styles.modalBtn,
+                        reported && styles.modalBtnReported,
+                      ]}
                       activeOpacity={0.85}
                     >
-                      <Ionicons name={reported ? "checkmark-circle" : "megaphone-outline"} size={14} color="#fff" />
-                      <Text style={styles.modalBtnText}>{reported ? "รายงานแล้ว" : "รายงาน"}</Text>
+                      <Ionicons
+                        name={reported ? "close-circle" : "megaphone-outline"}
+                        size={14}
+                        color="#fff"
+                      />
+                      <Text style={styles.modalBtnText}>
+                        {reported ? "ยกเลิกรายงาน" : "รายงาน"}
+                      </Text>
                     </TouchableOpacity>
                   </View>
                 );
@@ -1052,7 +1366,6 @@ export const HomeScreen: React.FC = () => {
         ref={blockSheetRef}
         isBlocked={(telNormalized) => !!blockedMap[telNormalized]}
         onBlock={async (telNormalized) => {
-          // กันซ้ำชั้น: sheet เองก็จะถูกเปิดได้เฉพาะตอน login แล้ว
           setBlockedMap((prev) => {
             const next = { ...prev, [telNormalized]: true };
             persistBlocked(next);
@@ -1060,25 +1373,72 @@ export const HomeScreen: React.FC = () => {
           });
         }}
         onUnblock={async (telNormalized) => {
+          const tel = normalizeTel(telNormalized);
+          if (!tel) return;
+
+          try {
+            await unblockTelOnServer(tel);
+          } catch (e: any) {
+            console.log("UNBLOCK TEL ERROR", e?.message || e);
+            Alert.alert("Unblock ไม่สำเร็จ", e?.message || "กรุณาลองใหม่");
+            return;
+          }
+
           setBlockedMap((prev) => {
             const next = { ...prev };
             delete next[telNormalized];
             persistBlocked(next);
             return next;
           });
+
+          Alert.alert("ยกเลิกบล็อกแล้ว", tel);
         }}
         onReport={async ({ tel, category, note, postId }) => {
-          console.log("REPORT TEL", { tel, category, note, postId });
+          await reportTel({ tel, category, note, postId });
         }}
       />
 
-      {/* ===== Bottom Sheet: Bank Report ONLY ===== */}
-      <BottomSheetReportBankModal
+      {/* ===== Bottom Sheet: Bank Report / Unreport ===== */}
+     <BottomSheetReportBankModal
         ref={reportBankSheetRef}
         isReported={(accNormalized) => !!reportedBankMap[accNormalized]}
-        onMarkReported={(accNormalized) => markBankReportedLocal(accNormalized)}
-        onReport={async ({ bankName, account, category, note, postId }) => {
-          console.log("REPORT BANK", { bankName, account, category, note, postId });
+        onToggleReport={async ({ mode, bankName, account, note }) => {
+          const accNorm = normalizeBankAccount(account);
+          if (!accNorm) {
+            Alert.alert("เลขบัญชีไม่ถูกต้อง");
+            return;
+          }
+
+          const bankNameSafe = String(bankName || "").trim() || "UNKNOWN";
+
+          try {
+            if (mode === "REPORT") {
+              await reportBankOnServer({
+                bankName: bankNameSafe,
+                accountNorm: accNorm,
+                note: note?.trim() ? note.trim() : null,
+              });
+
+              // ✅ mark local
+              markBankReportedLocal(accNorm);
+              Alert.alert("สำเร็จ", "รายงานบัญชีเรียบร้อยแล้ว");
+              return;
+            }
+
+            // mode === "UNREPORT"
+            await unreportBankOnServer({
+              bankName: bankNameSafe,
+              accountNorm: accNorm,
+              reason: null,
+            });
+
+            // ✅ unmark local
+            unmarkBankReportedLocal(accNorm);
+            Alert.alert("สำเร็จ", "ยกเลิกรายงานบัญชีแล้ว");
+          } catch (err: any) {
+            console.log("REPORT/UNREPORT BANK ERROR", err);
+            Alert.alert("ทำรายการไม่สำเร็จ", err?.message || "ลองใหม่อีกครั้ง");
+          }
         }}
       />
     </View>

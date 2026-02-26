@@ -59,7 +59,6 @@ const REPORT_SCAM_PHONE = gql`
 // ======================================================
 // GraphQL (BANK)
 // ======================================================
-// NOTE: ถ้า backend ของคุณยัง error "Cannot query field ..." ให้ลด field เหลือเท่าที่ schema มีจริง
 const SEARCH_SCAM_BANK_ACCOUNTS = gql`
   query SearchScamBankAccounts($q: String!, $limit: Int!) {
     searchScamBankAccounts(q: $q, limit: $limit) {
@@ -296,18 +295,8 @@ function HeaderSearchBar(props: {
 
   placeholder?: string;
 }) {
-  const {
-    value,
-    onChangeText,
-    onSubmit,
-    onFocus,
-    onBlur,
-    onClearInput,
-    loading,
-    historyOpen,
-    onToggleHistory,
-    placeholder,
-  } = props;
+  const { value, onChangeText, onSubmit, onFocus, onBlur, onClearInput, loading, historyOpen, onToggleHistory, placeholder } =
+    props;
 
   return (
     <View style={nav.headerOuter}>
@@ -403,7 +392,7 @@ function HistoryPanelOverlay(props: {
 }
 
 // =======================
-// Inline Phone Block/Report Panel (ของเดิม)
+// Inline Phone Block/Report Panel
 // =======================
 function Chip(props: { label: string; icon: string; active?: boolean; onPress: () => void }) {
   const { label, icon, active, onPress } = props;
@@ -494,6 +483,8 @@ function InlineBlockReportPanel(props: InlinePanelProps) {
     }
   }, [telNorm, blockedNow, onBlock, onUnblock, onReport, wantReport, category, note, dontAskAgain, postId]);
 
+  const fallbackRiskScore = riskScore ?? clamp((reportCount ?? 0) * 10, 0, 100);
+
   return (
     <View style={ui.panel}>
       <View style={ui.panelHeader}>
@@ -580,7 +571,11 @@ function InlineBlockReportPanel(props: InlinePanelProps) {
           disabled={busy}
         >
           <View style={ui.btnRow}>
-            <Ionicons name={blockedNow ? "lock-open-outline" : "lock-closed"} size={16} color={blockedNow ? "#e5e7eb" : "#111"} />
+            <Ionicons
+              name={blockedNow ? "lock-open-outline" : "lock-closed"}
+              size={16}
+              color={blockedNow ? "#e5e7eb" : "#111"}
+            />
             <Text style={[ui.btnPrimaryText, { color: blockedNow ? "#e5e7eb" : "#111" }]}>
               {busy ? "กำลังทำรายการ..." : primaryText}
             </Text>
@@ -589,15 +584,14 @@ function InlineBlockReportPanel(props: InlinePanelProps) {
       </View>
 
       <Text style={ui.hint}>
-        Risk tip: {riskScore ?? clamp((reportCount ?? 0) * 10, 0, 100)} •{" "}
-        {riskText(riskScore ?? clamp((reportCount ?? 0) * 10, 0, 100))}
+        Risk tip: {fallbackRiskScore} • {riskText(fallbackRiskScore)}
       </Text>
     </View>
   );
 }
 
 // =======================
-// Bank Report Inline Form (เอา UI จากรูป "รายงานบัญชีธนาคาร" มาใส่ในตำแหน่ง panel)
+// Bank Report Inline Form
 // =======================
 function BankReportChip(props: { label: string; icon: string; active?: boolean; onPress: () => void }) {
   const { label, icon, active, onPress } = props;
@@ -619,9 +613,15 @@ function BankReportInlineForm(props: {
 
   fromPostTitle?: string | null;
 
-  onClose: () => void; // กด X
-  onCancel: () => void; // กดยกเลิก
-  onSubmit: (payload: { account: string; bankName?: string | null; category: BankReportCategory; note?: string; rememberLocal: boolean }) => Promise<void>;
+  onClose: () => void;
+  onCancel: () => void;
+  onSubmit: (payload: {
+    account: string;
+    bankName?: string | null;
+    category: BankReportCategory;
+    note?: string;
+    rememberLocal: boolean;
+  }) => Promise<void>;
 }) {
   const { userId, account, bankName, riskLabel, riskTone, fromPostTitle, onClose, onCancel, onSubmit } = props;
 
@@ -632,7 +632,6 @@ function BankReportInlineForm(props: {
   const [rememberLocal, setRememberLocal] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  // โหลด rememberLocal เมื่อเปลี่ยน account/bankName
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -671,7 +670,6 @@ function BankReportInlineForm(props: {
         rememberLocal,
       });
 
-      // เก็บ rememberLocal ย้ำอีกที
       try {
         const k = bankLocalReportedKey(userId, bankName ?? null, accNorm);
         await AsyncStorage.setItem(k, rememberLocal ? "1" : "0");
@@ -697,7 +695,7 @@ function BankReportInlineForm(props: {
           <View style={br.subRow}>
             <Ionicons name="card-outline" size={16} color="#cbd5e1" />
             <Text style={br.subText} numberOfLines={1}>
-              {(bankName?.trim() ? bankName.trim() : "ธ.กสิกรไทย")} • {accNorm || "-"}
+              {(bankName?.trim() ? bankName.trim() : "ไม่ระบุธนาคาร")} • {accNorm || "-"}
             </Text>
           </View>
 
@@ -785,13 +783,116 @@ function BankReportInlineForm(props: {
 }
 
 // =======================
+// Not-found Action Cards (NO PSEUDO)
+// =======================
+function NotFoundPhoneAction(props: {
+  term: string;
+  checkResult: CheckResult | null;
+  loadingCheck: boolean;
+
+  isBlocked: (tel: string) => boolean;
+  onBlock: (tel: string) => Promise<void> | void;
+  onUnblock: (tel: string) => Promise<void> | void;
+  onReportPhone: (data: { tel: string; category: ReportCategory; note?: string; postId?: string }) => Promise<void> | void;
+}) {
+  const { term, checkResult, loadingCheck, isBlocked, onBlock, onUnblock, onReportPhone } = props;
+  const tel = normalizeTel(term);
+
+  const riskScore = clamp(Number(checkResult?.risk ?? 0), 0, 100);
+  const riskMeta = computeRiskLabel(checkResult?.reportCount ?? 0, riskScore);
+  const pillTone = toneStyle(riskMeta.tone);
+
+  return (
+    <View style={[styles.singleCard, { borderColor: "#2563eb", backgroundColor: "#0f1a39" }]}>
+      <View style={styles.cardHeaderRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.telText}>{tel || term}</Text>
+          <Text style={styles.subText}>
+            {loadingCheck ? "Checking..." : `Risk ${riskScore} • ${checkResult?.reportCount ?? 0} reports`}
+          </Text>
+          <Text style={[styles.subText, { marginTop: 6, color: "#cbd5e1" }]}>ไม่พบในผลค้นหา แต่ยัง Block/Report ได้</Text>
+        </View>
+
+        <View style={styles.headerRight}>
+          <View style={[styles.riskBadge, { backgroundColor: pillTone.bg, borderColor: "#27335f" }]}>
+            <Text style={[styles.riskBadgeText, { color: pillTone.fg }]}>{riskMeta.label}</Text>
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.expandWrap}>
+        <InlineBlockReportPanel
+          tel={tel || term}
+          reportCount={checkResult?.reportCount ?? 0}
+          riskScore={riskScore}
+          isBlocked={isBlocked}
+          onBlock={onBlock}
+          onUnblock={onUnblock}
+          onReport={onReportPhone}
+        />
+      </View>
+    </View>
+  );
+}
+
+function NotFoundBankAction(props: {
+  userId: string;
+  term: string;
+  onReportBank: (data: {
+    account: string;
+    bankName?: string | null;
+    category: BankReportCategory;
+    note?: string;
+    postId?: string;
+  }) => Promise<void>;
+}) {
+  const { userId, term, onReportBank } = props;
+
+  const acc = normalizeBankAccount(term);
+  const riskMeta = computeRiskLabel(0, 0);
+  const pillTone = toneStyle(riskMeta.tone);
+
+  return (
+    <View style={[styles.singleCard, { borderColor: "#2563eb", backgroundColor: "#0f1a39" }]}>
+      <View style={styles.cardHeaderRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.telText}>{acc || term}</Text>
+          <Text style={styles.subText}>ไม่พบในผลค้นหา แต่ยัง Report ได้</Text>
+        </View>
+
+        <View style={styles.headerRight}>
+          <View style={[styles.riskBadge, { backgroundColor: pillTone.bg, borderColor: "#27335f" }]}>
+            <Text style={[styles.riskBadgeText, { color: pillTone.fg }]}>{riskMeta.label}</Text>
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.expandWrap}>
+        <BankReportInlineForm
+          userId={userId}
+          account={acc || term}
+          bankName={null}
+          fromPostTitle={null}
+          riskLabel={riskMeta.label}
+          riskTone={pillTone}
+          onClose={() => {}}
+          onCancel={() => {}}
+          onSubmit={async ({ account, bankName, category, note }) => {
+            await onReportBank({ account, bankName, category, note, postId: undefined });
+          }}
+        />
+      </View>
+    </View>
+  );
+}
+
+// =======================
 // Screen
 // =======================
 export default function PhoneCenterLookupTab() {
   const navigation = useNavigation<any>();
-  useHeaderHeight(); // keep
+  useHeaderHeight();
 
-  // TODO: เอา uid จาก auth จริง
   const userId = "guest";
 
   const [lookupType, setLookupType] = useState<LookupType>("PHONE");
@@ -808,10 +909,14 @@ export default function PhoneCenterLookupTab() {
   const [loadingCheck, setLoadingCheck] = useState(false);
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null);
   const [blockedMap, setBlockedMap] = useState<Record<string, true>>({});
+  const [phoneSearched, setPhoneSearched] = useState(false);
+  const [lastPhoneTerm, setLastPhoneTerm] = useState<string>("");
 
   // BANK
   const [bankItems, setBankItems] = useState<ScamBank[]>([]);
   const [expandedAcc, setExpandedAcc] = useState<string | null>(null);
+  const [bankSearched, setBankSearched] = useState(false);
+  const [lastBankTerm, setLastBankTerm] = useState<string>("");
 
   const blurTimer = useRef<any>(null);
 
@@ -822,7 +927,6 @@ export default function PhoneCenterLookupTab() {
     })();
   }, [userId]);
 
-  // โหลด history ตาม lookupType
   useEffect(() => {
     (async () => {
       const h = await loadHistory(userId, lookupType);
@@ -898,16 +1002,21 @@ export default function PhoneCenterLookupTab() {
       const acc = normalizeBankAccount(data.account);
       if (!acc) return;
 
+      const bankNameSafe = String(data.bankName || "").trim() || "UNKNOWN";
+
+      // ถ้า backend บังคับ post_id (ID!) -> กัน null
+      const postIdSafe = data.postId ? String(data.postId) : "0";
+
       const input = {
         account: acc,
-        bank_name: data.bankName ?? null,
+        bank_name: bankNameSafe,
         category: data.category,
         note: data.note?.trim() ? data.note.trim() : null,
         client_id: genClientId(),
         device_model: null,
         os_version: `${Platform.OS} ${Platform.Version}`,
         app_version: null,
-        post_id: data.postId ?? null,
+        post_id: postIdSafe,
       };
 
       const res = await client.mutate<{ reportScamBankAccount: ScamBank }>({
@@ -957,6 +1066,9 @@ export default function PhoneCenterLookupTab() {
       if (lookupType === "PHONE") {
         const term = normalizeTel(raw) || raw;
 
+        setPhoneSearched(true);
+        setLastPhoneTerm(term);
+
         setCheckResult(null);
         setExpandedTel(null);
         setItems([]);
@@ -984,22 +1096,14 @@ export default function PhoneCenterLookupTab() {
           const exact = list.find((x) => normalizeTel(x.phone) === normalizeTel(term)) || list[0];
           setExpandedTel(normalizeTel(exact.phone));
         } else {
-          const pseudo: ScamPhone = {
-            phone: term,
-            report_count: 0,
-            last_report_at: null,
-            risk_level: 0,
-            tags: [],
-            updated_at: String(Date.now()),
-            is_deleted: false,
-            post_ids: [],
-            ctx: null,
-          };
-          setItems([pseudo]);
-          setExpandedTel(normalizeTel(pseudo.phone));
+          // ✅ NO PSEUDO: ปล่อย list ว่าง แล้วให้ ListEmptyComponent แสดง action card
+          setExpandedTel(null);
         }
       } else {
         const term = normalizeBankAccount(raw) || raw;
+
+        setBankSearched(true);
+        setLastBankTerm(term);
 
         setExpandedAcc(null);
         setBankItems([]);
@@ -1015,24 +1119,14 @@ export default function PhoneCenterLookupTab() {
         const list = res.data?.searchScamBankAccounts ?? [];
         setBankItems(list);
 
+        console.log("[setBankItems] =", list);
+
         if (list.length > 0) {
           const exact = list.find((x) => normalizeBankAccount(x.account) === normalizeBankAccount(term)) || list[0];
           setExpandedAcc(normalizeBankAccount(exact.account));
         } else {
-          const pseudo: ScamBank = {
-            account: term,
-            bank_name: null,
-            report_count: 0,
-            last_report_at: null,
-            risk_level: 0,
-            tags: [],
-            updated_at: String(Date.now()),
-            is_deleted: false,
-            post_ids: [],
-            ctx: null,
-          };
-          setBankItems([pseudo]);
-          setExpandedAcc(normalizeBankAccount(pseudo.account));
+          // ✅ NO PSEUDO
+          setExpandedAcc(null);
         }
       }
     } catch (e: any) {
@@ -1100,6 +1194,10 @@ export default function PhoneCenterLookupTab() {
                 setExpandedTel(null);
                 setExpandedAcc(null);
                 setCheckResult(null);
+                setPhoneSearched(false);
+                setBankSearched(false);
+                setLastPhoneTerm("");
+                setLastBankTerm("");
               }}
               style={[topTabs.btn, lookupType === "PHONE" && topTabs.btnOn]}
             >
@@ -1116,6 +1214,10 @@ export default function PhoneCenterLookupTab() {
                 setExpandedTel(null);
                 setExpandedAcc(null);
                 setCheckResult(null);
+                setPhoneSearched(false);
+                setBankSearched(false);
+                setLastPhoneTerm("");
+                setLastBankTerm("");
               }}
               style={[topTabs.btn, lookupType === "BANK" && topTabs.btnOn]}
             >
@@ -1210,9 +1312,27 @@ export default function PhoneCenterLookupTab() {
           keyExtractor={(it) => normalizeTel(it.phone) || it.phone}
           keyboardShouldPersistTaps="handled"
           ListHeaderComponent={HeaderList}
+          // ListEmptyComponent={
+          //   phoneSearched && lastPhoneTerm ? (
+          //     <NotFoundPhoneAction
+          //       term={lastPhoneTerm}
+          //       checkResult={checkResult}
+          //       loadingCheck={loadingCheck}
+          //       isBlocked={isBlocked}
+          //       onBlock={onBlock}
+          //       onUnblock={onUnblock}
+          //       onReportPhone={onReportPhone}
+          //     />
+          //   ) : (
+          //     <View style={styles.emptyBox}>
+          //       <Text style={styles.muted}>ยังไม่มีผลลัพธ์</Text>
+          //     </View>
+          //   )
+          // }
+
           ListEmptyComponent={
             <View style={styles.emptyBox}>
-              <Text style={styles.muted}>ยังไม่มีผลลัพธ์</Text>
+              <Text style={styles.muted}>ไม่พบผลลัพธ์</Text>
             </View>
           }
           renderItem={({ item }) => {
@@ -1225,7 +1345,10 @@ export default function PhoneCenterLookupTab() {
             const pillTone = toneStyle(riskMeta.tone);
 
             return (
-              <Pressable onPress={() => setExpandedTel((prev) => (prev === tel ? null : tel))} style={[styles.singleCard, isExpanded && styles.singleCardActive]}>
+              <Pressable
+                onPress={() => setExpandedTel((prev) => (prev === tel ? null : tel))}
+                style={[styles.singleCard, isExpanded && styles.singleCardActive]}
+              >
                 <View style={styles.cardHeaderRow}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.telText}>{tel || item.phone}</Text>
@@ -1241,7 +1364,9 @@ export default function PhoneCenterLookupTab() {
                         { backgroundColor: blocked ? "#ef4444" : pillTone.bg, borderColor: blocked ? "#ff4d6d" : "#27335f" },
                       ]}
                     >
-                      <Text style={[styles.riskBadgeText, { color: blocked ? "#111" : pillTone.fg }]}>{blocked ? "BLOCKED" : riskMeta.label}</Text>
+                      <Text style={[styles.riskBadgeText, { color: blocked ? "#111" : pillTone.fg }]}>
+                        {blocked ? "BLOCKED" : riskMeta.label}
+                      </Text>
                     </View>
 
                     <View style={styles.togglePill}>
@@ -1280,9 +1405,18 @@ export default function PhoneCenterLookupTab() {
           keyExtractor={(it) => normalizeBankAccount(it.account) || it.account}
           keyboardShouldPersistTaps="handled"
           ListHeaderComponent={HeaderList}
+          // ListEmptyComponent={
+          //   bankSearched && lastBankTerm ? (
+          //     <NotFoundBankAction userId={userId} term={lastBankTerm} onReportBank={onReportBank} />
+          //   ) : (
+          //     <View style={styles.emptyBox}>
+          //       <Text style={styles.muted}>ยังไม่มีผลลัพธ์</Text>
+          //     </View>
+          //   )
+          // }
           ListEmptyComponent={
             <View style={styles.emptyBox}>
-              <Text style={styles.muted}>ยังไม่มีผลลัพธ์</Text>
+              <Text style={styles.muted}>ไม่พบผลลัพธ์</Text>
             </View>
           }
           renderItem={({ item }) => {
@@ -1294,7 +1428,10 @@ export default function PhoneCenterLookupTab() {
             const pillTone = toneStyle(riskMeta.tone);
 
             return (
-              <Pressable onPress={() => setExpandedAcc((prev) => (prev === acc ? null : acc))} style={[styles.singleCard, isExpanded && styles.singleCardActive]}>
+              <Pressable
+                onPress={() => setExpandedAcc((prev) => (prev === acc ? null : acc))}
+                style={[styles.singleCard, isExpanded && styles.singleCardActive]}
+              >
                 <View style={styles.cardHeaderRow}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.telText}>
@@ -1324,19 +1461,15 @@ export default function PhoneCenterLookupTab() {
                       <Text style={styles.metaText}>Last report: {fmtTime(item.last_report_at)}</Text>
                     </View>
 
-                    {/* ✅ ตรงนี้: เอา UI "รายงานบัญชีธนาคาร" มาใส่ในตำแหน่ง panel ตามรูป */}
                     <BankReportInlineForm
                       userId={userId}
                       account={acc}
                       bankName={item.bank_name ?? null}
-                      fromPostTitle={null /* ถ้ามี title จากโพสต์ ให้ใส่ได้ */}
+                      fromPostTitle={null}
                       riskLabel={riskMeta.label}
                       riskTone={pillTone}
                       onClose={() => setExpandedAcc(null)}
-                      onCancel={() => {
-                        // ยกเลิก = แค่ปิดฟอร์ม (ยุบ)
-                        setExpandedAcc(null);
-                      }}
+                      onCancel={() => setExpandedAcc(null)}
                       onSubmit={async ({ account, bankName, category, note }) => {
                         await onReportBank({
                           account,
@@ -1667,7 +1800,7 @@ const ui = StyleSheet.create({
 });
 
 // =======================
-// Styles (Top tabs: เบอร์/บัญชี)
+// Styles (Top tabs)
 // =======================
 const topTabs = StyleSheet.create({
   wrap: { marginBottom: 10, alignItems: "flex-start" },
