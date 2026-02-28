@@ -1,4 +1,5 @@
-import React, { useMemo, useLayoutEffect, useCallback, useEffect } from "react";
+// src/screens/PostViewScreen.tsx
+import React, { useMemo, useLayoutEffect, useCallback, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -11,18 +12,30 @@ import {
   Alert,
   Linking,
   ActivityIndicator,
+  TouchableOpacity,
 } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 import Clipboard from "@react-native-clipboard/clipboard";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import ImageViewing from "react-native-image-viewing";
 import { gql } from "@apollo/client";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import type { RootStackParamList } from "../navigation/types";
 import { client } from "../apollo/client";
 import { ENV } from "../config/env";
 import { CommentsSection } from "../components/comments/CommentsSection";
 import { useAuth } from "../auth/AuthProvider";
+
+import {
+  BottomSheetBlockReportModal,
+  BottomSheetBlockReportModalRef,
+} from "../components/BottomSheetBlockReportModal";
+
+import {
+  BottomSheetReportBankModal,
+  BottomSheetReportBankModalRef,
+} from "../components/BottomSheetReportBankModal";
 
 /* =======================
  * GraphQL
@@ -91,9 +104,69 @@ const DELETE_POST = gql`
   }
 `;
 
-const CLONE_POST = gql`
-  mutation ($id: ID!) {
-    clonePost(id: $id)
+// --- New GraphQL mutations for report/unreport ---
+const M_REPORT_SCAM_BANK_ACCOUNT = gql`
+  mutation ReportScamBankAccount($input: ReportScamBankAccountInput!) {
+    reportScamBankAccount(input: $input){
+      account
+      bank_name
+      report_count
+      last_report_at
+      risk_level
+      updated_at
+      is_deleted
+      post_ids
+      ctx
+      tags
+    }
+  }
+`;
+
+const M_UNREPORT_SCAM_BANK_ACCOUNT = gql`
+  mutation UnreportScamBankAccount($input: UnreportScamBankAccountInput!) {
+    unreportScamBankAccount(input: $input){
+      account
+      bank_name
+      report_count
+      last_report_at
+      risk_level
+      updated_at
+      is_deleted
+      post_ids
+      ctx
+      tags
+    }
+  }
+`;
+
+const REPORT_SCAM_PHONE = gql`
+  mutation ReportScamPhone($input: ReportScamPhoneInput!) {
+    reportScamPhone(input: $input){
+      phone
+      report_count
+      last_report_at
+      risk_level
+      updated_at
+      is_deleted
+      post_ids
+      ctx
+    }
+  }
+`;
+
+const UNBLOCK_SCAM_PHONE = gql`
+  mutation UnblockScamPhone($input: UnblockScamPhoneInput!) {
+    unblockScamPhone(input: $input){
+      phone
+      report_count
+      last_report_at
+      risk_level
+      tags
+      updated_at
+      is_deleted
+      post_ids
+      ctx
+    }
   }
 `;
 
@@ -126,11 +199,48 @@ export type PostRecord = {
   fb_status?: string;
   fb_permalink_url?: string;
 
-  author?: { id: string };
+  author?: { id: string; name?: string | null } | null;
   is_bookmarked?: boolean;
 };
 
 type Props = NativeStackScreenProps<RootStackParamList, "PostView">;
+
+/* =======================
+ * Local Storage (same as Home)
+ * ======================= */
+const BLOCKED_STORE_KEY = "jachoei.blocked_tel_v1";
+const REPORTED_BANK_STORE_KEY = "jachoei.reported_bank_v1";
+const DEVICE_CLIENT_ID_KEY = "jachoei.device_client_id_v1";
+
+function normalizeTel(raw: string) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  const hasPlus = s.startsWith("+");
+  const digits = s.replace(/[^\d]/g, "");
+  return hasPlus ? `+${digits}` : digits;
+}
+
+function normalizeBankAccount(raw: string) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  return s.replace(/[^\d]/g, "");
+}
+
+function genClientId() {
+  // UUID-ish, no uuid lib
+  const rand = () => Math.random().toString(16).slice(2);
+  return (
+    rand() + rand() + Date.now().toString(16) + rand()
+  ).slice(0, 32);
+}
+
+async function getDeviceClientId() {
+  let id = await AsyncStorage.getItem(DEVICE_CLIENT_ID_KEY);
+  if (id && typeof id === "string" && id.length > 0) return id;
+  id = genClientId();
+  await AsyncStorage.setItem(DEVICE_CLIENT_ID_KEY, id);
+  return id;
+}
 
 /* =======================
  * Screen
@@ -138,7 +248,7 @@ type Props = NativeStackScreenProps<RootStackParamList, "PostView">;
 
 export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
   const { id, currentUserId } = route.params;
-  const { isLoggedIn } = useAuth();
+  const { isLoggedIn, user } = useAuth();
 
   const [post, setPost] = React.useState<PostRecord | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -150,6 +260,20 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
   // images preview
   const [previewVisible, setPreviewVisible] = React.useState(false);
   const [previewIndex, setPreviewIndex] = React.useState(0);
+
+  // ✅ blocked tel (local)
+  const [blockedMap, setBlockedMap] = React.useState<Record<string, true>>({});
+  // ✅ reported bank (local)
+  const [reportedBankMap, setReportedBankMap] = React.useState<Record<string, true>>({});
+
+  // ✅ sheets refs
+  const blockSheetRef = useRef<BottomSheetBlockReportModalRef>(null);
+  const reportBankSheetRef = useRef<BottomSheetReportBankModalRef>(null);
+
+  // --- Device info helpers ---
+  const deviceModel = typeof navigator !== "undefined" && (navigator as any).userAgent ? (navigator as any).userAgent : "unknown";
+  const osVersion = typeof navigator !== "undefined" && (navigator as any).platform ? (navigator as any).platform : "unknown";
+  const appVersion = ENV.appVersion || "unknown";
 
   const previewImages = React.useMemo(
     () =>
@@ -183,13 +307,164 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
     }
   }, [id]);
 
+  /* =======================
+   * ✅ Load local states (blocked/report)
+   * ======================= */
+  const loadBlocked = useCallback(async () => {
+    try {
+      const raw = await AsyncStorage.getItem(BLOCKED_STORE_KEY);
+      if (!raw) {
+        setBlockedMap({});
+        return;
+      }
+      const arr = JSON.parse(raw) as string[];
+      const next: Record<string, true> = {};
+      for (const t of arr || []) {
+        const n = normalizeTel(t);
+        if (n) next[n] = true;
+      }
+      setBlockedMap(next);
+    } catch {}
+  }, []);
+
+  const persistBlocked = useCallback(async (m: Record<string, true>) => {
+    try {
+      const arr = Object.keys(m);
+      await AsyncStorage.setItem(BLOCKED_STORE_KEY, JSON.stringify(arr));
+    } catch {}
+  }, []);
+
+  const loadReportedBank = useCallback(async () => {
+    try {
+      const raw = await AsyncStorage.getItem(REPORTED_BANK_STORE_KEY);
+      if (!raw) {
+        setReportedBankMap({});
+        return;
+      }
+      const arr = JSON.parse(raw) as string[];
+      const next: Record<string, true> = {};
+      for (const a of arr || []) {
+        const n = normalizeBankAccount(a);
+        if (n) next[n] = true;
+      }
+      setReportedBankMap(next);
+    } catch {}
+  }, []);
+
+  const persistReportedBank = useCallback(async (m: Record<string, true>) => {
+    try {
+      const arr = Object.keys(m);
+      await AsyncStorage.setItem(REPORTED_BANK_STORE_KEY, JSON.stringify(arr));
+    } catch {}
+  }, []);
+
   useEffect(() => {
     fetchPost();
   }, [fetchPost]);
 
+  useEffect(() => {
+    loadBlocked();
+    loadReportedBank();
+  }, [loadBlocked, loadReportedBank]);
+
   /* =======================
    * Helpers
    * ======================= */
+
+    // --- Bank report/unreport ---
+    const reportBankOnServer = useCallback(
+      async (bankName: string | null | undefined, accountRaw: string, note: string) => {
+        const acc = normalizeBankAccount(accountRaw);
+        if (!acc) throw new Error("บัญชีไม่ถูกต้อง");
+        const client_id = await getDeviceClientId();
+        const input = {
+          bank_name: bankName || null,
+          account: acc,
+          note,
+          client_id,
+          device_model: deviceModel,
+          os_version: osVersion,
+          app_version: appVersion,
+        };
+        const { data } = await client.mutate({
+          mutation: M_REPORT_SCAM_BANK_ACCOUNT,
+          variables: { input },
+        });
+        return !!data?.reportScamBankAccount;
+      },
+      [deviceModel, osVersion, appVersion]
+    );
+
+    const unreportBankOnServer = useCallback(
+      async (bankName: string | null | undefined, accountRaw: string, reason?: string) => {
+        const acc = normalizeBankAccount(accountRaw);
+        if (!acc) throw new Error("บัญชีไม่ถูกต้อง");
+        const client_id = await getDeviceClientId();
+        const input: any = {
+          bank_name: bankName || null,
+          account: acc,
+          client_id,
+          device_model: deviceModel,
+          os_version: osVersion,
+          app_version: appVersion,
+        };
+        if (reason) input.reason = reason;
+        const { data } = await client.mutate({
+          mutation: M_UNREPORT_SCAM_BANK_ACCOUNT,
+          variables: { input },
+        });
+        return !!data?.unreportScamBankAccount;
+      },
+      [deviceModel, osVersion, appVersion]
+    );
+
+    // --- Tel report/unblock ---
+    const reportTel = useCallback(
+      async ({ tel, note, category, postId }: { tel: string; note: string; category: string; postId?: string }) => {
+        const phone = normalizeTel(tel);
+        if (!phone) throw new Error("เบอร์ไม่ถูกต้อง");
+        const client_id = await getDeviceClientId();
+        const input = {
+          phone,
+          note,
+          local_blocked: true,
+          client_id,
+          device_model: deviceModel,
+          os_version: osVersion,
+          app_version: appVersion,
+          category,
+        };
+        const { data } = await client.mutate({
+          mutation: REPORT_SCAM_PHONE,
+          variables: { input },
+        });
+        return !!data?.reportScamPhone;
+      },
+      [deviceModel, osVersion, appVersion]
+    );
+
+    const unblockTelOnServer = useCallback(
+      async (tel: string) => {
+        const phone = normalizeTel(tel);
+        if (!phone) throw new Error("เบอร์ไม่ถูกต้อง");
+        const client_id = await getDeviceClientId();
+        const input = {
+          phone,
+          client_id,
+          device_model: deviceModel,
+          os_version: osVersion,
+          app_version: appVersion,
+        };
+        const { data } = await client.mutate({
+          mutation: UNBLOCK_SCAM_PHONE,
+          variables: { input },
+        });
+
+        console.log("unblockTelOnServer", { input, data });
+        return !!data?.unblockScamPhone;
+      },
+      [deviceModel, osVersion, appVersion]
+    );
 
   const isOwner = !!currentUserId && currentUserId === post?.author?.id;
 
@@ -198,6 +473,12 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
     !!post?.fb_permalink_url;
 
   const isBookmarked = !!post?.is_bookmarked;
+
+  // ✅ เงื่อนไข chat เหมือน Home
+  const showChatBtn = useMemo(() => {
+    const authorId = post?.author?.id;
+    return !!authorId && !!user?.id && String(authorId) !== String(user.id);
+  }, [post?.author?.id, user?.id]);
 
   const sharePayload = useMemo(() => {
     const url = `https://jachoei.com/post/${id}`;
@@ -239,6 +520,89 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
     Alert.alert("คัดลอกแล้ว");
   }, []);
 
+  // ✅ require login guard
+  const requireLoginOrGo = useCallback(() => {
+    if (isLoggedIn) return true;
+    navigation.navigate("SignIn");
+    return false;
+  }, [isLoggedIn, navigation]);
+
+  const isTelBlocked = useCallback(
+    (telRaw: string) => {
+      const n = normalizeTel(telRaw);
+      return !!(n && blockedMap[n]);
+    },
+    [blockedMap]
+  );
+
+  const isBankReported = useCallback(
+    (accRaw: string) => {
+      const n = normalizeBankAccount(accRaw);
+      return !!(n && reportedBankMap[n]);
+    },
+    [reportedBankMap]
+  );
+
+  const markBankReportedLocal = useCallback(
+    (accNormalized: string) => {
+      if (!accNormalized) return;
+      setReportedBankMap((prev) => {
+        const next = { ...prev, [accNormalized]: true };
+        persistReportedBank(next);
+        return next;
+      });
+    },
+    [persistReportedBank]
+  );
+
+  // ✅ open tel bottom sheet
+  const openBlockSheet = useCallback(
+    (telRaw: string) => {
+      if (!requireLoginOrGo()) return;
+
+      const tel = normalizeTel(telRaw);
+      if (!tel) return;
+
+      blockSheetRef.current?.open({
+        tel,
+        postId: String(post?.id || ""),
+        title: post?.title || undefined,
+        source: "POST_VIEW" as any,
+      });
+    },
+    [requireLoginOrGo, post?.id, post?.title]
+  );
+
+  // ✅ open bank bottom sheet
+  const openReportBankSheet = useCallback(
+    (bankName: string | null | undefined, accountRaw: string) => {
+      if (!requireLoginOrGo()) return;
+
+      const acc = normalizeBankAccount(accountRaw);
+      if (!acc) return;
+
+      reportBankSheetRef.current?.open({
+        bankName: bankName ?? null,
+        account: acc,
+        postId: String(post?.id || ""),
+        title: post?.title || undefined,
+        source: "POST_VIEW" as any,
+      });
+    },
+    [requireLoginOrGo, post?.id, post?.title]
+  );
+
+  // ✅ open chat (เหมือน Home)
+  const openChatWithAuthor = useCallback(
+    (authorId?: string | null) => {
+      if (!authorId) return;
+      if (!requireLoginOrGo()) return;
+      if (String(authorId) === String(user?.id)) return;
+      navigation.navigate("Chat", { to: String(authorId) } as any);
+    },
+    [navigation, requireLoginOrGo, user?.id]
+  );
+
   /* =======================
    * ✅ Bookmark toggle
    * ======================= */
@@ -246,7 +610,7 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
     if (!post?.id) return;
 
     if (!isLoggedIn) {
-      Alert.alert("ต้องเข้าสู่ระบบ", "กรุณา login ก่อนใช้งาน bookmark");
+      navigation.navigate("SignIn");
       return;
     }
 
@@ -266,6 +630,17 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
 
       const ok = !!data?.toggleBookmark?.isBookmarked;
       setPost((p) => (p ? { ...p, is_bookmarked: ok } : p));
+
+      // ✅ ส่งผลกลับ Home (แก้ปัญหากลับไปแล้ว list ไม่อัปเดต)
+      navigation.navigate({
+        name: "Home" as any,
+        params: {
+          bookmarkPostId: String(post.id),
+          bookmarkValue: ok,
+          bookmarkPing: Date.now(),
+        },
+        merge: true,
+      } as any);
     } catch (e: any) {
       // rollback
       setPost((p) => (p ? { ...p, is_bookmarked: prevVal } : p));
@@ -273,10 +648,10 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
     } finally {
       setBookmarkBusy(false);
     }
-  }, [post?.id, post?.is_bookmarked, isLoggedIn, bookmarkBusy]);
+  }, [post?.id, post?.is_bookmarked, isLoggedIn, navigation, bookmarkBusy]);
 
   /* =======================
-   * Delete / Clone (optional)
+   * Delete
    * ======================= */
 
   const handleDelete = useCallback(async () => {
@@ -306,41 +681,23 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
     ]);
   }, [id, navigation]);
 
-  const handleClone = useCallback(async () => {
-    try {
-      const { data } = await client.mutate({
-        mutation: CLONE_POST,
-        variables: { id },
-      });
-
-      const newId = data?.clonePost;
-      if (newId) {
-        Alert.alert("สำเร็จ", "Clone สำเร็จ");
-        navigation.replace("PostView", {
-          id: String(newId),
-          currentUserId,
-        });
-      } else {
-        Alert.alert("ไม่สำเร็จ", "Clone ไม่สำเร็จ");
-      }
-    } catch (e: any) {
-      Alert.alert("เกิดข้อผิดพลาด", e?.message || "Clone error");
-    }
-  }, [id, navigation, currentUserId]);
-
   /* =======================
-   * ✅ Navigation header (do NOT use post.title here)
+   * ✅ Navigation header
    * ======================= */
   useLayoutEffect(() => {
     navigation.setOptions({
       headerShown: true,
-      // ✅ ไม่เอา title ไปไว้ที่ navigation
       title: "",
       headerStyle: { backgroundColor: "#0b0b0f" },
       headerTintColor: "#fff",
       headerRight: () => (
         <View style={styles.navActions}>
-          {/* ✅ BOOKMARK (เงื่อนไขเดิม: !isOwner) */}
+          {showChatBtn ? (
+            <Pressable onPress={() => openChatWithAuthor(post?.author?.id)} hitSlop={10} style={styles.navBtn}>
+              <Ionicons name="chatbubbles-outline" size={20} color="#fff" />
+            </Pressable>
+          ) : null}
+
           {!isOwner ? (
             <Pressable
               onPress={onToggleBookmark}
@@ -364,7 +721,6 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
             </Pressable>
           ) : null}
 
-          {/* Facebook */}
           {isFbPublished ? (
             <Pressable
               onPress={() => {
@@ -380,25 +736,19 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
             </Pressable>
           ) : null}
 
-          {/* Share */}
           <Pressable onPress={onShare} hitSlop={10} style={styles.navBtn}>
             <Ionicons name="share-outline" size={22} color="#fff" />
           </Pressable>
 
-          {/* Owner actions */}
           {isOwner ? (
             <>
               <Pressable
-                onPress={() => navigation.navigate("PostForm", { id: String(post?.id) })}
+                onPress={() => navigation.navigate("PostForm", { id: String(post?.id) } as any)}
                 hitSlop={10}
                 style={styles.navBtn}
               >
                 <Ionicons name="create-outline" size={22} color="#fff" />
               </Pressable>
-
-              {/* <Pressable onPress={handleClone} hitSlop={10} style={styles.navBtn}>
-                <Ionicons name="copy-outline" size={22} color="#fff" />
-              </Pressable> */}
 
               <Pressable onPress={handleDelete} hitSlop={10} style={styles.navBtn}>
                 <Ionicons name="trash-outline" size={22} color="#ff3b30" />
@@ -411,16 +761,18 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
   }, [
     navigation,
     post?.id,
+    post?.author?.id,
     post?.fb_permalink_url,
     isOwner,
     isFbPublished,
     isBookmarked,
     bookmarkBusy,
+    showChatBtn,
+    openChatWithAuthor,
     onToggleBookmark,
     onShare,
     openUrl,
     handleDelete,
-    handleClone,
   ]);
 
   /* =======================
@@ -428,10 +780,31 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
    * ======================= */
 
   const renderTelItem = useCallback(
-    ({ item, index }: { item: { id: string; tel: string }; index: number }) => (
-      <RowItem index={index} value={item.tel} onCopy={() => copyText(item.tel)} />
-    ),
-    [copyText]
+    ({ item, index }: { item: { id: string; tel: string }; index: number }) => {
+      const tel = item.tel || "";
+      const blocked = isTelBlocked(tel);
+
+      return (
+        <View style={styles.rowItem}>
+          <Text style={styles.rowIndex}>{index + 1}.</Text>
+
+          <Pressable onPress={() => copyText(tel)} hitSlop={10} style={{ flex: 1 }}>
+            <Text style={styles.rowText}>{tel || "-"}</Text>
+            {tel ? <Text style={styles.copyHintSmall}>แตะเพื่อคัดลอก</Text> : null}
+          </Pressable>
+
+          <TouchableOpacity
+            onPress={() => openBlockSheet(tel)}
+            activeOpacity={0.85}
+            style={[styles.actionPill, blocked && styles.actionPillDanger]}
+          >
+            <Ionicons name={blocked ? "lock-closed" : "lock-open-outline"} size={14} color="#fff" />
+            <Text style={styles.actionPillText}>{blocked ? "บล็อกแล้ว" : "บล็อก"}</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    },
+    [copyText, isTelBlocked, openBlockSheet]
   );
 
   const renderAccountItem = useCallback(
@@ -441,18 +814,34 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
     }: {
       item: { id: string; bank_name?: string; seller_account?: string };
       index: number;
-    }) => (
-      <View style={styles.rowItem}>
-        <Text style={styles.rowIndex}>{index + 1}.</Text>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.rowText}>{item.bank_name || "-"}</Text>
-          <Pressable onPress={() => copyText(item.seller_account || "")}>
-            <Text style={styles.copyText}>{item.seller_account || "-"}</Text>
-          </Pressable>
+    }) => {
+      const accRaw = item.seller_account || "";
+      const acc = normalizeBankAccount(accRaw);
+      const reported = isBankReported(acc);
+
+      return (
+        <View style={styles.rowItem}>
+          <Text style={styles.rowIndex}>{index + 1}.</Text>
+
+          <View style={{ flex: 1 }}>
+            <Text style={styles.rowText}>{item.bank_name || "-"}</Text>
+            <Pressable onPress={() => copyText(accRaw)}>
+              <Text style={styles.copyText}>{accRaw || "-"}</Text>
+            </Pressable>
+          </View>
+
+          <TouchableOpacity
+            onPress={() => openReportBankSheet(item.bank_name, accRaw)}
+            activeOpacity={0.85}
+            style={[styles.actionPill, reported && styles.actionPillOk]}
+          >
+            <Ionicons name={reported ? "checkmark-circle" : "megaphone-outline"} size={14} color="#fff" />
+            <Text style={styles.actionPillText}>{reported ? "รายงานแล้ว" : "รายงาน"}</Text>
+          </TouchableOpacity>
         </View>
-      </View>
-    ),
-    [copyText]
+      );
+    },
+    [copyText, isBankReported, openReportBankSheet]
   );
 
   /* =======================
@@ -492,7 +881,6 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 28 }}>
-      {/* ✅ TITLE อยู่ใน body ตามที่ขอ */}
       <Text style={styles.bodyTitle} numberOfLines={3}>
         {post.title || "-"}
       </Text>
@@ -581,6 +969,92 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
 
         <CommentsSection postId={String(post.id)} currentUserId={currentUserId} />
       </View>
+
+      {/* ===== Bottom Sheet: Tel Block/Report ===== */}
+      <BottomSheetBlockReportModal
+        ref={blockSheetRef}
+        isBlocked={(telNormalized) => !!blockedMap[telNormalized]}
+          onBlock={async (telNormalized) => {
+            setBlockedMap((prev) => {
+              const next = { ...prev, [telNormalized]: true };
+              persistBlocked(next);
+              return next;
+            });
+          }}
+          onUnblock={async (telNormalized) => {
+            try {
+              const ok = await unblockTelOnServer(telNormalized);
+              if (ok) {
+                setBlockedMap((prev) => {
+                  const next = { ...prev };
+                  delete next[telNormalized];
+                  persistBlocked(next);
+                  return next;
+                });
+
+                Alert.alert("ปลดรายงานสำเร็จ", "เบอร์นี้ถูกปลดรายงานแล้ว");
+              } else {
+                Alert.alert("เกิดข้อผิดพลาด", "ไม่สามารถปลดบล็อกเบอร์ได้");
+              }
+            } catch (e: any) {
+              Alert.alert("เกิดข้อผิดพลาด", e?.message || "Unblock error");
+            }
+          }}
+          onReport={async ({ tel, category, note, postId }) => {
+            try {
+              await reportTel({ tel, category, note, postId });
+              Alert.alert("รายงานสำเร็จ", "ขอบคุณที่แจ้งเบอร์");
+            } catch (e: any) {
+              Alert.alert("เกิดข้อผิดพลาด", e?.message || "Report error");
+            }
+          }}
+      />
+
+      {/* ===== Bottom Sheet: Bank Report ONLY ===== */}
+      <BottomSheetReportBankModal
+        ref={reportBankSheetRef}
+        isReported={(accNormalized) => !!reportedBankMap[accNormalized]}
+          onReport={async ({ bankName, account, note }) => {
+            const accNormalized = normalizeBankAccount(account);
+            const alreadyReported = !!reportedBankMap[accNormalized];
+            if (alreadyReported) {
+              // UNREPORT
+              try {
+                const ok = await unreportBankOnServer(bankName, account);
+                if (ok) {
+                  setReportedBankMap((prev) => {
+                    const next = { ...prev };
+                    delete next[accNormalized];
+                    persistReportedBank(next);
+                    return next;
+                  });
+                  Alert.alert("ปลดรายงานสำเร็จ", "บัญชีนี้ถูกปลดรายงานแล้ว");
+                } else {
+                  Alert.alert("เกิดข้อผิดพลาด", "ไม่สามารถปลดรายงานบัญชีได้");
+                }
+              } catch (e: any) {
+                Alert.alert("เกิดข้อผิดพลาด", e?.message || "Unreport error");
+              }
+            } else {
+              // REPORT
+              try {
+                const ok = await reportBankOnServer(bankName, account, note);
+                if (ok) {
+                  setReportedBankMap((prev) => {
+                    const next = { ...prev, [accNormalized]: true };
+                    persistReportedBank(next);
+                    return next;
+                  });
+                  Alert.alert("รายงานสำเร็จ", "ขอบคุณที่แจ้งบัญชี");
+                } else {
+                  Alert.alert("เกิดข้อผิดพลาด", "ไม่สามารถรายงานบัญชีได้");
+                }
+              } catch (e: any) {
+                Alert.alert("เกิดข้อผิดพลาด", e?.message || "Report error");
+              }
+            }
+          }}
+      />
     </ScrollView>
   );
 };
@@ -619,28 +1093,6 @@ const InfoRow = ({
 
 const SectionTitle = ({ title }: { title: string }) => <Text style={styles.sectionTitle}>{title}</Text>;
 
-const RowItem = ({
-  index,
-  value,
-  onCopy,
-}: {
-  index: number;
-  value?: string;
-  onCopy?: () => void;
-}) => {
-  const display = value && String(value).trim() ? String(value) : "-";
-
-  return (
-    <View style={styles.rowItem}>
-      <Text style={styles.rowIndex}>{index + 1}.</Text>
-      <Pressable onPress={onCopy} hitSlop={10} style={{ flex: 1 }}>
-        <Text style={styles.rowText}>{display}</Text>
-        {display !== "-" ? <Text style={styles.copyHintSmall}>แตะเพื่อคัดลอก</Text> : null}
-      </Pressable>
-    </View>
-  );
-};
-
 /* ====================== */
 /* ===== STYLES ===== */
 /* ====================== */
@@ -678,7 +1130,6 @@ const styles = StyleSheet.create({
   },
   btnGhostText: { color: "#e5e7eb", fontWeight: "800" },
 
-  // ✅ title in body
   bodyTitle: {
     fontSize: 18,
     fontWeight: "900",
@@ -687,7 +1138,6 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
 
-  // ✅ actions in navigation
   navActions: {
     flexDirection: "row",
     alignItems: "center",
@@ -723,9 +1173,25 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     marginBottom: 10,
+    gap: 10,
   },
   rowIndex: { width: 22, color: "#9ca3af", marginTop: 2 },
   rowText: { color: "#fff", fontSize: 14, lineHeight: 18 },
+
+  actionPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: "#374151",
+    borderWidth: 1,
+    borderColor: "#4b5563",
+  },
+  actionPillDanger: { backgroundColor: "#ef4444", borderColor: "#ef4444" },
+  actionPillOk: { backgroundColor: "#34c759", borderColor: "#34c759" },
+  actionPillText: { color: "#fff", fontSize: 12, fontWeight: "900" },
 
   imageGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   imageWrap: { borderRadius: 8, overflow: "hidden", backgroundColor: "#111" },

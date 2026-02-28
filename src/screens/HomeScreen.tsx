@@ -1,5 +1,5 @@
 // src/screens/HomeScreen.tsx
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -16,11 +16,18 @@ import {
   Linking,
   Image,
   GestureResponderEvent,
+  Modal
 } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 import { gql } from "@apollo/client";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
-import { useNavigation, useFocusEffect } from "@react-navigation/native";
+import {
+  useNavigation,
+  useFocusEffect,
+  useRoute,
+  RouteProp,
+} from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 
 import { ThumbGrid } from "../components/ThumbGrid";
@@ -30,6 +37,19 @@ import { ENV } from "../config/env";
 import type { RootStackParamList } from "../navigation/types";
 import { useAuth } from "../auth/AuthProvider";
 
+import {
+  BottomSheetBlockReportModal,
+  BottomSheetBlockReportModalRef,
+} from "../components/BottomSheetBlockReportModal";
+
+import {
+  BottomSheetReportBankModal,
+  BottomSheetReportBankModalRef,
+} from "../components/BottomSheetReportBankModal";
+
+// =======================
+// GraphQL
+// =======================
 const Q_POSTS_PAGED = gql`
   query ($q: String, $limit: Int!, $offset: Int!) {
     postsPaged(search: $q, limit: $limit, offset: $offset) {
@@ -40,10 +60,7 @@ const Q_POSTS_PAGED = gql`
         detail
         status
         created_at
-
-        # ✅ bookmark
         is_bookmarked
-
         images {
           id
           url
@@ -78,6 +95,75 @@ const M_TOGGLE_BOOKMARK = gql`
     }
   }
 `;
+
+const M_REPORT_SCAM_BANK_ACCOUNT = gql`
+  mutation ReportScamBankAccount($input: ReportScamBankAccountInput!) {
+    reportScamBankAccount(input: $input) {
+      account
+      bank_name
+      report_count
+      last_report_at
+      risk_level
+      updated_at
+      is_deleted
+      post_ids
+      ctx
+      tags
+    }
+  }
+`;
+
+const M_UNREPORT_SCAM_BANK_ACCOUNT = gql`
+  mutation UnreportScamBankAccount($input: UnreportScamBankAccountInput!) {
+    unreportScamBankAccount(input: $input) {
+      account
+      bank_name
+      report_count
+      last_report_at
+      risk_level
+      updated_at
+      is_deleted
+      post_ids
+      ctx
+      tags
+    }
+  }
+`;
+
+const REPORT_SCAM_PHONE = gql`
+  mutation ReportScamPhone($input: ReportScamPhoneInput!) {
+    reportScamPhone(input: $input) {
+      phone
+      report_count
+      last_report_at
+      risk_level
+      updated_at
+      is_deleted
+      post_ids
+      ctx
+    }
+  }
+`;
+
+const UNBLOCK_SCAM_PHONE = gql`
+  mutation UnblockScamPhone($input: UnblockScamPhoneInput!) {
+    unblockScamPhone(input: $input) {
+      phone
+      report_count
+      last_report_at
+      risk_level
+      updated_at
+      is_deleted
+      post_ids
+      ctx
+    }
+  }
+`;
+
+// =======================
+// Types / Utils
+// =======================
+export type ReportCategory = "SPAM" | "SCAM" | "SALES" | "HARASS" | "OTHER";
 
 type PostItem = {
   id: string;
@@ -114,6 +200,33 @@ type PostsPagedVars = {
 };
 
 const PAGE_SIZE = 10;
+
+// ====== Local storage ======
+const BLOCKED_STORE_KEY = "jachoei.blocked_tel_v1";
+const REPORTED_BANK_STORE_KEY = "jachoei.reported_bank_v1";
+
+function genClientId() {
+  // RN-safe UUID-ish (ไม่ใช้ uuidv4 เพื่อเลี่ยง crypto.getRandomValues)
+  const s4 = () =>
+    Math.floor((1 + Math.random()) * 0x10000)
+      .toString(16)
+      .substring(1);
+  return `${s4()}${s4()}-${s4()}-${s4()}-${s4()}-${s4()}${s4()}${s4()}`;
+}
+
+function normalizeTel(raw: string) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  const hasPlus = s.startsWith("+");
+  const digits = s.replace(/[^\d]/g, "");
+  return hasPlus ? `+${digits}` : digits;
+}
+
+function normalizeBankAccount(raw: string) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  return s.replace(/[^\d]/g, "");
+}
 
 function statusColor(status?: string | null) {
   switch ((status || "").toUpperCase()) {
@@ -157,6 +270,78 @@ function buildSharePayload(r: PostItem) {
   return { url, title, text };
 }
 
+type HomeRoute = RouteProp<RootStackParamList, "Home">;
+
+
+// const DEVICE_CLIENT_ID_KEY = "jachoei.device_client_id_v1";
+// let _deviceClientIdCache: string | null = null;
+
+// async function getDeviceClientId(): Promise<string> {
+//   if (_deviceClientIdCache) return _deviceClientIdCache;
+
+//   const existed = await AsyncStorage.getItem(DEVICE_CLIENT_ID_KEY);
+//   if (existed) {
+//     _deviceClientIdCache = existed;
+//     return existed;
+//   }
+
+//   const created = genClientId();
+//   await AsyncStorage.setItem(DEVICE_CLIENT_ID_KEY, created);
+//   _deviceClientIdCache = created;
+//   return created;
+// }
+
+// async function reportBankOnServer(args: {
+//   bankName: string;
+//   accountNorm: string;
+//   note?: string | null;
+// }) {
+//   const client_id = await getDeviceClientId();
+
+//   const input = {
+//     bank_name: String(args.bankName || "").trim() || "UNKNOWN",
+//     account: args.accountNorm,
+//     note: args.note ?? null,
+//     client_id,
+//     device_model: Platform.OS,
+//     os_version: String(Platform.Version),
+//     app_version: "1.0.0",
+//   };
+
+//   const { data } = await client.mutate({
+//     mutation: M_REPORT_SCAM_BANK_ACCOUNT,
+//     variables: { input },
+//   });
+
+//   return data?.reportScamBankAccount;
+// }
+
+// async function unreportBankOnServer(args: {
+//   bankName: string;
+//   accountNorm: string;
+//   reason?: string | null;
+// }) {
+//   const client_id = await getDeviceClientId();
+
+//   const input = {
+//     bank_name: String(args.bankName || "").trim() || "UNKNOWN",
+//     account: args.accountNorm,
+//     client_id,
+//     device_model: Platform.OS,
+//     os_version: String(Platform.Version),
+//     app_version: "1.0.0",
+//     reason: args.reason ?? null,
+//   };
+
+//   const { data } = await client.mutate({
+//     mutation: M_UNREPORT_SCAM_BANK_ACCOUNT,
+//     variables: { input },
+//   });
+
+//   return data?.unreportScamBankAccount;
+// }
+
+
 export const HomeScreen: React.FC = () => {
   const { isLoggedIn, user } = useAuth();
 
@@ -169,13 +354,60 @@ export const HomeScreen: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
 
-  // ✅ กันกด bookmark รัว ๆ (per post id)
-  const [bookmarkBusyMap, setBookmarkBusyMap] = useState<Record<string, boolean>>({});
+  const [bookmarkBusyMap, setBookmarkBusyMap] = useState<Record<string, boolean>>(
+    {}
+  );
+
+  // ✅ blocked tel (local)
+  const [blockedMap, setBlockedMap] = useState<Record<string, true>>({});
+
+  // ✅ reported bank (local)
+  const [reportedBankMap, setReportedBankMap] = useState<Record<string, true>>(
+    {}
+  );
+
+  // modal for viewing all tels of a post
+  const [telModalVisible, setTelModalVisible] = useState(false);
+  const [telModalTels, setTelModalTels] = useState<string[]>([]);
+  const [telModalTitle, setTelModalTitle] = useState<string>("");
+  const [telModalPostId, setTelModalPostId] = useState<string | undefined>(
+    undefined
+  );
+
+  // modal for viewing all bank accounts of a post
+  const [bankModalVisible, setBankModalVisible] = useState(false);
+  const [bankModalTitle, setBankModalTitle] = useState<string>("");
+  const [bankModalPostId, setBankModalPostId] = useState<string | undefined>(
+    undefined
+  );
+  const [bankModalList, setBankModalList] = useState<
+    Array<{ bank_name?: string | null; seller_account?: string | null }>
+  >([]);
 
   const canLoadMore = items.length < total;
 
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const route = useRoute<HomeRoute>();
+
+  // ✅ sheets refs
+  const blockSheetRef = useRef<BottomSheetBlockReportModalRef>(null);
+  const reportBankSheetRef = useRef<BottomSheetReportBankModalRef>(null);
+
+  // ✅ guard: require login before opening any sheet
+  const requireLoginOrGo = useCallback(
+    (e?: any) => {
+      e?.stopPropagation?.();
+      if (isLoggedIn) return true;
+
+      setTelModalVisible(false);
+      setBankModalVisible(false);
+
+      navigation.navigate("SignIn");
+      return false;
+    },
+    [isLoggedIn, navigation]
+  );
 
   const openUrl = useCallback(async (url?: string | null) => {
     if (!url) return;
@@ -185,6 +417,145 @@ export const HomeScreen: React.FC = () => {
       Alert.alert("เปิดลิงก์ไม่ได้", url);
     }
   }, []);
+
+  // ====== load/save blocked tel ======
+  const loadBlocked = useCallback(async () => {
+    try {
+      const raw = await AsyncStorage.getItem(BLOCKED_STORE_KEY);
+      if (!raw) {
+        setBlockedMap({});
+        return;
+      }
+      const arr = JSON.parse(raw) as string[];
+      const next: Record<string, true> = {};
+      for (const t of arr || []) {
+        const n = normalizeTel(t);
+        if (n) next[n] = true;
+      }
+      setBlockedMap(next);
+    } catch {}
+  }, []);
+
+  const persistBlocked = useCallback(async (m: Record<string, true>) => {
+    try {
+      const arr = Object.keys(m);
+      await AsyncStorage.setItem(BLOCKED_STORE_KEY, JSON.stringify(arr));
+    } catch {}
+  }, []);
+
+  // ====== load/save reported bank ======
+  const loadReportedBank = useCallback(async () => {
+    try {
+      const raw = await AsyncStorage.getItem(REPORTED_BANK_STORE_KEY);
+      if (!raw) {
+        setReportedBankMap({});
+        return;
+      }
+      const arr = JSON.parse(raw) as string[];
+      const next: Record<string, true> = {};
+      for (const a of arr || []) {
+        const n = normalizeBankAccount(a);
+        if (n) next[n] = true;
+      }
+      setReportedBankMap(next);
+    } catch {}
+  }, []);
+
+  const persistReportedBank = useCallback(async (m: Record<string, true>) => {
+    try {
+      const arr = Object.keys(m);
+      await AsyncStorage.setItem(
+        REPORTED_BANK_STORE_KEY,
+        JSON.stringify(arr)
+      );
+    } catch {}
+  }, []);
+
+  const isTelBlocked = useCallback(
+    (tel: string) => {
+      const n = normalizeTel(tel);
+      return !!(n && blockedMap[n]);
+    },
+    [blockedMap]
+  );
+
+  const isBankReported = useCallback(
+    (acc: string) => {
+      const n = normalizeBankAccount(acc);
+      return !!(n && reportedBankMap[n]);
+    },
+    [reportedBankMap]
+  );
+
+  const markBankReportedLocal = useCallback(
+    (accNormalized: string) => {
+      if (!accNormalized) return;
+      setReportedBankMap((prev) => {
+        const next = { ...prev, [accNormalized]: true };
+        persistReportedBank(next);
+        return next;
+      });
+    },
+    [persistReportedBank]
+  );
+
+  const unmarkBankReportedLocal = useCallback(
+    (accNormalized: string) => {
+      if (!accNormalized) return;
+      setReportedBankMap((prev) => {
+        const next = { ...prev };
+        delete next[accNormalized];
+        persistReportedBank(next);
+        return next;
+      });
+    },
+    [persistReportedBank]
+  );
+
+
+  const openBlockSheet = useCallback(
+    (
+      e: any,
+      telRaw: string,
+      meta?: { postId?: string; title?: string; source?: "HOME" | "MODAL" }
+    ) => {
+      if (!requireLoginOrGo(e)) return;
+
+      const tel = normalizeTel(telRaw);
+      if (!tel) return;
+
+      blockSheetRef.current?.open({
+        tel,
+        postId: meta?.postId,
+        title: meta?.title,
+        source: meta?.source ?? "HOME",
+      });
+    },
+    [requireLoginOrGo]
+  );
+
+  const openReportBankSheet = useCallback(
+    (
+      e: any,
+      bankName: string | null | undefined,
+      accountRaw: string,
+      meta?: { postId?: string; title?: string; source?: "HOME" | "MODAL" }
+    ) => {
+      if (!requireLoginOrGo(e)) return;
+
+      const acc = normalizeBankAccount(accountRaw);
+      if (!acc) return;
+
+      reportBankSheetRef.current?.open({
+        bankName: bankName ?? null,
+        account: acc,
+        postId: meta?.postId,
+        title: meta?.title,
+        source: meta?.source ?? "HOME",
+      });
+    },
+    [requireLoginOrGo]
+  );
 
   const fetchPage = useCallback(
     async (targetPage: number, mode: "replace" | "append") => {
@@ -221,14 +592,15 @@ export const HomeScreen: React.FC = () => {
     setLoading(true);
     try {
       await fetchPage(1, "replace");
+      await loadBlocked();
+      await loadReportedBank();
     } catch (e: any) {
       Alert.alert("Load error", e?.message || "unknown");
     } finally {
       setLoading(false);
     }
-  }, [fetchPage]);
+  }, [fetchPage, loadBlocked, loadReportedBank]);
 
-  // useEffectับ refresh ตอนกลับมาหน้านี้ (ให้ bookmark/ข้อมูลทัน)
   useFocusEffect(
     useCallback(() => {
       loadFirst();
@@ -238,6 +610,26 @@ export const HomeScreen: React.FC = () => {
   useEffect(() => {
     loadFirst();
   }, [loadFirst]);
+
+  // ✅ รับผล bookmark ที่ยิงมาจาก PostView (merge params)
+  useEffect(() => {
+    const p: any = route.params as any;
+    if (!p?.bookmarkPing || !p?.bookmarkPostId) return;
+
+    const postId = String(p.bookmarkPostId);
+    const val = !!p.bookmarkValue;
+
+    setItems((prev) =>
+      prev.map((x) => (x.id === postId ? { ...x, is_bookmarked: val } : x))
+    );
+
+    // clear ping (กันยิงซ้ำ)
+    navigation.setParams({
+      bookmarkPing: undefined,
+      bookmarkPostId: undefined,
+      bookmarkValue: undefined,
+    } as any);
+  }, [route.params, navigation]);
 
   const onRefresh = useCallback(async () => {
     await loadFirst();
@@ -270,34 +662,35 @@ export const HomeScreen: React.FC = () => {
         },
         { dialogTitle: "Share post" }
       );
-    } catch {
-      // ignore cancel
-    }
+    } catch {}
   }, []);
 
   const onOpenProfile = useCallback(
     (e: GestureResponderEvent, authorId?: string | null) => {
-      e.stopPropagation?.(); // ✅ กันไม่ให้ไปเปิด PostView
+      e.stopPropagation?.();
       if (!authorId) return;
       navigation.navigate("Profile", { id: authorId });
     },
     [navigation]
   );
 
-  // ✅ helper: update list item bookmark
-  const applyBookmarkToList = useCallback((postId: string, isBookmarked: boolean) => {
-    setItems((prev) =>
-      prev.map((p) => (p.id === postId ? { ...p, is_bookmarked: isBookmarked } : p))
-    );
-  }, []);
+  const applyBookmarkToList = useCallback(
+    (postId: string, isBookmarked: boolean) => {
+      setItems((prev) =>
+        prev.map((p) =>
+          p.id === postId ? { ...p, is_bookmarked: isBookmarked } : p
+        )
+      );
+    },
+    []
+  );
 
-  // ✅ toggle bookmark (ใน card)
   const toggleBookmark = useCallback(
     async (e: GestureResponderEvent, postId: string) => {
       e.stopPropagation?.();
 
       if (!isLoggedIn) {
-        Alert.alert("ต้องเข้าสู่ระบบ", "กรุณา login ก่อนใช้งาน bookmark");
+        navigation.navigate("SignIn");
         return;
       }
 
@@ -307,8 +700,6 @@ export const HomeScreen: React.FC = () => {
       const prevVal = !!prevItem?.is_bookmarked;
 
       setBookmarkBusyMap((m) => ({ ...m, [postId]: true }));
-
-      // optimistic
       applyBookmarkToList(postId, !prevVal);
 
       try {
@@ -321,65 +712,217 @@ export const HomeScreen: React.FC = () => {
         applyBookmarkToList(postId, ok);
       } catch (err: any) {
         applyBookmarkToList(postId, prevVal);
-        Alert.alert("Bookmark error", err?.message || "Please login first or try again.");
+        Alert.alert(
+          "Bookmark error",
+          err?.message || "Please login first or try again."
+        );
       } finally {
         setBookmarkBusyMap((m) => ({ ...m, [postId]: false }));
       }
     },
-    [isLoggedIn, bookmarkBusyMap, items, applyBookmarkToList]
+    [isLoggedIn, navigation, bookmarkBusyMap, items, applyBookmarkToList]
   );
 
-  // ✅ เปิด chat กับ author (แสดงเฉพาะ author != current user)
   const openChatWithAuthor = useCallback(
     (e: GestureResponderEvent, authorId?: string | null) => {
       e.stopPropagation?.();
       if (!authorId) return;
 
       if (!isLoggedIn) {
-        Alert.alert("ต้องเข้าสู่ระบบ", "กรุณา login ก่อนใช้งาน chat");
+        navigation.navigate("SignIn");
         return;
       }
 
       if (authorId === user?.id) return;
 
-      // RootStackParamList: Chat: { to: string }
-      navigation.navigate("Chat", { to: String(authorId) });
+      navigation.navigate("Chat", { to: String(authorId) } as any);
     },
     [isLoggedIn, navigation, user?.id]
   );
+
+  const openAllTelsModal = useCallback(
+    (title: string, tels: string[], postId?: string) => {
+      setTelModalTitle(title || "เบอร์โทร");
+      setTelModalTels(tels);
+      setTelModalPostId(postId);
+      setTelModalVisible(true);
+    },
+    []
+  );
+
+  const openAllBanksModal = useCallback(
+    (
+      title: string,
+      list: Array<{ bank_name?: string | null; seller_account?: string | null }>,
+      postId?: string
+    ) => {
+      setBankModalTitle(title || "บัญชีธนาคาร");
+      setBankModalList(list || []);
+      setBankModalPostId(postId);
+      setBankModalVisible(true);
+    },
+    []
+  );
+
+  // ใช้เช็ค blocked
+  const isBlocked = useCallback(
+    (telNormalized: string) => {
+      const n = normalizeTel(telNormalized);
+      return !!(n && blockedMap[n]);
+    },
+    [blockedMap]
+  );
+
+  // ✅ REPORT TEL -> ยิง reportScamPhone
+  const reportTel = useCallback(
+    async (payload: { tel: string; category: ReportCategory; note?: string; postId?: string }) => {
+      const tel = normalizeTel(payload.tel);
+      if (!tel) {
+        Alert.alert("เบอร์ไม่ถูกต้อง", "กรุณาลองใหม่");
+        return;
+      }
+
+      const input = {
+        phone: tel,
+        note: payload.note?.trim() ? payload.note.trim() : null,
+        local_blocked: isBlocked(tel),
+        client_id: genClientId(),
+        device_model: Platform.OS,
+        os_version: String(Platform.Version),
+        app_version: "1.0.0",
+        category: payload.category,
+      };
+
+      try {
+        const res = await client.mutate({
+          mutation: REPORT_SCAM_PHONE,
+          variables: { input },
+        });
+
+        Alert.alert("ส่งรายงานแล้ว", "ขอบคุณที่ช่วยกันทำให้ระบบแม่นขึ้น 🙏");
+        return res.data?.reportScamPhone;
+      } catch (e: any) {
+        console.log("REPORT TEL ERROR", e?.message || e);
+        Alert.alert("รายงานไม่สำเร็จ", e?.message || "กรุณาลองใหม่");
+      }
+    },
+    [isBlocked]
+  );
+
+  async function unblockTelOnServer(phone: string) {
+    const input = {
+      phone,
+      client_id: genClientId(),
+      device_model: Platform.OS,
+      os_version: String(Platform.Version),
+      app_version: "1.0.0",
+    };
+
+    const res = await client.mutate({
+      mutation: UNBLOCK_SCAM_PHONE,
+      variables: { input },
+    });
+
+    return res.data?.unblockScamPhone;
+  }
+
+  // ✅ Bank: report/unreport helpers
+  async function reportBankOnServer(args: {
+    bankName: string;
+    accountNorm: string;
+    note?: string | null;
+  }) {
+    const input = {
+      bank_name: String(args.bankName || "").trim() || "UNKNOWN",
+      account: args.accountNorm,
+      note: args.note ?? null,
+      client_id: genClientId(),
+      device_model: Platform.OS,
+      os_version: String(Platform.Version),
+      app_version: "1.0.0",
+    };
+
+    const { data } = await client.mutate({
+      mutation: M_REPORT_SCAM_BANK_ACCOUNT,
+      variables: { input },
+    });
+
+    return data?.reportScamBankAccount;
+  }
+
+  async function unreportBankOnServer(args: {
+    bankName: string;
+    accountNorm: string;
+    reason?: string | null;
+  }) {
+    const input = {
+      bank_name: String(args.bankName || "").trim() || "UNKNOWN",
+      account: args.accountNorm,
+      client_id: genClientId(),
+      device_model: Platform.OS,
+      os_version: String(Platform.Version),
+      app_version: "1.0.0",
+      reason: args.reason ?? null,
+    };
+
+    const { data } = await client.mutate({
+      mutation: M_UNREPORT_SCAM_BANK_ACCOUNT,
+      variables: { input },
+    });
+
+    return data?.unreportScamBankAccount;
+  }
 
   const renderPostItem = useCallback(
     ({ item }: { item: PostItem }) => {
       const ts = formatDateTime(item.created_at);
       const status = item.status || undefined;
       const sc = statusColor(status);
-
       const published = isFacebookPublished(item);
 
-      const telList = (item.tel_numbers || []).map((t) => t.tel).filter(Boolean);
-      const bankList = (item.seller_accounts || [])
-        .map((a) => `${a.bank_name || "-"}: ${a.seller_account || "-"}`)
+      const telListRaw = (item.tel_numbers || [])
+        .map((t) => t.tel)
         .filter(Boolean);
+      const telList = telListRaw
+        .map((t) => normalizeTel(String(t)))
+        .filter(Boolean);
+
+      const bankRaw = (item.seller_accounts || []).filter(Boolean);
+      const bankList = bankRaw
+        .map((a) => ({
+          bank_name: a.bank_name ?? null,
+          seller_account: a.seller_account ?? null,
+        }))
+        .filter((x) => !!normalizeBankAccount(x.seller_account || ""));
 
       const onOpenPost = () => {
         navigation.navigate("PostView", {
           id: String(item?.id),
           currentUserId: user?.id,
-        });
+        } as any);
       };
 
       const authorName = item.author?.name?.trim() || "Unknown";
       const authorInitial = authorName?.[0]?.toUpperCase?.() || "?";
-      const authorAvatar = item.author?.avatar ? String(item.author.avatar) : null;
+      const authorAvatar = item.author?.avatar
+        ? String(item.author.avatar)
+        : null;
 
       const isBookmarked = !!item.is_bookmarked;
       const bookmarkBusy = !!bookmarkBusyMap[item.id];
 
       const showChatBtn =
-        !!item.author?.id && !!user?.id && String(item.author.id) !== String(user.id);
+        !!item.author?.id &&
+        !!user?.id &&
+        String(item.author.id) !== String(user.id);
 
-      const showBookmarkBtn =
-        !!item.author?.id && !!user?.id && String(item.author.id) !== String(user.id);
+      const INLINE_MAX_TELS = 3;
+      const inlineTels = telList.slice(0, INLINE_MAX_TELS);
+      const moreCount = Math.max(0, telList.length - INLINE_MAX_TELS);
+
+      const INLINE_MAX_BANKS = 2;
+      const inlineBanks = bankList.slice(0, INLINE_MAX_BANKS);
+      const moreBanksCount = Math.max(0, bankList.length - INLINE_MAX_BANKS);
 
       return (
         <Pressable
@@ -387,7 +930,7 @@ export const HomeScreen: React.FC = () => {
           android_ripple={{ color: "#222" }}
           style={({ pressed }) => [styles.card, pressed && { opacity: 0.85 }]}
         >
-          {/* ===== TOP ===== */}
+          {/* TOP */}
           <View style={styles.cardTop}>
             <Text style={styles.title} numberOfLines={2}>
               {item.title || "-"}
@@ -402,7 +945,7 @@ export const HomeScreen: React.FC = () => {
             ) : null}
           </View>
 
-          {/* ===== META + AUTHOR (CLICKABLE) ===== */}
+          {/* META + AUTHOR */}
           <View style={styles.metaRow}>
             <Text style={styles.meta} numberOfLines={1}>
               {ts}
@@ -424,7 +967,9 @@ export const HomeScreen: React.FC = () => {
                   />
                 ) : (
                   <View style={styles.authorAvatarFallback}>
-                    <Text style={styles.authorAvatarText}>{authorInitial}</Text>
+                    <Text style={styles.authorAvatarText}>
+                      {authorInitial}
+                    </Text>
                   </View>
                 )}
                 <Text style={styles.authorName} numberOfLines={1}>
@@ -439,7 +984,7 @@ export const HomeScreen: React.FC = () => {
             )}
           </View>
 
-          {/* ===== THUMB GRID ===== */}
+          {/* THUMB GRID */}
           <View style={{ marginTop: 10 }}>
             <ThumbGrid
               images={(item.images || []) as any}
@@ -450,57 +995,163 @@ export const HomeScreen: React.FC = () => {
             />
           </View>
 
-          {/* ===== DETAIL ===== */}
+          {/* DETAIL */}
           {item.detail ? (
             <Text style={styles.detail} numberOfLines={4}>
               {item.detail}
             </Text>
           ) : null}
 
-          {/* ===== TEL ===== */}
+          {/* TEL chips */}
           <View style={styles.infoRow}>
             <Ionicons name="call-outline" size={14} color="#9ca3af" />
             <Text style={styles.infoLabel}>Tel:</Text>
-            <Text style={styles.infoValue} numberOfLines={1}>
-              {telList[0] || "-"}
-            </Text>
-            {telList.length > 1 ? (
-              <Text style={styles.moreText}> (+{telList.length - 1})</Text>
-            ) : null}
+
+            {telList.length === 0 ? (
+              <Text style={styles.infoValue} numberOfLines={1}>
+                -
+              </Text>
+            ) : (
+              <View style={styles.chipsWrap}>
+                {inlineTels.map((tel) => {
+                  const blocked = isTelBlocked(tel);
+                  return (
+                    <TouchableOpacity
+                      key={tel}
+                      onPress={(e: any) =>
+                        openBlockSheet(e, tel, {
+                          postId: item.id,
+                          title: item.title ?? undefined,
+                          source: "HOME",
+                        })
+                      }
+                      activeOpacity={0.85}
+                      style={[styles.telChip, blocked && styles.telChipBlocked]}
+                    >
+                      <Text style={styles.chipMainText} numberOfLines={1}>
+                        {tel}
+                      </Text>
+                      <View style={styles.chipRight}>
+                        <Ionicons
+                          name={blocked ? "lock-closed" : "lock-open-outline"}
+                          size={12}
+                          color={blocked ? "#fff" : "#e5e7eb"}
+                        />
+                        <Text style={styles.chipRightText}>
+                          {blocked ? "บล็อกแล้ว" : "บล็อก"}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+
+                {moreCount > 0 ? (
+                  <TouchableOpacity
+                    onPress={(e: any) => {
+                      e?.stopPropagation?.();
+                      openAllTelsModal(
+                        item.title || "เบอร์โทรทั้งหมด",
+                        telList,
+                        item.id
+                      );
+                    }}
+                    style={styles.moreChip}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.moreChipText}>+{moreCount}</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            )}
           </View>
 
-          {/* ===== BANK ===== */}
+          {/* BANK chips (REPORT/UNREPORT) */}
           <View style={styles.infoRow}>
             <Ionicons name="card-outline" size={14} color="#9ca3af" />
             <Text style={styles.infoLabel}>Bank:</Text>
-            <Text style={styles.infoValue} numberOfLines={1}>
-              {bankList[0] || "-"}
-            </Text>
-            {bankList.length > 1 ? (
-              <Text style={styles.moreText}> (+{bankList.length - 1})</Text>
-            ) : null}
+
+            {bankList.length === 0 ? (
+              <Text style={styles.infoValue} numberOfLines={1}>
+                -
+              </Text>
+            ) : (
+              <View style={styles.chipsWrap}>
+                {inlineBanks.map((b, idx) => {
+                  const acc = normalizeBankAccount(b.seller_account || "");
+                  const reported = isBankReported(acc);
+                  const label = `${b.bank_name || "Bank"}: ${acc}`;
+
+                  return (
+                    <TouchableOpacity
+                      key={`${acc}-${idx}`}
+                      onPress={(e: any) =>
+                        openReportBankSheet(e, b.bank_name, acc, {
+                          postId: item.id,
+                          title: item.title ?? undefined,
+                          source: "HOME",
+                        })
+                      }
+                      activeOpacity={0.85}
+                      style={[
+                        styles.bankChip,
+                        reported && styles.bankChipReported,
+                      ]}
+                    >
+                      <Text style={styles.chipMainText} numberOfLines={1}>
+                        {label}
+                      </Text>
+
+                      <View style={styles.chipRight}>
+                        <Ionicons
+                          name={reported ? "close-circle" : "megaphone-outline"}
+                          size={12}
+                          color={reported ? "#ef4444" : "#e5e7eb"}
+                        />
+                        <Text style={[styles.chipRightText, reported && { color: "#ef4444" }]}>
+                          {reported ? "ยกเลิกรายงาน" : "รายงาน"}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+
+                {moreBanksCount > 0 ? (
+                  <TouchableOpacity
+                    onPress={(e: any) => {
+                      e?.stopPropagation?.();
+                      openAllBanksModal(
+                        item.title || "บัญชีธนาคารทั้งหมด",
+                        bankList,
+                        item.id
+                      );
+                    }}
+                    style={styles.moreChip}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.moreChipText}>+{moreBanksCount}</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            )}
           </View>
 
-          {/* ===== ACTIONS ===== */}
+          {/* ACTIONS */}
           <View style={styles.actionsRow}>
             <IconButton
               icon="logo-facebook"
               disabled={!published}
               onPress={() => openUrl(item.fb_permalink_url)}
             />
-
             <IconButton
               icon="chatbox-outline"
               badge={item.comments_count || 0}
               onPress={onOpenPost}
             />
-
             <IconButton
               icon="share-social-outline"
               onPress={() => handleShare(item)}
             />
 
-            {/* ✅ CHAT (คุยกับผู้โพสต์) — แสดงเฉพาะ author != current user */}
             {showChatBtn ? (
               <IconButton
                 icon="chatbubbles-outline"
@@ -510,8 +1161,7 @@ export const HomeScreen: React.FC = () => {
 
             <View style={{ flex: 1 }} />
 
-            {/* ✅ BOOKMARK — แสดงเฉพาะ author != current user */}
-            {showBookmarkBtn ? (
+            {showChatBtn ? (
               <IconButton
                 icon={isBookmarked ? "bookmark" : "bookmark-outline"}
                 onPress={(e) => toggleBookmark(e as any, item.id)}
@@ -525,15 +1175,19 @@ export const HomeScreen: React.FC = () => {
       );
     },
     [
-      handleShare,
-      openUrl,
       navigation,
-      onOpenProfile,
       user?.id,
-      toggleBookmark,
       bookmarkBusyMap,
-      isLoggedIn,
+      isTelBlocked,
+      isBankReported,
+      openUrl,
+      handleShare,
       openChatWithAuthor,
+      toggleBookmark,
+      openBlockSheet,
+      openReportBankSheet,
+      openAllTelsModal,
+      openAllBanksModal,
     ]
   );
 
@@ -548,6 +1202,7 @@ export const HomeScreen: React.FC = () => {
       </View>
     );
   }, [canLoadMore, loadingMore]);
+  
 
   return (
     <View style={styles.container}>
@@ -573,6 +1228,218 @@ export const HomeScreen: React.FC = () => {
           ) : null
         }
         ListFooterComponent={footer}
+      />
+
+      {/* ===== MODAL: show all tels ===== */}
+      <Modal
+        visible={telModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setTelModalVisible(false)}
+      >
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setTelModalVisible(false)}
+        >
+          <Pressable style={styles.modalCard} onPress={() => {}}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle} numberOfLines={2}>
+                {telModalTitle || "เบอร์โทร"}
+              </Text>
+              <TouchableOpacity
+                onPress={() => setTelModalVisible(false)}
+                style={styles.modalClose}
+              >
+                <Ionicons name="close" size={18} color="#e5e7eb" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.modalList}>
+              {telModalTels.map((tel) => {
+                const blocked = isTelBlocked(tel);
+                return (
+                  <View key={tel} style={styles.modalRow}>
+                    <Text style={styles.modalTel} numberOfLines={1}>
+                      {tel}
+                    </Text>
+
+                    <TouchableOpacity
+                      onPress={(e: any) =>
+                        openBlockSheet(e, tel, {
+                          postId: telModalPostId,
+                          title: telModalTitle,
+                          source: "MODAL",
+                        })
+                      }
+                      style={[
+                        styles.modalBtn,
+                        blocked && styles.modalBtnBlocked,
+                      ]}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons
+                        name={blocked ? "lock-closed" : "lock-open-outline"}
+                        size={14}
+                        color="#fff"
+                      />
+                      <Text style={styles.modalBtnText}>
+                        {blocked ? "บล็อกแล้ว" : "บล็อก"}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                );
+              })}
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ===== MODAL: show all banks ===== */}
+      <Modal
+        visible={bankModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setBankModalVisible(false)}
+      >
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setBankModalVisible(false)}
+        >
+          <Pressable style={styles.modalCard} onPress={() => {}}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle} numberOfLines={2}>
+                {bankModalTitle || "บัญชีธนาคาร"}
+              </Text>
+              <TouchableOpacity
+                onPress={() => setBankModalVisible(false)}
+                style={styles.modalClose}
+              >
+                <Ionicons name="close" size={18} color="#e5e7eb" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.modalList}>
+              {bankModalList.map((b, idx) => {
+                const acc = normalizeBankAccount(b.seller_account || "");
+                const reported = isBankReported(acc);
+                const label = `${b.bank_name || "Bank"}: ${acc}`;
+
+                return (
+                  <View key={`${acc}-${idx}`} style={styles.modalRow}>
+                    <Text style={styles.modalTel} numberOfLines={1}>
+                      {label}
+                    </Text>
+
+                    <TouchableOpacity
+                      onPress={(e: any) =>
+                        openReportBankSheet(e, b.bank_name, acc, {
+                          postId: bankModalPostId,
+                          title: bankModalTitle,
+                          source: "MODAL",
+                        })
+                      }
+                      style={[
+                        styles.modalBtn,
+                        reported && styles.modalBtnReported,
+                      ]}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons
+                        name={reported ? "close-circle" : "megaphone-outline"}
+                        size={14}
+                        color="#fff"
+                      />
+                      <Text style={styles.modalBtnText}>
+                        {reported ? "ยกเลิกรายงาน" : "รายงาน"}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                );
+              })}
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ===== Bottom Sheet: Tel Block/Report ===== */}
+      <BottomSheetBlockReportModal
+        ref={blockSheetRef}
+        isBlocked={(telNormalized) => !!blockedMap[telNormalized]}
+        onBlock={async (telNormalized) => {
+          setBlockedMap((prev) => {
+            const next = { ...prev, [telNormalized]: true };
+            persistBlocked(next);
+            return next;
+          });
+        }}
+        onUnblock={async (telNormalized) => {
+          const tel = normalizeTel(telNormalized);
+          if (!tel) return;
+
+          try {
+            await unblockTelOnServer(tel);
+          } catch (e: any) {
+            console.log("UNBLOCK TEL ERROR", e?.message || e);
+            Alert.alert("Unblock ไม่สำเร็จ", e?.message || "กรุณาลองใหม่");
+            return;
+          }
+
+          setBlockedMap((prev) => {
+            const next = { ...prev };
+            delete next[telNormalized];
+            persistBlocked(next);
+            return next;
+          });
+
+          Alert.alert("ยกเลิกบล็อกแล้ว", tel);
+        }}
+        onReport={async ({ tel, category, note, postId }) => {
+          await reportTel({ tel, category, note, postId });
+        }}
+      />
+
+      {/* ===== Bottom Sheet: Bank Report / Unreport ===== */}
+     <BottomSheetReportBankModal
+        ref={reportBankSheetRef}
+        isReported={(accNormalized) => !!reportedBankMap[accNormalized]}
+        onToggleReport={async ({ mode, bankName, account, note }) => {
+          const accNorm = normalizeBankAccount(account);
+          if (!accNorm) {
+            Alert.alert("เลขบัญชีไม่ถูกต้อง");
+            return;
+          }
+
+          const bankNameSafe = String(bankName || "").trim() || "UNKNOWN";
+
+          try {
+            if (mode === "REPORT") {
+              await reportBankOnServer({
+                bankName: bankNameSafe,
+                accountNorm: accNorm,
+                note: note?.trim() ? note.trim() : null,
+              });
+
+              // ✅ mark local
+              markBankReportedLocal(accNorm);
+              Alert.alert("สำเร็จ", "รายงานบัญชีเรียบร้อยแล้ว");
+              return;
+            }
+
+            // mode === "UNREPORT"
+            await unreportBankOnServer({
+              bankName: bankNameSafe,
+              accountNorm: accNorm,
+              reason: null,
+            });
+
+            // ✅ unmark local
+            unmarkBankReportedLocal(accNorm);
+            Alert.alert("สำเร็จ", "ยกเลิกรายงานบัญชีแล้ว");
+          } catch (err: any) {
+            console.log("REPORT/UNREPORT BANK ERROR", err);
+            Alert.alert("ทำรายการไม่สำเร็จ", err?.message || "ลองใหม่อีกครั้ง");
+          }
+        }}
       />
     </View>
   );
@@ -637,12 +1504,7 @@ const styles = StyleSheet.create({
   },
   tagText: { fontSize: 10, fontWeight: "900" },
 
-  metaRow: {
-    marginTop: 6,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
+  metaRow: { marginTop: 6, flexDirection: "row", alignItems: "center", gap: 8 },
   meta: { color: "#9ca3af", fontSize: 11, flex: 1 },
 
   authorChip: {
@@ -657,12 +1519,7 @@ const styles = StyleSheet.create({
     borderColor: "#2a2a35",
     maxWidth: 180,
   },
-  authorAvatar: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: "#111",
-  },
+  authorAvatar: { width: 18, height: 18, borderRadius: 9, backgroundColor: "#111" },
   authorAvatarFallback: {
     width: 18,
     height: 18,
@@ -676,22 +1533,64 @@ const styles = StyleSheet.create({
 
   detail: { marginTop: 10, color: "#e5e7eb", fontSize: 12, lineHeight: 16 },
 
-  infoRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    marginTop: 8,
-  },
-  infoLabel: { color: "#9ca3af", fontSize: 12, fontWeight: "800" },
+  infoRow: { flexDirection: "row", alignItems: "flex-start", gap: 6, marginTop: 8 },
+  infoLabel: { color: "#9ca3af", fontSize: 12, fontWeight: "800", marginTop: 2 },
   infoValue: { flex: 1, color: "#fff", fontSize: 12 },
-  moreText: { color: "#9ca3af", fontSize: 12 },
 
-  actionsRow: {
-    marginTop: 12,
+  chipsWrap: { flex: 1, flexDirection: "row", flexWrap: "wrap", gap: 8 },
+
+  telChip: {
+    maxWidth: "100%",
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "#1d1d25",
+    borderWidth: 1,
+    borderColor: "#2a2a35",
   },
+  telChipBlocked: { borderColor: "#ef4444", backgroundColor: "rgba(239,68,68,0.18)" },
+
+  bankChip: {
+    maxWidth: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "#1d1d25",
+    borderWidth: 1,
+    borderColor: "#2a2a35",
+  },
+  bankChipReported: { borderColor: "#34c759", backgroundColor: "rgba(52,199,89,0.14)" },
+
+  chipMainText: { color: "#fff", fontSize: 12, fontWeight: "800", maxWidth: 220 },
+  chipRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingLeft: 8,
+    borderLeftWidth: 1,
+    borderLeftColor: "#2a2a35",
+  },
+  chipRightText: { color: "#e5e7eb", fontSize: 11, fontWeight: "900" },
+
+  moreChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "#15151c",
+    borderWidth: 1,
+    borderColor: "#2a2a35",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  moreChipText: { color: "#9ca3af", fontSize: 12, fontWeight: "900" },
+
+  actionsRow: { marginTop: 12, flexDirection: "row", alignItems: "center", gap: 10 },
   iconBtn: {
     width: 34,
     height: 34,
@@ -702,10 +1601,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  iconBtnActive: {
-    borderColor: "#3b82f6",
-    backgroundColor: "rgba(59,130,246,0.18)",
-  },
+  iconBtnActive: { borderColor: "#3b82f6", backgroundColor: "rgba(59,130,246,0.18)" },
 
   badge: {
     position: "absolute",
@@ -723,14 +1619,49 @@ const styles = StyleSheet.create({
   },
   badgeText: { color: "#111", fontSize: 10, fontWeight: "900" },
 
-  empty: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingTop: 60,
-    gap: 8,
-  },
+  empty: { alignItems: "center", justifyContent: "center", paddingTop: 60, gap: 8 },
   emptyText: { color: "#6b7280", fontSize: 14 },
 
   footer: { paddingVertical: 16, alignItems: "center", gap: 8 },
   footerText: { color: "#9ca3af", fontSize: 12 },
+
+  // Modals
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", padding: 16, justifyContent: "center" },
+  modalCard: { backgroundColor: "#111116", borderRadius: 16, borderWidth: 1, borderColor: "#2a2a35", padding: 12 },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#1f1f26",
+  },
+  modalTitle: { flex: 1, color: "#fff", fontSize: 14, fontWeight: "900" },
+  modalClose: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: "#1d1d25",
+    borderWidth: 1,
+    borderColor: "#2a2a35",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  modalList: { paddingTop: 10, gap: 10 },
+  modalRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  modalTel: { flex: 1, color: "#e5e7eb", fontSize: 13, fontWeight: "800" },
+  modalBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: "#374151",
+    borderWidth: 1,
+    borderColor: "#4b5563",
+  },
+  modalBtnBlocked: { backgroundColor: "#ef4444", borderColor: "#ef4444" },
+  modalBtnReported: { backgroundColor: "#34c759", borderColor: "#34c759" },
+  modalBtnText: { color: "#fff", fontSize: 12, fontWeight: "900" },
 });
