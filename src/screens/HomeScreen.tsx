@@ -23,6 +23,19 @@ import { gql } from "@apollo/client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import {
+  loadBlockedTelMap,
+  saveBlockedTelMap,
+  loadReportedBankMap,
+  saveReportedBankMap,
+  getDeviceClientId,
+  encodeBankCategoryIntoText,
+  type StoredBlockedTelMap,
+  type StoredBlockedTelEntry,
+  type StoredReportedBankMap,
+  type StoredReportedBankEntry,
+} from "../lib/jachoeiLocalState";
+
+import {
   useNavigation,
   useFocusEffect,
   useRoute,
@@ -34,7 +47,7 @@ import { ThumbGrid } from "../components/ThumbGrid";
 import { client } from "../apollo/client";
 import { ENV } from "../config/env";
 
-import type { RootStackParamList } from "../navigation/types";
+import type { RootStackParamList, TabsParamList } from "../navigation/types";
 import { useAuth } from "../auth/AuthProvider";
 
 import {
@@ -141,6 +154,7 @@ const REPORT_SCAM_PHONE = gql`
       is_deleted
       post_ids
       ctx
+      tags
     }
   }
 `;
@@ -156,6 +170,7 @@ const UNBLOCK_SCAM_PHONE = gql`
       is_deleted
       post_ids
       ctx
+      tags
     }
   }
 `;
@@ -270,7 +285,7 @@ function buildSharePayload(r: PostItem) {
   return { url, title, text };
 }
 
-type HomeRoute = RouteProp<RootStackParamList, "Home">;
+type HomeRoute = RouteProp<TabsParamList, "HomeScreen">;
 
 
 // const DEVICE_CLIENT_ID_KEY = "jachoei.device_client_id_v1";
@@ -358,13 +373,11 @@ export const HomeScreen: React.FC = () => {
     {}
   );
 
-  // ✅ blocked tel (local)
-  const [blockedMap, setBlockedMap] = useState<Record<string, true>>({});
+  // ✅ blocked tel (local) — map: tel -> entry
+  const [blockedMap, setBlockedMap] = useState<StoredBlockedTelMap>({});
 
-  // ✅ reported bank (local)
-  const [reportedBankMap, setReportedBankMap] = useState<Record<string, true>>(
-    {}
-  );
+  // ✅ reported bank (local) — map: account -> entry
+  const [reportedBankMap, setReportedBankMap] = useState<StoredReportedBankMap>({});
 
   // modal for viewing all tels of a post
   const [telModalVisible, setTelModalVisible] = useState(false);
@@ -420,55 +433,22 @@ export const HomeScreen: React.FC = () => {
 
   // ====== load/save blocked tel ======
   const loadBlocked = useCallback(async () => {
-    try {
-      const raw = await AsyncStorage.getItem(BLOCKED_STORE_KEY);
-      if (!raw) {
-        setBlockedMap({});
-        return;
-      }
-      const arr = JSON.parse(raw) as string[];
-      const next: Record<string, true> = {};
-      for (const t of arr || []) {
-        const n = normalizeTel(t);
-        if (n) next[n] = true;
-      }
-      setBlockedMap(next);
-    } catch {}
+    const next = await loadBlockedTelMap();
+    setBlockedMap(next);
   }, []);
 
-  const persistBlocked = useCallback(async (m: Record<string, true>) => {
-    try {
-      const arr = Object.keys(m);
-      await AsyncStorage.setItem(BLOCKED_STORE_KEY, JSON.stringify(arr));
-    } catch {}
+  const persistBlocked = useCallback((m: StoredBlockedTelMap) => {
+    void saveBlockedTelMap(m);
   }, []);
 
   // ====== load/save reported bank ======
   const loadReportedBank = useCallback(async () => {
-    try {
-      const raw = await AsyncStorage.getItem(REPORTED_BANK_STORE_KEY);
-      if (!raw) {
-        setReportedBankMap({});
-        return;
-      }
-      const arr = JSON.parse(raw) as string[];
-      const next: Record<string, true> = {};
-      for (const a of arr || []) {
-        const n = normalizeBankAccount(a);
-        if (n) next[n] = true;
-      }
-      setReportedBankMap(next);
-    } catch {}
+    const next = await loadReportedBankMap();
+    setReportedBankMap(next);
   }, []);
 
-  const persistReportedBank = useCallback(async (m: Record<string, true>) => {
-    try {
-      const arr = Object.keys(m);
-      await AsyncStorage.setItem(
-        REPORTED_BANK_STORE_KEY,
-        JSON.stringify(arr)
-      );
-    } catch {}
+  const persistReportedBank = useCallback((m: StoredReportedBankMap) => {
+    void saveReportedBankMap(m);
   }, []);
 
   const isTelBlocked = useCallback(
@@ -487,31 +467,6 @@ export const HomeScreen: React.FC = () => {
     [reportedBankMap]
   );
 
-  const markBankReportedLocal = useCallback(
-    (accNormalized: string) => {
-      if (!accNormalized) return;
-      setReportedBankMap((prev) => {
-        const next = { ...prev, [accNormalized]: true };
-        persistReportedBank(next);
-        return next;
-      });
-    },
-    [persistReportedBank]
-  );
-
-  const unmarkBankReportedLocal = useCallback(
-    (accNormalized: string) => {
-      if (!accNormalized) return;
-      setReportedBankMap((prev) => {
-        const next = { ...prev };
-        delete next[accNormalized];
-        persistReportedBank(next);
-        return next;
-      });
-    },
-    [persistReportedBank]
-  );
-
 
   const openBlockSheet = useCallback(
     (
@@ -524,14 +479,19 @@ export const HomeScreen: React.FC = () => {
       const tel = normalizeTel(telRaw);
       if (!tel) return;
 
+      const entry = blockedMap[tel] as StoredBlockedTelEntry | undefined;
+
       blockSheetRef.current?.open({
         tel,
         postId: meta?.postId,
         title: meta?.title,
         source: meta?.source ?? "HOME",
+        initialWantReport: entry?.wantReport,
+        initialCategory: entry?.category,
+        initialNote: entry?.note,
       });
     },
-    [requireLoginOrGo]
+    [requireLoginOrGo, blockedMap]
   );
 
   const openReportBankSheet = useCallback(
@@ -546,15 +506,19 @@ export const HomeScreen: React.FC = () => {
       const acc = normalizeBankAccount(accountRaw);
       if (!acc) return;
 
+      const entry = reportedBankMap[acc] as StoredReportedBankEntry | undefined;
+
       reportBankSheetRef.current?.open({
         bankName: bankName ?? null,
         account: acc,
         postId: meta?.postId,
         title: meta?.title,
         source: meta?.source ?? "HOME",
+        initialCategory: entry?.category,
+        initialNote: entry?.note,
       });
     },
-    [requireLoginOrGo]
+    [requireLoginOrGo, reportedBankMap]
   );
 
   const fetchPage = useCallback(
@@ -703,7 +667,9 @@ export const HomeScreen: React.FC = () => {
       applyBookmarkToList(postId, !prevVal);
 
       try {
-        const { data } = await client.mutate({
+        const { data } = await client.mutate<{
+          toggleBookmark?: { status?: string | null; isBookmarked?: boolean | null } | null;
+        }>({
           mutation: M_TOGGLE_BOOKMARK,
           variables: { postId },
         });
@@ -775,26 +741,36 @@ export const HomeScreen: React.FC = () => {
 
   // ✅ REPORT TEL -> ยิง reportScamPhone
   const reportTel = useCallback(
-    async (payload: { tel: string; category: ReportCategory; note?: string; postId?: string }) => {
+    async (payload: { tel: string; category?: ReportCategory | null; note?: string | null; postId?: string }) => {
       const tel = normalizeTel(payload.tel);
       if (!tel) {
         Alert.alert("เบอร์ไม่ถูกต้อง", "กรุณาลองใหม่");
         return;
       }
 
+      const clientId = await getDeviceClientId();
+
       const input = {
         phone: tel,
-        note: payload.note?.trim() ? payload.note.trim() : null,
+        note: payload.note?.trim() ? String(payload.note).trim() : null,
         local_blocked: isBlocked(tel),
-        client_id: genClientId(),
+        client_id: clientId,
         device_model: Platform.OS,
         os_version: String(Platform.Version),
         app_version: "1.0.0",
-        category: payload.category,
+        category: payload.category ?? null,
       };
 
       try {
-        const res = await client.mutate({
+        const res = await client.mutate<{
+          reportScamPhone:
+            | {
+                updated_at?: string | null;
+                ctx?: unknown;
+                tags?: string[] | null;
+              }
+            | null;
+        }>({
           mutation: REPORT_SCAM_PHONE,
           variables: { input },
         });
@@ -804,21 +780,31 @@ export const HomeScreen: React.FC = () => {
       } catch (e: any) {
         console.log("REPORT TEL ERROR", e?.message || e);
         Alert.alert("รายงานไม่สำเร็จ", e?.message || "กรุณาลองใหม่");
+        throw e;
       }
     },
     [isBlocked]
   );
 
   async function unblockTelOnServer(phone: string) {
+    const clientId = await getDeviceClientId();
     const input = {
       phone,
-      client_id: genClientId(),
+      client_id: clientId,
       device_model: Platform.OS,
       os_version: String(Platform.Version),
       app_version: "1.0.0",
     };
 
-    const res = await client.mutate({
+    const res = await client.mutate<{
+      unblockScamPhone:
+        | {
+            updated_at?: string | null;
+            ctx?: unknown;
+            tags?: string[] | null;
+          }
+        | null;
+    }>({
       mutation: UNBLOCK_SCAM_PHONE,
       variables: { input },
     });
@@ -832,17 +818,27 @@ export const HomeScreen: React.FC = () => {
     accountNorm: string;
     note?: string | null;
   }) {
+    const clientId = await getDeviceClientId();
     const input = {
       bank_name: String(args.bankName || "").trim() || "UNKNOWN",
       account: args.accountNorm,
       note: args.note ?? null,
-      client_id: genClientId(),
+      client_id: clientId,
       device_model: Platform.OS,
       os_version: String(Platform.Version),
       app_version: "1.0.0",
     };
 
-    const { data } = await client.mutate({
+    const { data } = await client.mutate<{
+      reportScamBankAccount:
+        | {
+            bank_name?: string | null;
+            updated_at?: string | null;
+            ctx?: unknown;
+            tags?: string[] | null;
+          }
+        | null;
+    }>({
       mutation: M_REPORT_SCAM_BANK_ACCOUNT,
       variables: { input },
     });
@@ -855,23 +851,237 @@ export const HomeScreen: React.FC = () => {
     accountNorm: string;
     reason?: string | null;
   }) {
+    const clientId = await getDeviceClientId();
     const input = {
       bank_name: String(args.bankName || "").trim() || "UNKNOWN",
       account: args.accountNorm,
-      client_id: genClientId(),
+      client_id: clientId,
       device_model: Platform.OS,
       os_version: String(Platform.Version),
       app_version: "1.0.0",
       reason: args.reason ?? null,
     };
 
-    const { data } = await client.mutate({
+    const { data } = await client.mutate<{
+      unreportScamBankAccount:
+        | {
+            bank_name?: string | null;
+            updated_at?: string | null;
+            ctx?: unknown;
+            tags?: string[] | null;
+          }
+        | null;
+    }>({
       mutation: M_UNREPORT_SCAM_BANK_ACCOUNT,
       variables: { input },
     });
 
     return data?.unreportScamBankAccount;
   }
+
+  const performTelConfirm = useCallback(
+    async (value: { tel: string; wantReport: boolean; category: ReportCategory; note: string; postId?: string }) => {
+      const tel = normalizeTel(value.tel);
+      if (!tel) return;
+
+      const prevEntry = blockedMap[tel] as StoredBlockedTelEntry | undefined;
+
+      const optimisticEntry: StoredBlockedTelEntry = {
+        wantReport: !!value.wantReport,
+        category: value.wantReport ? value.category : undefined,
+        note: value.wantReport ? value.note : "",
+        blockedAt: prevEntry?.blockedAt ?? new Date().toISOString(),
+        ctx: prevEntry?.ctx,
+        tags: prevEntry?.tags,
+      };
+
+      setBlockedMap((prev) => {
+        const next: StoredBlockedTelMap = { ...prev, [tel]: optimisticEntry };
+        persistBlocked(next);
+        return next;
+      });
+
+      try {
+        const payload = await reportTel({
+          tel,
+          category: value.wantReport ? value.category : null,
+          note: value.wantReport ? value.note : null,
+          postId: value.postId,
+        });
+
+        if (payload) {
+          setBlockedMap((prev) => {
+            const next: StoredBlockedTelMap = {
+              ...prev,
+              [tel]: {
+                ...optimisticEntry,
+                blockedAt: payload.updated_at ?? optimisticEntry.blockedAt,
+                ctx: payload.ctx ?? optimisticEntry.ctx,
+                tags: payload.tags ?? optimisticEntry.tags,
+              },
+            };
+            persistBlocked(next);
+            return next;
+          });
+        }
+      } catch {
+        setBlockedMap((prev) => {
+          const next: StoredBlockedTelMap = { ...prev };
+          if (prevEntry) next[tel] = prevEntry;
+          else delete next[tel];
+          persistBlocked(next);
+          return next;
+        });
+      }
+    },
+    [blockedMap, persistBlocked, reportTel]
+  );
+
+  const performTelUndo = useCallback(
+    async (telRaw: string) => {
+      const tel = normalizeTel(telRaw);
+      if (!tel) return;
+
+      const prevEntry = blockedMap[tel] as StoredBlockedTelEntry | undefined;
+      if (!prevEntry) return;
+
+      setBlockedMap((prev) => {
+        const next: StoredBlockedTelMap = { ...prev };
+        delete next[tel];
+        persistBlocked(next);
+        return next;
+      });
+
+      try {
+        await unblockTelOnServer(tel);
+        Alert.alert("ยกเลิกบล็อกแล้ว", tel);
+      } catch (e: any) {
+        setBlockedMap((prev) => {
+          const next: StoredBlockedTelMap = { ...prev, [tel]: prevEntry };
+          persistBlocked(next);
+          return next;
+        });
+        Alert.alert("Unblock ไม่สำเร็จ", e?.message || "กรุณาลองใหม่");
+      }
+    },
+    [blockedMap, persistBlocked]
+  );
+
+  const performBankConfirm = useCallback(
+    async (value: {
+      bankName: string | null;
+      account: string;
+      category: StoredReportedBankEntry["category"];
+      note: string;
+    }) => {
+      const acc = normalizeBankAccount(value.account);
+      if (!acc) {
+        Alert.alert("เลขบัญชีไม่ถูกต้อง");
+        return;
+      }
+
+      const prevEntry = reportedBankMap[acc] as StoredReportedBankEntry | undefined;
+      const wasReported = !!prevEntry;
+
+      const optimisticEntry: StoredReportedBankEntry = {
+        bank_name: value.bankName ?? prevEntry?.bank_name ?? null,
+        category: value.category,
+        note: value.note,
+        reportedAt: prevEntry?.reportedAt ?? new Date().toISOString(),
+        ctx: prevEntry?.ctx,
+        tags: prevEntry?.tags,
+      };
+
+      setReportedBankMap((prev) => {
+        const next: StoredReportedBankMap = { ...prev, [acc]: optimisticEntry };
+        persistReportedBank(next);
+        return next;
+      });
+
+      const bankNameSafe = String(value.bankName || "").trim() || "UNKNOWN";
+      const noteEncoded = encodeBankCategoryIntoText(value.category, value.note);
+
+      try {
+        const payload = await reportBankOnServer({
+          bankName: bankNameSafe,
+          accountNorm: acc,
+          note: noteEncoded,
+        });
+
+        if (payload) {
+          setReportedBankMap((prev) => {
+            const next: StoredReportedBankMap = {
+              ...prev,
+              [acc]: {
+                ...optimisticEntry,
+                bank_name: payload.bank_name ?? optimisticEntry.bank_name,
+                reportedAt: payload.updated_at ?? optimisticEntry.reportedAt,
+                ctx: payload.ctx ?? optimisticEntry.ctx,
+                tags: payload.tags ?? optimisticEntry.tags,
+              },
+            };
+            persistReportedBank(next);
+            return next;
+          });
+        }
+
+        Alert.alert("สำเร็จ", wasReported ? "อัปเดตรายงานแล้ว" : "รายงานบัญชีเรียบร้อยแล้ว");
+      } catch (err: any) {
+        setReportedBankMap((prev) => {
+          const next: StoredReportedBankMap = { ...prev };
+          if (prevEntry) next[acc] = prevEntry;
+          else delete next[acc];
+          persistReportedBank(next);
+          return next;
+        });
+
+        Alert.alert("ทำรายการไม่สำเร็จ", err?.message || "ลองใหม่อีกครั้ง");
+      }
+    },
+    [reportedBankMap, persistReportedBank]
+  );
+
+  const performBankUndo = useCallback(
+    async (bankName: string | null, accountRaw: string) => {
+      const acc = normalizeBankAccount(accountRaw);
+      if (!acc) {
+        Alert.alert("เลขบัญชีไม่ถูกต้อง");
+        return;
+      }
+
+      const prevEntry = reportedBankMap[acc] as StoredReportedBankEntry | undefined;
+      if (!prevEntry) return;
+
+      setReportedBankMap((prev) => {
+        const next: StoredReportedBankMap = { ...prev };
+        delete next[acc];
+        persistReportedBank(next);
+        return next;
+      });
+
+      const bankNameSafe = String(bankName || "").trim() || "UNKNOWN";
+      const reasonEncoded = encodeBankCategoryIntoText(prevEntry.category, prevEntry.note ?? null);
+
+      try {
+        await unreportBankOnServer({
+          bankName: bankNameSafe,
+          accountNorm: acc,
+          reason: reasonEncoded,
+        });
+
+        Alert.alert("สำเร็จ", "ยกเลิกรายงานบัญชีแล้ว");
+      } catch (err: any) {
+        setReportedBankMap((prev) => {
+          const next: StoredReportedBankMap = { ...prev, [acc]: prevEntry };
+          persistReportedBank(next);
+          return next;
+        });
+
+        Alert.alert("ทำรายการไม่สำเร็จ", err?.message || "ลองใหม่อีกครั้ง");
+      }
+    },
+    [reportedBankMap, persistReportedBank]
+  );
 
   const renderPostItem = useCallback(
     ({ item }: { item: PostItem }) => {
@@ -1364,81 +1574,24 @@ export const HomeScreen: React.FC = () => {
       {/* ===== Bottom Sheet: Tel Block/Report ===== */}
       <BottomSheetBlockReportModal
         ref={blockSheetRef}
-        isBlocked={(telNormalized) => !!blockedMap[telNormalized]}
-        onBlock={async (telNormalized) => {
-          setBlockedMap((prev) => {
-            const next = { ...prev, [telNormalized]: true };
-            persistBlocked(next);
-            return next;
-          });
+        isBlocked={(telNormalized) => !!blockedMap[normalizeTel(telNormalized)]}
+        onConfirm={async ({ tel, wantReport, category, note, postId }) => {
+          await performTelConfirm({ tel, wantReport, category, note, postId });
         }}
-        onUnblock={async (telNormalized) => {
-          const tel = normalizeTel(telNormalized);
-          if (!tel) return;
-
-          try {
-            await unblockTelOnServer(tel);
-          } catch (e: any) {
-            console.log("UNBLOCK TEL ERROR", e?.message || e);
-            Alert.alert("Unblock ไม่สำเร็จ", e?.message || "กรุณาลองใหม่");
-            return;
-          }
-
-          setBlockedMap((prev) => {
-            const next = { ...prev };
-            delete next[telNormalized];
-            persistBlocked(next);
-            return next;
-          });
-
-          Alert.alert("ยกเลิกบล็อกแล้ว", tel);
-        }}
-        onReport={async ({ tel, category, note, postId }) => {
-          await reportTel({ tel, category, note, postId });
+        onUndo={async ({ tel }) => {
+          await performTelUndo(tel);
         }}
       />
 
       {/* ===== Bottom Sheet: Bank Report / Unreport ===== */}
      <BottomSheetReportBankModal
         ref={reportBankSheetRef}
-        isReported={(accNormalized) => !!reportedBankMap[accNormalized]}
-        onToggleReport={async ({ mode, bankName, account, note }) => {
-          const accNorm = normalizeBankAccount(account);
-          if (!accNorm) {
-            Alert.alert("เลขบัญชีไม่ถูกต้อง");
-            return;
-          }
-
-          const bankNameSafe = String(bankName || "").trim() || "UNKNOWN";
-
-          try {
-            if (mode === "REPORT") {
-              await reportBankOnServer({
-                bankName: bankNameSafe,
-                accountNorm: accNorm,
-                note: note?.trim() ? note.trim() : null,
-              });
-
-              // ✅ mark local
-              markBankReportedLocal(accNorm);
-              Alert.alert("สำเร็จ", "รายงานบัญชีเรียบร้อยแล้ว");
-              return;
-            }
-
-            // mode === "UNREPORT"
-            await unreportBankOnServer({
-              bankName: bankNameSafe,
-              accountNorm: accNorm,
-              reason: null,
-            });
-
-            // ✅ unmark local
-            unmarkBankReportedLocal(accNorm);
-            Alert.alert("สำเร็จ", "ยกเลิกรายงานบัญชีแล้ว");
-          } catch (err: any) {
-            console.log("REPORT/UNREPORT BANK ERROR", err);
-            Alert.alert("ทำรายการไม่สำเร็จ", err?.message || "ลองใหม่อีกครั้ง");
-          }
+        isReported={(accNormalized) => !!reportedBankMap[normalizeBankAccount(accNormalized)]}
+        onConfirm={async ({ bankName, account, category, note }) => {
+          await performBankConfirm({ bankName, account, category, note });
+        }}
+        onUndo={async ({ bankName, account }) => {
+          await performBankUndo(bankName, account);
         }}
       />
     </View>
