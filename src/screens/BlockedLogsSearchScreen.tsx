@@ -233,16 +233,16 @@ export const BlockedLogsSearchScreen: React.FC<Props> = ({ navigation }) => {
         />
       ),
 
-      headerLeft: () => (
-        <TouchableOpacity
-          onPress={() => navigation.goBack()}
-          style={{ paddingHorizontal: 12 }}
-          hitSlop={10}
-        >
-          <Ionicons name="arrow-back" size={22} color="#fff" />
-        </TouchableOpacity>
-      ),
-      headerBackVisible: false,
+      // headerLeft: () => (
+      //   <TouchableOpacity
+      //     onPress={() => navigation.goBack()}
+      //     style={{ paddingHorizontal: 12 }}
+      //     hitSlop={10}
+      //   >
+      //     <Ionicons name="arrow-back" size={22} color="#fff" />
+      //   </TouchableOpacity>
+      // ),
+      // headerBackVisible: false,
     });
   }, [navigation, search, runSearch]);
 

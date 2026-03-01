@@ -595,7 +595,7 @@ export default function PostFormScreen({ route, navigation }: Props) {
       headerStyle: { backgroundColor: "#0b0b0f" },
       headerTintColor: "#fff",
       headerTitleStyle: { color: "#fff", fontWeight: "800" },
-      headerBackTitleVisible: false,
+      // headerBackTitleVisible: false,
 
       headerRight: () => (
         <Pressable
@@ -1044,12 +1044,12 @@ const styles = StyleSheet.create({
   thumbLabel: { color: "rgba(255,255,255,0.65)", fontSize: 12, marginTop: 6 },
 
   headerBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
-    borderWidth: 1,
+    // paddingHorizontal: 12,
+    // paddingVertical: 8,
+    // borderRadius: 12,
+    // borderWidth: 1,
     borderColor: "rgba(255,255,255,0.18)",
-    backgroundColor: "rgba(255,255,255,0.06)",
+    // backgroundColor: "rgba(255,255,255,0.06)",
     minWidth: 64,
     alignItems: "center",
     justifyContent: "center",
