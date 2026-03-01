@@ -35,6 +35,8 @@
 	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string></string>
+	<key>RCTNewArchEnabled</key>
+	<true/>
 	<key>UILaunchStoryboardName</key>
 	<string>BootSplash</string>
 	<key>UIRequiredDeviceCapabilities</key>
@@ -49,5 +51,20 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<false/>
+
+	<key>UIAppFonts</key>
+	<array>
+	<string>Ionicons.ttf</string>
+	</array>
+  
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>com.googleusercontent.apps.619965285212-s5hpe2qkv53pkd46svrb9a0eq686ec7t</string>
+      </array>
+    </dict>
+  </array>
 </dict>
 </plist>

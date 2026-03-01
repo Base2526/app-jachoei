@@ -9,7 +9,7 @@ import {
   StyleSheet,
   Platform
 } from "react-native";
-
+import Ionicons from "react-native-vector-icons/Ionicons";
 import {
   NavigationContainer,
   createNavigationContainerRef,
@@ -54,6 +54,7 @@ export async function ensureSmsPermissions() {
 
 GoogleSignin.configure({
   webClientId: "619965285212-4dqfos2ifns1bdgo2anudj4c3gm8ttih.apps.googleusercontent.com",
+  iosClientId: "619965285212-s5hpe2qkv53pkd46svrb9a0eq686ec7t.apps.googleusercontent.com",
   offlineAccess: false,
 });
 
@@ -109,7 +110,17 @@ function Root() {
           headerShown: true,
           title: "ค้นหา Blocked Logs",
           presentation: "card",
-          headerBackTitle: "กลับ",
+          headerBackVisible: false,
+          headerLeft(props) {
+            return (
+              <Pressable
+                  onPress={() => navigationRef.goBack()}
+                  style={{ paddingHorizontal: 4 }}
+                >
+                  <Ionicons name="chevron-back" size={26} color="#fff" />
+              </Pressable>
+            );
+          },
         }}
       />
 
@@ -119,6 +130,17 @@ function Root() {
         options={{
           title: "รายละเอียดโพสต์",
           presentation: "card",
+          headerBackVisible: false,
+          headerLeft(props) {
+            return (
+              <Pressable
+                  onPress={() => navigationRef.goBack()}
+                  style={{ paddingHorizontal: 4 }}
+                >
+                  <Ionicons name="chevron-back" size={26} color="#fff" />
+              </Pressable>
+            );
+          },
         }}
       />
 
@@ -129,6 +151,18 @@ function Root() {
           headerShown: true,
           title: "User Profile",
           presentation: "card",
+
+          headerBackVisible: false,
+          headerLeft(props) {
+            return (
+              <Pressable
+                  onPress={() => navigationRef.goBack()}
+                  style={{ paddingHorizontal: 4 }}
+                >
+                  <Ionicons name="chevron-back" size={26} color="#fff" />
+              </Pressable>
+            );
+          },
         }}
       />
 
@@ -138,15 +172,24 @@ function Root() {
         options={{ 
           headerShown: true, 
           title: "Chat", 
-          presentation: "card" 
+          presentation: "card" ,
+          headerBackVisible: false,
+          headerLeft(props) {
+            return (
+              <Pressable
+                  onPress={() => navigationRef.goBack()}
+                  style={{ paddingHorizontal: 4 }}
+                >
+                  <Ionicons name="chevron-back" size={26} color="#fff" />
+              </Pressable>
+            );
+          },
         }}
       />
 
-      <Stack.Screen
+      {/* <Stack.Screen
         name="PostForm"
         component={PostFormScreen}
-        // options={{ headerShown: true, title: "สร้าง/แก้ไขรายการ" }}
-
         options={{
           headerShown: false,
           title: "สร้าง/แก้ไขรายการ",
@@ -155,7 +198,35 @@ function Root() {
           gestureEnabled: true,
           animation: "slide_from_bottom", //Platform.OS === "ios" ? "slide_from_bottom" : "fade",
           animationDuration: 250,
+          
         }}
+      /> */}
+
+      <Stack.Screen
+        name="PostForm"
+        component={PostFormScreen}
+        options={({ navigation }) => ({
+          title: "สร้าง/แก้ไขรายการ",
+          presentation: "modal",
+          headerShown: true,                 // ✅ เปิด header
+          gestureEnabled: true,
+          animation: "slide_from_bottom",
+          animationDuration: 250,
+          headerBackVisible: false,          // ✅ ไม่ใช้ back แบบ <
+          headerLeft: () => (
+            <Pressable
+              onPress={() => navigation.goBack()}
+              hitSlop={10}
+              style={({ pressed }) => ({
+                opacity: pressed ? 0.5 : 1,
+                backgroundColor: "transparent",
+                padding: 4,
+              })}
+            >
+              <Ionicons name="close" size={24} color="#fff" />
+            </Pressable>
+          ),
+        })}
       />
 
        {/* Notifications Page */}
@@ -167,13 +238,39 @@ function Root() {
           title: "Notifications",
           headerStyle: { backgroundColor: "#0b0b0f" },
           headerTintColor: "#fff",
+
+          headerBackVisible: false,
+          headerLeft(props) {
+            return (
+              <Pressable
+                  onPress={() => navigationRef.goBack()}
+                  style={{ paddingHorizontal: 4 }}
+                >
+                  <Ionicons name="chevron-back" size={26} color="#fff" />
+              </Pressable>
+            );
+          },
         }}
       />
 
       <Stack.Screen
         name="Setting"
         component={SettingScreen}
-        options={{ headerShown: true, title: "สร้าง/แก้ไขรายการ" }}
+        options={{ 
+          headerShown: true, 
+          title: "สร้าง/แก้ไขรายการ",
+          headerBackVisible: false,
+          headerLeft(props) {
+            return (
+              <Pressable
+                  onPress={() => navigationRef.goBack()}
+                  style={{ paddingHorizontal: 4 }}
+                >
+                  <Ionicons name="chevron-back" size={26} color="#fff" />
+              </Pressable>
+            );
+          },
+         }}
       />
     </Stack.Navigator>
   );

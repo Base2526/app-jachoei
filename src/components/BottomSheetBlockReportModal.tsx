@@ -32,6 +32,9 @@ export type BlockSheetOpenPayload = {
   source?: "HOME" | "DETAIL" | "MODAL" | "INCOMING_CALL";
   reportCount?: number;
   riskScore?: number; // 0-100 (optional)
+  initialWantReport?: boolean;
+  initialCategory?: ReportCategory;
+  initialNote?: string;
 };
 
 export type BottomSheetBlockReportModalRef = {
@@ -41,13 +44,21 @@ export type BottomSheetBlockReportModalRef = {
 
 type Props = {
   isBlocked: (telNormalized: string) => boolean;
-  onBlock: (telNormalized: string, meta?: { postId?: string }) => Promise<void> | void;
-  onUnblock: (telNormalized: string, meta?: { postId?: string }) => Promise<void> | void;
-  onReport?: (data: {
+  onConfirm: (data: {
     tel: string;
-    category: ReportCategory;
-    note?: string;
     postId?: string;
+    title?: string;
+    source?: "HOME" | "DETAIL" | "MODAL" | "INCOMING_CALL";
+    wantReport: boolean;
+    category: ReportCategory;
+    note: string;
+    dontAskAgain: boolean;
+  }) => Promise<void> | void;
+  onUndo: (data: {
+    tel: string;
+    postId?: string;
+    title?: string;
+    source?: "HOME" | "DETAIL" | "MODAL" | "INCOMING_CALL";
   }) => Promise<void> | void;
 };
 
@@ -91,7 +102,7 @@ export const BottomSheetBlockReportModal = forwardRef<
   BottomSheetBlockReportModalRef,
   Props
 >((props, ref) => {
-  const { isBlocked, onBlock, onUnblock, onReport } = props;
+  const { isBlocked, onConfirm, onUndo } = props;
 
   const [visible, setVisible] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -122,11 +133,20 @@ export const BottomSheetBlockReportModal = forwardRef<
 
       const skipKey = DONT_ASK_PREFIX + tel;
       const skip = (await AsyncStorage.getItem(skipKey)) === "1";
-      if (skip) {
-        // fast mode: ไม่ต้องถามอีก -> ทำทันที
+
+      // fast mode: skip only for blocking (not for managing already-blocked)
+      if (skip && !isBlocked(tel)) {
         try {
-          if (isBlocked(tel)) await onUnblock(tel, { postId: p.postId });
-          else await onBlock(tel, { postId: p.postId });
+          await onConfirm({
+            tel,
+            postId: p.postId,
+            title: p.title,
+            source: p.source,
+            wantReport: true,
+            category: "SCAM",
+            note: "",
+            dontAskAgain: true,
+          });
         } catch {
           // ignore
         }
@@ -134,10 +154,10 @@ export const BottomSheetBlockReportModal = forwardRef<
       }
 
       setPayload({ ...p, tel });
-      setWantReport(true);
-      setCategory("SCAM");
-      setNote("");
-      setDontAskAgain(false);
+      setWantReport(p.initialWantReport ?? true);
+      setCategory(p.initialCategory ?? "SCAM");
+      setNote(p.initialNote ?? "");
+      setDontAskAgain(skip);
 
       setVisible(true);
 
@@ -156,7 +176,7 @@ export const BottomSheetBlockReportModal = forwardRef<
         }),
       ]).start();
     },
-    [overlayOpacity, translateY, isBlocked, onBlock, onUnblock]
+    [overlayOpacity, translateY, isBlocked, onConfirm]
   );
 
   const close = useCallback(() => {
@@ -185,14 +205,14 @@ export const BottomSheetBlockReportModal = forwardRef<
   useImperativeHandle(ref, () => ({ open, close }), [open, close]);
 
   const primaryText = useMemo(() => {
-    if (blockedNow) return "ยกเลิกบล็อก";
-    if (!onReport || !wantReport) return "บล็อก";
+    if (blockedNow) return "Update Report";
+    if (!wantReport) return "บล็อก";
     return "บล็อก + รายงาน";
-  }, [blockedNow, onReport, wantReport]);
+  }, [blockedNow, wantReport]);
 
   const riskTone = toneStyle(risk.tone);
 
-  const onConfirm = useCallback(async () => {
+  const onPrimary = useCallback(async () => {
     if (!payload?.tel) return;
     const tel = normalizeTel(payload.tel);
     if (!tel) return;
@@ -203,22 +223,16 @@ export const BottomSheetBlockReportModal = forwardRef<
         await AsyncStorage.setItem(DONT_ASK_PREFIX + tel, "1");
       }
 
-      if (blockedNow) {
-        await onUnblock(tel, { postId: payload.postId });
-        close();
-        return;
-      }
-
-      await onBlock(tel, { postId: payload.postId });
-
-      if (onReport && wantReport) {
-        await onReport({
-          tel,
-          category,
-          note: note.trim() ? note.trim() : undefined,
-          postId: payload.postId,
-        });
-      }
+      await onConfirm({
+        tel,
+        postId: payload.postId,
+        title: payload.title,
+        source: payload.source,
+        wantReport,
+        category,
+        note,
+        dontAskAgain,
+      });
 
       close();
     } finally {
@@ -227,15 +241,32 @@ export const BottomSheetBlockReportModal = forwardRef<
   }, [
     payload,
     blockedNow,
-    onBlock,
-    onUnblock,
-    onReport,
+    onConfirm,
     wantReport,
     category,
     note,
     dontAskAgain,
     close,
   ]);
+
+  const onUnblock = useCallback(async () => {
+    if (!payload?.tel) return;
+    const tel = normalizeTel(payload.tel);
+    if (!tel) return;
+
+    setBusy(true);
+    try {
+      await onUndo({
+        tel,
+        postId: payload.postId,
+        title: payload.title,
+        source: payload.source,
+      });
+      close();
+    } finally {
+      setBusy(false);
+    }
+  }, [payload, onUndo, close]);
 
   if (!visible) return null;
 
@@ -285,27 +316,23 @@ export const BottomSheetBlockReportModal = forwardRef<
             </TouchableOpacity>
           </View>
 
-          {!blockedNow && !!onReport ? (
-            <TouchableOpacity
-              onPress={() => setWantReport((v) => !v)}
-              style={styles.toggleRow}
-              activeOpacity={0.88}
-            >
-              <View style={[styles.checkBox, wantReport && styles.checkBoxOn]}>
-                {wantReport ? (
-                  <Ionicons name="checkmark" size={14} color="#111" />
-                ) : null}
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.toggleTitle}>Report to help others</Text>
-                <Text style={styles.toggleDesc} numberOfLines={2}>
-                  เลือกหมวด + ใส่โน้ตสั้น ๆ (ไม่บังคับ)
-                </Text>
-              </View>
-            </TouchableOpacity>
-          ) : null}
+          <TouchableOpacity
+            onPress={() => setWantReport((v) => !v)}
+            style={styles.toggleRow}
+            activeOpacity={0.88}
+          >
+            <View style={[styles.checkBox, wantReport && styles.checkBoxOn]}>
+              {wantReport ? <Ionicons name="checkmark" size={14} color="#111" /> : null}
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.toggleTitle}>Report to help others</Text>
+              <Text style={styles.toggleDesc} numberOfLines={2}>
+                เลือกหมวด + ใส่โน้ตสั้น ๆ (ไม่บังคับ)
+              </Text>
+            </View>
+          </TouchableOpacity>
 
-          {!blockedNow && wantReport && !!onReport ? (
+          {wantReport ? (
             <>
               <View style={styles.chipsWrap}>
                 <Chip label="Spam" icon="alert-circle-outline" active={category === "SPAM"} onPress={() => setCategory("SPAM")} />
@@ -347,22 +374,27 @@ export const BottomSheetBlockReportModal = forwardRef<
               <Text style={styles.btnGhostText}>ยกเลิก</Text>
             </TouchableOpacity>
 
+            {blockedNow ? (
+              <TouchableOpacity
+                onPress={onUnblock}
+                style={[styles.btn, styles.btnUnblock, busy && { opacity: 0.7 }]}
+                disabled={busy}
+              >
+                <View style={styles.btnRow}>
+                  <Ionicons name="lock-open-outline" size={16} color="#e5e7eb" />
+                  <Text style={[styles.btnPrimaryText, { color: "#e5e7eb" }]}>ยกเลิกบล็อก</Text>
+                </View>
+              </TouchableOpacity>
+            ) : null}
+
             <TouchableOpacity
-              onPress={onConfirm}
-              style={[
-                styles.btn,
-                blockedNow ? styles.btnUnblock : styles.btnPrimary,
-                busy && { opacity: 0.7 },
-              ]}
+              onPress={onPrimary}
+              style={[styles.btn, styles.btnPrimary, busy && { opacity: 0.7 }]}
               disabled={busy}
             >
               <View style={styles.btnRow}>
-                <Ionicons
-                  name={blockedNow ? "lock-open-outline" : "lock-closed"}
-                  size={16}
-                  color={blockedNow ? "#e5e7eb" : "#111"}
-                />
-                <Text style={[styles.btnPrimaryText, { color: blockedNow ? "#e5e7eb" : "#111" }]}>
+                <Ionicons name={blockedNow ? ("save" as any) : "lock-closed"} size={16} color="#111" />
+                <Text style={[styles.btnPrimaryText, { color: "#111" }]}>
                   {busy ? "กำลังทำรายการ..." : primaryText}
                 </Text>
               </View>

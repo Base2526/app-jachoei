@@ -8,6 +8,8 @@ export type BankCategory = "SCAM" | "MONEY_MULE" | "SALES_ADS" | "DISPUTE" | "OT
 export type BottomSheetReportBankModalOpenArgs = {
   bankName: string | null;
   account: string;            // normalized digits
+  initialCategory?: BankCategory;
+  initialNote?: string;
   postId?: string;
   title?: string;
   source?: "HOME" | "MODAL";
@@ -21,17 +23,19 @@ export type BottomSheetReportBankModalRef = {
 type Props = {
   isReported: (accNormalized: string) => boolean;
 
-  // toggle: ถ้ายังไม่เคยรายงาน -> report
-  // ถ้าเคยรายงานแล้ว -> unreport
-  onToggleReport: (payload: {
-    mode: "REPORT" | "UNREPORT";
+  onConfirm: (payload: {
     bankName: string | null;
     account: string;
     category: BankCategory;
-    note?: string;
+    note: string;
     postId?: string;
     title?: string;
     source?: "HOME" | "MODAL";
+  }) => Promise<void>;
+
+  onUndo: (payload: {
+    bankName: string | null;
+    account: string;
   }) => Promise<void>;
 };
 
@@ -61,8 +65,8 @@ export const BottomSheetReportBankModal = forwardRef<BottomSheetReportBankModalR
         setPostId(args.postId);
         setTitle(args.title);
         setSource(args.source ?? "HOME");
-        setCategory("SCAM");
-        setNote("");
+        setCategory(args.initialCategory ?? "SCAM");
+        setNote(args.initialNote ?? "");
         setVisible(true);
       },
       close: () => setVisible(false),
@@ -73,16 +77,13 @@ export const BottomSheetReportBankModal = forwardRef<BottomSheetReportBankModalR
     const onSubmit = async () => {
       if (!account) return;
 
-      const mode: "REPORT" | "UNREPORT" = reported ? "UNREPORT" : "REPORT";
-
       setBusy(true);
       try {
-        await props.onToggleReport({
-          mode,
+        await props.onConfirm({
           bankName,
           account,
           category,
-          note: note?.trim() ? note.trim() : undefined,
+          note,
           postId,
           title,
           source,
@@ -93,11 +94,22 @@ export const BottomSheetReportBankModal = forwardRef<BottomSheetReportBankModalR
       }
     };
 
+    const onUndo = async () => {
+      if (!account) return;
+      setBusy(true);
+      try {
+        await props.onUndo({ bankName, account });
+        setVisible(false);
+      } finally {
+        setBusy(false);
+      }
+    };
+
     if (!visible) return null;
 
-    const primaryLabel = reported ? "ยกเลิกรายงาน" : "Report";
-    const primaryIcon = reported ? "close-circle" : "megaphone";
-    const primaryStyle = reported ? styles.primaryDanger : styles.primary;
+    const primaryLabel = reported ? "Update Report" : "Report";
+    const primaryIcon = reported ? "save" : "megaphone";
+    const primaryStyle = styles.primary;
 
     return (
       <View style={styles.overlay}>
@@ -153,6 +165,13 @@ export const BottomSheetReportBankModal = forwardRef<BottomSheetReportBankModalR
             <TouchableOpacity style={styles.cancelBtn} onPress={onClose} disabled={busy}>
               <Text style={styles.cancelText}>ยกเลิก</Text>
             </TouchableOpacity>
+
+            {reported ? (
+              <TouchableOpacity style={[styles.primaryBtn, styles.primaryDanger]} onPress={onUndo} disabled={busy}>
+                <Ionicons name={"close-circle" as any} size={16} color="#111" />
+                <Text style={styles.primaryText}>{busy ? "..." : "Undo report"}</Text>
+              </TouchableOpacity>
+            ) : null}
 
             <TouchableOpacity style={[styles.primaryBtn, primaryStyle]} onPress={onSubmit} disabled={busy}>
               <Ionicons name={primaryIcon as any} size={16} color="#111" />
