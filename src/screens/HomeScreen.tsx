@@ -46,6 +46,11 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { ThumbGrid } from "../components/ThumbGrid";
 import { client } from "../apollo/client";
 import { ENV } from "../config/env";
+import {
+  Q_MY_BLOCKED_PHONE_KEYS,
+  Q_MY_REPORTED_BANK_ACCOUNT_KEYS,
+  useJachoeiStatusKeys,
+} from "../hooks/useJachoeiStatusKeys";
 
 import type { RootStackParamList, TabsParamList } from "../navigation/types";
 import { useAuth } from "../auth/AuthProvider";
@@ -159,18 +164,30 @@ const REPORT_SCAM_PHONE = gql`
   }
 `;
 
-const UNBLOCK_SCAM_PHONE = gql`
-  mutation UnblockScamPhone($input: UnblockScamPhoneInput!) {
-    unblockScamPhone(input: $input) {
-      phone
-      report_count
-      last_report_at
-      risk_level
-      updated_at
-      is_deleted
-      post_ids
-      ctx
-      tags
+const M_BLOCK_PHONE = gql`
+  mutation BlockPhone($input: BlockPhoneInput!) {
+    blockPhone(input: $input) {
+      ok
+      status {
+        phone
+        phone_normalized
+        my_blocked
+        my_blocked_at
+      }
+    }
+  }
+`;
+
+const M_UNBLOCK_PHONE = gql`
+  mutation UnblockPhone($input: UnblockPhoneInput!) {
+    unblockPhone(input: $input) {
+      ok
+      status {
+        phone
+        phone_normalized
+        my_blocked
+        my_blocked_at
+      }
     }
   }
 `;
@@ -234,6 +251,8 @@ function normalizeTel(raw: string) {
   if (!s) return "";
   const hasPlus = s.startsWith("+");
   const digits = s.replace(/[^\d]/g, "");
+  if (!digits) return "";
+  if (!hasPlus && digits.startsWith("0") && digits.length === 10) return "66" + digits.slice(1);
   return hasPlus ? `+${digits}` : digits;
 }
 
@@ -359,6 +378,11 @@ type HomeRoute = RouteProp<TabsParamList, "HomeScreen">;
 
 export const HomeScreen: React.FC = () => {
   const { isLoggedIn, user } = useAuth();
+  const {
+    isBlockedTel: isBlockedTelServer,
+    isReportedBank: isReportedBankServer,
+    refetchAll: refetchStatusKeys,
+  } = useJachoeiStatusKeys({ enabled: isLoggedIn });
 
   const [items, setItems] = useState<PostItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -453,18 +477,16 @@ export const HomeScreen: React.FC = () => {
 
   const isTelBlocked = useCallback(
     (tel: string) => {
-      const n = normalizeTel(tel);
-      return !!(n && blockedMap[n]);
+      return isBlockedTelServer(tel);
     },
-    [blockedMap]
+    [isBlockedTelServer]
   );
 
   const isBankReported = useCallback(
     (acc: string) => {
-      const n = normalizeBankAccount(acc);
-      return !!(n && reportedBankMap[n]);
+      return isReportedBankServer(acc);
     },
-    [reportedBankMap]
+    [isReportedBankServer]
   );
 
 
@@ -558,12 +580,13 @@ export const HomeScreen: React.FC = () => {
       await fetchPage(1, "replace");
       await loadBlocked();
       await loadReportedBank();
+      await refetchStatusKeys();
     } catch (e: any) {
       Alert.alert("Load error", e?.message || "unknown");
     } finally {
       setLoading(false);
     }
-  }, [fetchPage, loadBlocked, loadReportedBank]);
+  }, [fetchPage, loadBlocked, loadReportedBank, refetchStatusKeys]);
 
   useFocusEffect(
     useCallback(() => {
@@ -730,15 +753,6 @@ export const HomeScreen: React.FC = () => {
     []
   );
 
-  // ใช้เช็ค blocked
-  const isBlocked = useCallback(
-    (telNormalized: string) => {
-      const n = normalizeTel(telNormalized);
-      return !!(n && blockedMap[n]);
-    },
-    [blockedMap]
-  );
-
   // ✅ REPORT TEL -> ยิง reportScamPhone
   const reportTel = useCallback(
     async (payload: { tel: string; category?: ReportCategory | null; note?: string | null; postId?: string }) => {
@@ -753,7 +767,7 @@ export const HomeScreen: React.FC = () => {
       const input = {
         phone: tel,
         note: payload.note?.trim() ? String(payload.note).trim() : null,
-        local_blocked: isBlocked(tel),
+        local_blocked: true,
         client_id: clientId,
         device_model: Platform.OS,
         os_version: String(Platform.Version),
@@ -773,6 +787,8 @@ export const HomeScreen: React.FC = () => {
         }>({
           mutation: REPORT_SCAM_PHONE,
           variables: { input },
+          refetchQueries: [{ query: Q_MY_BLOCKED_PHONE_KEYS }],
+          awaitRefetchQueries: true,
         });
 
         Alert.alert("ส่งรายงานแล้ว", "ขอบคุณที่ช่วยกันทำให้ระบบแม่นขึ้น 🙏");
@@ -783,33 +799,35 @@ export const HomeScreen: React.FC = () => {
         throw e;
       }
     },
-    [isBlocked]
+    []
   );
 
-  async function unblockTelOnServer(phone: string) {
-    const clientId = await getDeviceClientId();
+  async function blockTelOnServer(args: { phone: string; note?: string | null; postId?: string | null }) {
     const input = {
-      phone,
-      client_id: clientId,
-      device_model: Platform.OS,
-      os_version: String(Platform.Version),
-      app_version: "1.0.0",
+      phone: args.phone,
+      note: args.note ?? null,
+      postId: args.postId ?? null,
     };
 
-    const res = await client.mutate<{
-      unblockScamPhone:
-        | {
-            updated_at?: string | null;
-            ctx?: unknown;
-            tags?: string[] | null;
-          }
-        | null;
-    }>({
-      mutation: UNBLOCK_SCAM_PHONE,
+    const res = await client.mutate<{ blockPhone: { ok: boolean } }>({
+      mutation: M_BLOCK_PHONE,
       variables: { input },
+      refetchQueries: [{ query: Q_MY_BLOCKED_PHONE_KEYS }],
+      awaitRefetchQueries: true,
     });
 
-    return res.data?.unblockScamPhone;
+    return res.data?.blockPhone;
+  }
+
+  async function unblockTelOnServer(phone: string) {
+    const input = { phone };
+    const res = await client.mutate<{ unblockPhone: { ok: boolean } }>({
+      mutation: M_UNBLOCK_PHONE,
+      variables: { input },
+      refetchQueries: [{ query: Q_MY_BLOCKED_PHONE_KEYS }],
+      awaitRefetchQueries: true,
+    });
+    return res.data?.unblockPhone;
   }
 
   // ✅ Bank: report/unreport helpers
@@ -841,6 +859,8 @@ export const HomeScreen: React.FC = () => {
     }>({
       mutation: M_REPORT_SCAM_BANK_ACCOUNT,
       variables: { input },
+      refetchQueries: [{ query: Q_MY_REPORTED_BANK_ACCOUNT_KEYS }],
+      awaitRefetchQueries: true,
     });
 
     return data?.reportScamBankAccount;
@@ -874,6 +894,8 @@ export const HomeScreen: React.FC = () => {
     }>({
       mutation: M_UNREPORT_SCAM_BANK_ACCOUNT,
       variables: { input },
+      refetchQueries: [{ query: Q_MY_REPORTED_BANK_ACCOUNT_KEYS }],
+      awaitRefetchQueries: true,
     });
 
     return data?.unreportScamBankAccount;
@@ -902,12 +924,22 @@ export const HomeScreen: React.FC = () => {
       });
 
       try {
-        const payload = await reportTel({
-          tel,
-          category: value.wantReport ? value.category : null,
-          note: value.wantReport ? value.note : null,
-          postId: value.postId,
+        // 1) Block on server (source of truth)
+        await blockTelOnServer({
+          phone: tel,
+          note: value.note?.trim() ? value.note.trim() : null,
+          postId: value.postId ? String(value.postId) : null,
         });
+
+        // 2) Optional: also submit a scam report
+        const payload = value.wantReport
+          ? await reportTel({
+              tel,
+              category: value.category,
+              note: value.note,
+              postId: value.postId,
+            })
+          : null;
 
         if (payload) {
           setBlockedMap((prev) => {
@@ -1574,7 +1606,7 @@ export const HomeScreen: React.FC = () => {
       {/* ===== Bottom Sheet: Tel Block/Report ===== */}
       <BottomSheetBlockReportModal
         ref={blockSheetRef}
-        isBlocked={(telNormalized) => !!blockedMap[normalizeTel(telNormalized)]}
+        isBlocked={(telNormalized) => isTelBlocked(telNormalized)}
         onConfirm={async ({ tel, wantReport, category, note, postId }) => {
           await performTelConfirm({ tel, wantReport, category, note, postId });
         }}
@@ -1586,7 +1618,7 @@ export const HomeScreen: React.FC = () => {
       {/* ===== Bottom Sheet: Bank Report / Unreport ===== */}
      <BottomSheetReportBankModal
         ref={reportBankSheetRef}
-        isReported={(accNormalized) => !!reportedBankMap[normalizeBankAccount(accNormalized)]}
+        isReported={(accNormalized) => isBankReported(accNormalized)}
         onConfirm={async ({ bankName, account, category, note }) => {
           await performBankConfirm({ bankName, account, category, note });
         }}

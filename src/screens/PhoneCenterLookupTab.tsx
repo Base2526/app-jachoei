@@ -21,6 +21,11 @@ import { checkScamPhoneWithFallback } from "../lib/syncScamPhones";
 import { useNavigation } from "@react-navigation/native";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useAuth } from "../auth/AuthProvider";
+import {
+  Q_MY_BLOCKED_PHONE_KEYS,
+  Q_MY_REPORTED_BANK_ACCOUNT_KEYS,
+  useJachoeiStatusKeys,
+} from "../hooks/useJachoeiStatusKeys";
 
 // ======================================================
 // GraphQL (PHONE)
@@ -53,6 +58,34 @@ const REPORT_SCAM_PHONE = gql`
       is_deleted
       post_ids
       ctx
+    }
+  }
+`;
+
+const BLOCK_PHONE = gql`
+  mutation BlockPhone($input: BlockPhoneInput!) {
+    blockPhone(input: $input) {
+      ok
+      status {
+        phone
+        phone_normalized
+        my_blocked
+        my_blocked_at
+      }
+    }
+  }
+`;
+
+const UNBLOCK_PHONE = gql`
+  mutation UnblockPhone($input: UnblockPhoneInput!) {
+    unblockPhone(input: $input) {
+      ok
+      status {
+        phone
+        phone_normalized
+        my_blocked
+        my_blocked_at
+      }
     }
   }
 `;
@@ -810,6 +843,7 @@ export default function PhoneCenterLookupTab() {
   // ✅ Auth
   const { user, isLoggedIn } = useAuth();
   const userId = String(user?.id ?? "guest");
+  const { isBlockedTel: isBlockedTelServer } = useJachoeiStatusKeys({ enabled: isLoggedIn });
 
   // ✅ helper ตามที่คุณต้องการใช้
   const goStack = useCallback(
@@ -832,7 +866,6 @@ export default function PhoneCenterLookupTab() {
   const [expandedTel, setExpandedTel] = useState<string | null>(null);
   const [loadingCheck, setLoadingCheck] = useState(false);
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null);
-  const [blockedMap, setBlockedMap] = useState<Record<string, true>>({});
   const [phoneSearched, setPhoneSearched] = useState(false);
   const [lastPhoneTerm, setLastPhoneTerm] = useState<string>("");
 
@@ -846,19 +879,12 @@ export default function PhoneCenterLookupTab() {
 
   useEffect(() => {
     (async () => {
-      const m = await loadBlockedMap(userId);
-      setBlockedMap(m);
-    })();
-  }, [userId]);
-
-  useEffect(() => {
-    (async () => {
       const h = await loadHistory(userId, lookupType);
       setHistory(h);
     })();
   }, [userId, lookupType]);
 
-  const isBlocked = useCallback((telNormalized: string) => !!blockedMap[normalizeTel(telNormalized)], [blockedMap]);
+  const isBlocked = useCallback((telNormalized: string) => isBlockedTelServer(telNormalized), [isBlockedTelServer]);
 
   const onBlock = useCallback(
     async (telNormalized: string) => {
@@ -871,13 +897,14 @@ export default function PhoneCenterLookupTab() {
         return;
       }
 
-      setBlockedMap((prev) => {
-        const next = { ...prev, [tel]: true };
-        persistBlockedMap(userId, next);
-        return next;
+      await client.mutate({
+        mutation: BLOCK_PHONE,
+        variables: { input: { phone: tel } },
+        refetchQueries: [{ query: Q_MY_BLOCKED_PHONE_KEYS }],
+        awaitRefetchQueries: true,
       });
     },
-    [userId, isLoggedIn, goStack]
+    [isLoggedIn, goStack]
   );
 
   const onUnblock = useCallback(
@@ -890,14 +917,14 @@ export default function PhoneCenterLookupTab() {
         return;
       }
 
-      setBlockedMap((prev) => {
-        const next = { ...prev };
-        delete next[tel];
-        persistBlockedMap(userId, next);
-        return next;
+      await client.mutate({
+        mutation: UNBLOCK_PHONE,
+        variables: { input: { phone: tel } },
+        refetchQueries: [{ query: Q_MY_BLOCKED_PHONE_KEYS }],
+        awaitRefetchQueries: true,
       });
     },
-    [userId, isLoggedIn, goStack]
+    [isLoggedIn, goStack]
   );
 
   const onReportPhone = useCallback(
@@ -924,6 +951,8 @@ export default function PhoneCenterLookupTab() {
       const res = await client.mutate<{ reportScamPhone: ScamPhone }>({
         mutation: REPORT_SCAM_PHONE,
         variables: { input },
+        refetchQueries: [{ query: Q_MY_BLOCKED_PHONE_KEYS }],
+        awaitRefetchQueries: true,
       });
 
       const updated = res.data?.reportScamPhone;
@@ -971,6 +1000,8 @@ export default function PhoneCenterLookupTab() {
       const res = await client.mutate<{ reportScamBankAccount: ScamBank }>({
         mutation: REPORT_SCAM_BANK_ACCOUNT,
         variables: { input },
+        refetchQueries: [{ query: Q_MY_REPORTED_BANK_ACCOUNT_KEYS }],
+        awaitRefetchQueries: true,
       });
 
       const updated = res.data?.reportScamBankAccount;

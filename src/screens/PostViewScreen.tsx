@@ -26,6 +26,11 @@ import { client } from "../apollo/client";
 import { ENV } from "../config/env";
 import { CommentsSection } from "../components/comments/CommentsSection";
 import { useAuth } from "../auth/AuthProvider";
+import {
+  Q_MY_BLOCKED_PHONE_KEYS,
+  Q_MY_REPORTED_BANK_ACCOUNT_KEYS,
+  useJachoeiStatusKeys,
+} from "../hooks/useJachoeiStatusKeys";
 
 import {
   BottomSheetBlockReportModal,
@@ -172,18 +177,30 @@ const REPORT_SCAM_PHONE = gql`
   }
 `;
 
-const UNBLOCK_SCAM_PHONE = gql`
-  mutation UnblockScamPhone($input: UnblockScamPhoneInput!) {
-    unblockScamPhone(input: $input){
-      phone
-      report_count
-      last_report_at
-      risk_level
-      tags
-      updated_at
-      is_deleted
-      post_ids
-      ctx
+const M_BLOCK_PHONE = gql`
+  mutation BlockPhone($input: BlockPhoneInput!) {
+    blockPhone(input: $input) {
+      ok
+      status {
+        phone
+        phone_normalized
+        my_blocked
+        my_blocked_at
+      }
+    }
+  }
+`;
+
+const M_UNBLOCK_PHONE = gql`
+  mutation UnblockPhone($input: UnblockPhoneInput!) {
+    unblockPhone(input: $input) {
+      ok
+      status {
+        phone
+        phone_normalized
+        my_blocked
+        my_blocked_at
+      }
     }
   }
 `;
@@ -235,6 +252,11 @@ type Props = NativeStackScreenProps<RootStackParamList, "PostView">;
 export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
   const { id, currentUserId } = route.params;
   const { isLoggedIn, user } = useAuth();
+  const {
+    isBlockedTel: isBlockedTelServer,
+    isReportedBank: isReportedBankServer,
+    refetchAll: refetchStatusKeys,
+  } = useJachoeiStatusKeys({ enabled: isLoggedIn });
 
   // ✅ require login guard
   const requireLoginOrGo = useCallback(() => {
@@ -330,6 +352,10 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
     loadReportedBank();
   }, [loadBlocked, loadReportedBank]);
 
+  useEffect(() => {
+    void refetchStatusKeys();
+  }, [refetchStatusKeys]);
+
   /* =======================
    * Helpers
    * ======================= */
@@ -359,6 +385,8 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
       }>({
         mutation: M_REPORT_SCAM_BANK_ACCOUNT,
         variables: { input },
+        refetchQueries: [{ query: Q_MY_REPORTED_BANK_ACCOUNT_KEYS }],
+        awaitRefetchQueries: true,
       });
       return data?.reportScamBankAccount;
     },
@@ -389,6 +417,8 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
       }>({
         mutation: M_UNREPORT_SCAM_BANK_ACCOUNT,
         variables: { input },
+        refetchQueries: [{ query: Q_MY_REPORTED_BANK_ACCOUNT_KEYS }],
+        awaitRefetchQueries: true,
       });
       return data?.unreportScamBankAccount;
     },
@@ -422,38 +452,46 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
       }>({
         mutation: REPORT_SCAM_PHONE,
         variables: { input },
+        refetchQueries: [{ query: Q_MY_BLOCKED_PHONE_KEYS }],
+        awaitRefetchQueries: true,
       });
       return data?.reportScamPhone;
     },
     [deviceModel, osVersion, appVersion]
   );
 
+  const blockTelOnServer = useCallback(async (args: { tel: string; note?: string | null; postId?: string | null }) => {
+    const phone = normalizeTel(args.tel);
+    if (!phone) throw new Error("เบอร์ไม่ถูกต้อง");
+
+    const input = {
+      phone,
+      note: args.note ?? null,
+      postId: args.postId ?? null,
+    };
+
+    const { data } = await client.mutate<{ blockPhone: { ok: boolean } }>({
+      mutation: M_BLOCK_PHONE,
+      variables: { input },
+      refetchQueries: [{ query: Q_MY_BLOCKED_PHONE_KEYS }],
+      awaitRefetchQueries: true,
+    });
+
+    return data?.blockPhone;
+  }, []);
+
   const unblockTelOnServer = useCallback(
     async (tel: string) => {
       const phone = normalizeTel(tel);
       if (!phone) throw new Error("เบอร์ไม่ถูกต้อง");
-      const client_id = await getDeviceClientId();
-      const input = {
-        phone,
-        client_id,
-        device_model: deviceModel,
-        os_version: osVersion,
-        app_version: appVersion,
-      };
-      const { data } = await client.mutate<{
-        unblockScamPhone:
-          | {
-              updated_at?: string | null;
-              ctx?: unknown;
-              tags?: string[] | null;
-            }
-          | null;
-      }>({
-        mutation: UNBLOCK_SCAM_PHONE,
+      const input = { phone };
+      const { data } = await client.mutate<{ unblockPhone: { ok: boolean } }>({
+        mutation: M_UNBLOCK_PHONE,
         variables: { input },
+        refetchQueries: [{ query: Q_MY_BLOCKED_PHONE_KEYS }],
+        awaitRefetchQueries: true,
       });
-
-      return data?.unblockScamPhone;
+      return data?.unblockPhone;
     },
     [deviceModel, osVersion, appVersion]
   );
@@ -489,12 +527,20 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
       });
 
       try {
-        const payload = await reportTel({
+        await blockTelOnServer({
           tel,
-          category: value.wantReport ? value.category : null,
-          note: value.wantReport ? value.note : null,
-          postId: value.postId,
+          note: value.note?.trim() ? value.note.trim() : null,
+          postId: value.postId ? String(value.postId) : null,
         });
+
+        const payload = value.wantReport
+          ? await reportTel({
+              tel,
+              category: value.category,
+              note: value.note,
+              postId: value.postId,
+            })
+          : null;
 
         if (payload) {
           setBlockedMap((prev) => {
@@ -732,18 +778,16 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
 
   const isTelBlocked = useCallback(
     (telRaw: string) => {
-      const n = normalizeTel(telRaw);
-      return !!(n && blockedMap[n]);
+      return isBlockedTelServer(telRaw);
     },
-    [blockedMap]
+    [isBlockedTelServer]
   );
 
   const isBankReported = useCallback(
     (accRaw: string) => {
-      const n = normalizeBankAccount(accRaw);
-      return !!(n && reportedBankMap[n]);
+      return isReportedBankServer(accRaw);
     },
-    [reportedBankMap]
+    [isReportedBankServer]
   );
 
   // ✅ open tel bottom sheet
@@ -1175,7 +1219,7 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
       {/* ===== Bottom Sheet: Tel Block/Report ===== */}
       <BottomSheetBlockReportModal
         ref={blockSheetRef}
-        isBlocked={(telNormalized) => !!blockedMap[telNormalized]}
+        isBlocked={(telNormalized) => isTelBlocked(telNormalized)}
         onConfirm={async ({ tel, wantReport, category, note, postId }) => {
           await performTelConfirm({ tel, wantReport, category, note, postId });
         }}
@@ -1187,7 +1231,7 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
       {/* ===== Bottom Sheet: Bank Report ONLY ===== */}
       <BottomSheetReportBankModal
         ref={reportBankSheetRef}
-        isReported={(accNormalized) => !!reportedBankMap[accNormalized]}
+        isReported={(accNormalized) => isBankReported(accNormalized)}
         onConfirm={async ({ bankName, account, category, note }) => {
           await performBankConfirm({ bankName, account, category, note });
         }}

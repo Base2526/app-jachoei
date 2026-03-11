@@ -69,6 +69,8 @@ function normalizeTel(raw: string) {
   if (!s) return "";
   const hasPlus = s.startsWith("+");
   const digits = s.replace(/[^\d]/g, "");
+  if (!digits) return "";
+  if (!hasPlus && digits.startsWith("0") && digits.length === 10) return "66" + digits.slice(1);
   return hasPlus ? `+${digits}` : digits;
 }
 
