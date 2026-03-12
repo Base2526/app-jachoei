@@ -4,6 +4,7 @@ import { AppState, AppStateStatus } from "react-native";
 import { gql } from "@apollo/client";
 import { client } from "../apollo/client";
 import { getGlobalChatState, useGlobalChatStore } from "../store/globalChatStore";
+import { emitBookmarkStatusChanged } from "../events/bookmarkSync";
 
 // ================= GraphQL =================
 
@@ -89,6 +90,19 @@ const SUB_TIME = gql`
   }
 `;
 
+const SUB_MY_BOOKMARK_STATUS_CHANGED = gql`
+  subscription MyBookmarkStatusChanged {
+    myBookmarkStatusChanged {
+      user_id
+      action
+      target_type
+      target_id
+      bookmarked
+      updated_at
+    }
+  }
+`;
+
 // ================= Optional notify stub =================
 async function notifyLocal(title: string, body?: string) {
   // TODO: เสียบ notifee / expo-notifications ได้ตรงนี้
@@ -135,9 +149,16 @@ export function GlobalChatListener() {
     let unsubIncoming: null | (() => void) = null;
     let unsubUserMsg: null | (() => void) = null;
     let unsubTime: null | (() => void) = null;
+    let unsubBookmark: null | (() => void) = null;
 
     // 1) AppState -> Zustand
-    const onAppState = (st: AppStateStatus) => setAppFocused(st === "active");
+    const onAppState = (st: AppStateStatus) => {
+      const active = st === "active";
+      setAppFocused(active);
+      if (active) {
+        void client.refetchQueries({ include: ["MyBookmarks"] }).catch(() => {});
+      }
+    };
     const appSub = AppState.addEventListener("change", onAppState);
     setAppFocused(AppState.currentState === "active");
 
@@ -161,7 +182,7 @@ export function GlobalChatListener() {
         console.log("[SUB_INCOMING][incomingObs] meId = ", meId);
 
         const incomingSub = incomingObs.subscribe({
-          next: async (payload) => {
+          next: async (payload: any) => {
 
             console.log("[SUB_INCOMING][subscribe] payload = ", payload);
             const m = payload?.data?.incomingMessage;
@@ -193,7 +214,7 @@ export function GlobalChatListener() {
         });
 
         const userMsgSub = userMsgObs.subscribe({
-          next: async (payload) => {
+          next: async (payload: any) => {
             const msg = payload?.data?.userMessageAdded;
             if (!msg) return;
 
@@ -213,11 +234,45 @@ export function GlobalChatListener() {
         // 5) SUB_TIME (debug)
         const timeObs = client.subscribe({ query: SUB_TIME });
         const timeSub = timeObs.subscribe({
-          next: (payload) => console.log("[TIME SUB] =", payload?.data?.time),
+          next: (payload: any) => console.log("[TIME SUB] =", payload?.data?.time),
           error: (err) => console.error("[TIME SUB ERROR]", err),
         });
 
         unsubTime = () => timeSub.unsubscribe();
+
+        // 6) Bookmark realtime (same-user multi-device sync)
+        const bmObs = client.subscribe({ query: SUB_MY_BOOKMARK_STATUS_CHANGED });
+        const bmSub = bmObs.subscribe({
+          next: (payload: any) => {
+            const p = payload?.data?.myBookmarkStatusChanged;
+            if (!p) return;
+
+            const postId = String(p.target_id || "").trim();
+            if (!postId) return;
+
+            const cacheId = client.cache.identify({ __typename: "Post", id: postId });
+            if (cacheId) {
+              client.cache.modify({
+                id: cacheId,
+                fields: {
+                  is_bookmarked() {
+                    return !!p.bookmarked;
+                  },
+                },
+              });
+            }
+
+            emitBookmarkStatusChanged({
+              target_type: "POST",
+              target_id: postId,
+              bookmarked: !!p.bookmarked,
+              updated_at: p.updated_at || undefined,
+            });
+          },
+          error: (err) => console.error("[SUB_MY_BOOKMARK_STATUS_CHANGED ERROR]", err),
+        });
+
+        unsubBookmark = () => bmSub.unsubscribe();
       } catch (e: any) {
         console.error("[GlobalChatListener boot error]", e?.message || e);
       }
@@ -238,6 +293,9 @@ export function GlobalChatListener() {
       } catch {}
       try {
         unsubTime?.();
+      } catch {}
+      try {
+        unsubBookmark?.();
       } catch {}
     };
   }, [incrementUnread, setAppFocused]);

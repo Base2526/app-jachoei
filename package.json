@@ -9,7 +9,9 @@
     "start_org": "react-native start",
     "test": "jest",
     "start": "react-native start --port 9090 --reset-cache",
-    "android": "react-native run-android --port 9090"
+    "android": "react-native run-android --port 9090",
+
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@apollo/client": "^4.0.9",
@@ -64,6 +66,8 @@
     "@types/react-test-renderer": "^19.1.0",
     "eslint": "^8.19.0",
     "jest": "^29.6.3",
+    "patch-package": "^8.0.1",
+    "postinstall-postinstall": "^2.1.0",
     "prettier": "2.8.8",
     "react-test-renderer": "19.1.1",
     "typescript": "^5.8.3"

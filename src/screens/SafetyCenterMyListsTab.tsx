@@ -41,10 +41,14 @@ const MY_BLOCKED_PHONES = gql`
 `;
 
 const UNBLOCK_PHONE = gql`
-  mutation UnblockPhone($phone: String!) {
-    unblockPhone(phone: $phone) {
+  mutation UnblockPhone($input: UnblockPhoneInput!) {
+    unblockPhone(input: $input) {
       ok
-      phone
+      status {
+        phone
+        phone_normalized
+        my_blocked
+      }
     }
   }
 `;
@@ -394,9 +398,9 @@ export default function SafetyCenterMyListsTab() {
         style: "destructive",
         onPress: async () => {
           try {
-            const res = await client.mutate<{ unblockPhone: { ok: boolean; phone: string } }>({
+            const res = await client.mutate<{ unblockPhone: { ok: boolean } }>({
               mutation: UNBLOCK_PHONE,
-              variables: { phone: tel },
+              variables: { input: { phone: tel } },
             });
 
             const ok = res.data?.unblockPhone?.ok;
