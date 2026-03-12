@@ -32,6 +32,8 @@ import {
   useJachoeiStatusKeys,
 } from "../hooks/useJachoeiStatusKeys";
 
+import { subscribeBookmarkStatusChanged } from "../events/bookmarkSync";
+
 import {
   BottomSheetBlockReportModal,
   BottomSheetBlockReportModalRef,
@@ -895,6 +897,18 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
       setBookmarkBusy(false);
     }
   }, [post?.id, post?.is_bookmarked, isLoggedIn, navigation, bookmarkBusy]);
+
+  // Realtime multi-device sync: update detail screen bookmark icon immediately
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    const currentId = String(post?.id || "");
+    if (!currentId) return;
+    return subscribeBookmarkStatusChanged((e) => {
+      if (e.target_type !== "POST") return;
+      if (String(e.target_id) !== currentId) return;
+      setPost((p) => (p ? { ...p, is_bookmarked: !!e.bookmarked } : p));
+    });
+  }, [isLoggedIn, post?.id]);
 
   /* =======================
    * Delete

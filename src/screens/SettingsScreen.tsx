@@ -19,6 +19,8 @@ import { gql } from "@apollo/client";
 import AsyncStorage from "@react-native-async-storage/async-storage"; // ถ้าไม่ใช้ ลบได้
 import { client } from "../apollo/client";
 
+import { subscribeBookmarkStatusChanged } from "../events/bookmarkSync";
+
 
 import { useAuth } from "../auth/AuthProvider";
 
@@ -109,7 +111,7 @@ const MUT_DEL_POST = gql`
 `;
 
 const Q_MY_BOOKMARKS = gql`
-  query {
+  query MyBookmarks {
     myBookmarks {
       id
       title
@@ -309,6 +311,33 @@ export default function SettingsScreen() {
       setLoadingBookmarks(false);
     }
   };
+
+  const refetchBookmarksTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const unsub = subscribeBookmarkStatusChanged((e) => {
+      if (e.target_type !== "POST") return;
+      if (refetchBookmarksTimerRef.current != null) return;
+      refetchBookmarksTimerRef.current = setTimeout(() => {
+        refetchBookmarksTimerRef.current = null;
+        void loadBookmarks();
+      }, 250);
+    });
+
+    return () => {
+      try {
+        unsub();
+      } catch {}
+      try {
+        if (refetchBookmarksTimerRef.current != null) {
+          clearTimeout(refetchBookmarksTimerRef.current);
+          refetchBookmarksTimerRef.current = null;
+        }
+      } catch {}
+    };
+    // Subscribe once per screen mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     loadMe();

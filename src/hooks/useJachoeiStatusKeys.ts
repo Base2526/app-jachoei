@@ -1,6 +1,7 @@
 import { gql } from "@apollo/client";
-import { useQuery } from "@apollo/client/react";
-import { useCallback, useMemo } from "react";
+import { useQuery, useSubscription } from "@apollo/client/react";
+import { useCallback, useEffect, useMemo } from "react";
+import { AppState } from "react-native";
 
 import { normalizeBankAccount, normalizeTel } from "../lib/jachoeiLocalState";
 
@@ -13,6 +14,31 @@ export const Q_MY_BLOCKED_PHONE_KEYS = gql`
 export const Q_MY_REPORTED_BANK_ACCOUNT_KEYS = gql`
   query MyReportedBankAccountKeys {
     myReportedBankAccountKeys
+  }
+`;
+
+const S_MY_PHONE_BLOCK_STATUS_CHANGED = gql`
+  subscription MyPhoneBlockStatusChanged {
+    myPhoneBlockStatusChanged {
+      user_id
+      action
+      phone_normalized
+      blocked
+      updated_at
+    }
+  }
+`;
+
+const S_MY_BANK_BLOCK_STATUS_CHANGED = gql`
+  subscription MyBankBlockStatusChanged {
+    myBankBlockStatusChanged {
+      user_id
+      action
+      bank_name
+      account_norm
+      blocked
+      updated_at
+    }
   }
 `;
 
@@ -67,6 +93,32 @@ export function useJachoeiStatusKeys(args: UseJachoeiStatusKeysArgs) {
       args.enabled ? reportedBankQ.refetch() : Promise.resolve(),
     ]);
   }, [args.enabled, blockedQ.refetch, reportedBankQ.refetch]);
+
+  // Fallback reconciliation: if subscription was missed while backgrounded.
+  useEffect(() => {
+    if (!args.enabled) return;
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") void refetchAll();
+    });
+    return () => sub.remove();
+  }, [args.enabled, refetchAll]);
+
+  // Realtime: same-user multi-device sync (subscription is a hint; DB remains source of truth)
+  useSubscription(S_MY_PHONE_BLOCK_STATUS_CHANGED, {
+    skip: !args.enabled,
+    onData: () => {
+      if (!args.enabled) return;
+      void blockedQ.refetch().catch(() => {});
+    },
+  });
+
+  useSubscription(S_MY_BANK_BLOCK_STATUS_CHANGED, {
+    skip: !args.enabled,
+    onData: () => {
+      if (!args.enabled) return;
+      void reportedBankQ.refetch().catch(() => {});
+    },
+  });
 
   return useMemo(
     () => ({

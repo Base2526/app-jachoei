@@ -52,6 +52,8 @@ import {
   useJachoeiStatusKeys,
 } from "../hooks/useJachoeiStatusKeys";
 
+import { subscribeBookmarkStatusChanged } from "../events/bookmarkSync";
+
 import type { RootStackParamList, TabsParamList } from "../navigation/types";
 import { useAuth } from "../auth/AuthProvider";
 
@@ -671,6 +673,15 @@ export const HomeScreen: React.FC = () => {
     },
     []
   );
+
+  // Realtime multi-device sync: apply bookmark events to current list
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    return subscribeBookmarkStatusChanged((e) => {
+      if (e.target_type !== "POST") return;
+      applyBookmarkToList(String(e.target_id), !!e.bookmarked);
+    });
+  }, [applyBookmarkToList, isLoggedIn]);
 
   const toggleBookmark = useCallback(
     async (e: GestureResponderEvent, postId: string) => {
