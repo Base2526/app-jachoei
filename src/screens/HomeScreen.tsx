@@ -67,6 +67,15 @@ import {
   BottomSheetReportBankModalRef,
 } from "../components/BottomSheetReportBankModal";
 
+import {
+  toastBookmarkResult,
+  toastGenericError,
+  toastTelReportedSuccessfully,
+  toastTelReportRemoved,
+  toastBankReportedSuccessfully,
+  toastBankReportRemoved,
+} from "../lib/toast";
+
 // =======================
 // GraphQL
 // =======================
@@ -710,12 +719,11 @@ export const HomeScreen: React.FC = () => {
 
         const ok = !!data?.toggleBookmark?.isBookmarked;
         applyBookmarkToList(postId, ok);
+
+        toastBookmarkResult(ok);
       } catch (err: any) {
         applyBookmarkToList(postId, prevVal);
-        Alert.alert(
-          "Bookmark error",
-          err?.message || "Please login first or try again."
-        );
+        toastGenericError();
       } finally {
         setBookmarkBusyMap((m) => ({ ...m, [postId]: false }));
       }
@@ -769,7 +777,7 @@ export const HomeScreen: React.FC = () => {
     async (payload: { tel: string; category?: ReportCategory | null; note?: string | null; postId?: string }) => {
       const tel = normalizeTel(payload.tel);
       if (!tel) {
-        Alert.alert("เบอร์ไม่ถูกต้อง", "กรุณาลองใหม่");
+        toastGenericError();
         return;
       }
 
@@ -802,11 +810,11 @@ export const HomeScreen: React.FC = () => {
           awaitRefetchQueries: true,
         });
 
-        Alert.alert("ส่งรายงานแล้ว", "ขอบคุณที่ช่วยกันทำให้ระบบแม่นขึ้น 🙏");
+        toastTelReportedSuccessfully();
         return res.data?.reportScamPhone;
       } catch (e: any) {
         console.log("REPORT TEL ERROR", e?.message || e);
-        Alert.alert("รายงานไม่สำเร็จ", e?.message || "กรุณาลองใหม่");
+        toastGenericError();
         throw e;
       }
     },
@@ -997,14 +1005,14 @@ export const HomeScreen: React.FC = () => {
 
       try {
         await unblockTelOnServer(tel);
-        Alert.alert("ยกเลิกบล็อกแล้ว", tel);
+        toastTelReportRemoved();
       } catch (e: any) {
         setBlockedMap((prev) => {
           const next: StoredBlockedTelMap = { ...prev, [tel]: prevEntry };
           persistBlocked(next);
           return next;
         });
-        Alert.alert("Unblock ไม่สำเร็จ", e?.message || "กรุณาลองใหม่");
+        toastGenericError();
       }
     },
     [blockedMap, persistBlocked]
@@ -1019,7 +1027,7 @@ export const HomeScreen: React.FC = () => {
     }) => {
       const acc = normalizeBankAccount(value.account);
       if (!acc) {
-        Alert.alert("เลขบัญชีไม่ถูกต้อง");
+        toastGenericError();
         return;
       }
 
@@ -1068,7 +1076,7 @@ export const HomeScreen: React.FC = () => {
           });
         }
 
-        Alert.alert("สำเร็จ", wasReported ? "อัปเดตรายงานแล้ว" : "รายงานบัญชีเรียบร้อยแล้ว");
+        toastBankReportedSuccessfully();
       } catch (err: any) {
         setReportedBankMap((prev) => {
           const next: StoredReportedBankMap = { ...prev };
@@ -1078,7 +1086,7 @@ export const HomeScreen: React.FC = () => {
           return next;
         });
 
-        Alert.alert("ทำรายการไม่สำเร็จ", err?.message || "ลองใหม่อีกครั้ง");
+        toastGenericError();
       }
     },
     [reportedBankMap, persistReportedBank]
@@ -1088,7 +1096,7 @@ export const HomeScreen: React.FC = () => {
     async (bankName: string | null, accountRaw: string) => {
       const acc = normalizeBankAccount(accountRaw);
       if (!acc) {
-        Alert.alert("เลขบัญชีไม่ถูกต้อง");
+        toastGenericError();
         return;
       }
 
@@ -1112,7 +1120,7 @@ export const HomeScreen: React.FC = () => {
           reason: reasonEncoded,
         });
 
-        Alert.alert("สำเร็จ", "ยกเลิกรายงานบัญชีแล้ว");
+        toastBankReportRemoved();
       } catch (err: any) {
         setReportedBankMap((prev) => {
           const next: StoredReportedBankMap = { ...prev, [acc]: prevEntry };
@@ -1120,7 +1128,7 @@ export const HomeScreen: React.FC = () => {
           return next;
         });
 
-        Alert.alert("ทำรายการไม่สำเร็จ", err?.message || "ลองใหม่อีกครั้ง");
+        toastGenericError();
       }
     },
     [reportedBankMap, persistReportedBank]

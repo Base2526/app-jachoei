@@ -1,13 +1,14 @@
-package com.myapp
+// android/app/src/main/java/com/myapp/CallBlockerPackage.kt
+package com.jachoei
 
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.NativeModule
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.uimanager.ViewManager
 
-class SmsRolePackage : ReactPackage {
+class CallBlockerPackage : ReactPackage {
     override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
-        return listOf(SmsRoleModule(reactContext))
+        return listOf(CallBlockerModule(reactContext))
     }
 
     override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {

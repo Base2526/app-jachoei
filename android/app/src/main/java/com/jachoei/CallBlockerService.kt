@@ -1,5 +1,5 @@
 // android/app/src/main/java/com/myapp/CallBlockerService.kt
-package com.myapp
+package com.jachoei
 
 import android.telecom.Call
 import android.telecom.CallScreeningService

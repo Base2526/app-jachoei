@@ -1,4 +1,4 @@
-package com.myapp
+package com.jachoei
 
 import android.app.Activity
 import android.app.role.RoleManager

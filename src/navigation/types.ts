@@ -1,5 +1,3 @@
-import { PostItem } from "../types/PostItem";
-
 export type TabsParamList = {
   HomeScreen: undefined;
   CheckPhone: undefined;
@@ -17,10 +15,10 @@ export type RootStackParamList = {
 
   PostView: { id: string; currentUserId?: string };
   Profile: { id: string };
-  Chat: { to: string };
+  Chat: { to?: string } | undefined;
 
   Setting: undefined;
   PostForm: { id?: string } | undefined;
 
-  NotificationPage: undefined;
+  Notifications: undefined;
 };

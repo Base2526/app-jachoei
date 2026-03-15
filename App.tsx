@@ -38,6 +38,8 @@ import { AuthProvider } from "./src/auth/AuthProvider";
 
 import { GlobalWiresWrapper } from "./src/components/GlobalWiresWrapper";
 
+import Toast from "react-native-toast-message";
+
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -289,6 +291,7 @@ export default function App() {
           <Root />
         </View>
       </NavigationContainer>
+      <Toast />
       </AuthProvider>
     </ApolloProvider>
   );

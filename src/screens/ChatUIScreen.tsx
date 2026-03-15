@@ -177,6 +177,14 @@ const MUT_DELETE_MSG = gql`
   }
 `;
 
+const MUT_CREATE_CHAT = gql`
+  mutation ($name: String, $isGroup: Boolean!, $memberIds: [ID!]!) {
+    createChat(name: $name, isGroup: $isGroup, memberIds: $memberIds) {
+      id
+    }
+  }
+`;
+
 const SUB_ADDED = gql`
   subscription ($chat_id: ID!) {
     messageAdded(chat_id: $chat_id) {
@@ -261,10 +269,18 @@ function getImgSrc(img: any) {
 /** =========================
  * Screen
  * ========================= */
-export default function ChatScreen({ navigation }: Props) {
+export default function ChatScreen({ navigation, route }: Props) {
   const [me, setMe] = useState<Me | null>(null);
   const [chats, setChats] = useState<Chat[]>([]);
   const [sel, setSel] = useState<string | null>(null);
+
+  const toParamRaw = route.params?.to;
+  const toParam = String(toParamRaw ?? "").trim() || null;
+  const handledToRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    handledToRef.current = null;
+  }, [toParam]);
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [loadingChats, setLoadingChats] = useState(false);
@@ -298,13 +314,6 @@ export default function ChatScreen({ navigation }: Props) {
     () => chats.find((c) => c.id === sel) ?? null,
     [chats, sel]
   );
-
-  const otherMembers = useMemo(() => {
-    const ms = selectedChat?.members ?? [];
-    return ms.filter((m) => m?.id && m.id !== meId);
-  }, [selectedChat?.members, meId]);
-
-  const toUserIds = useMemo(() => otherMembers.map((m) => m.id), [otherMembers]);
 
   const partner = useMemo(() => {
     if (!selectedChat || selectedChat?.is_group) return null;
@@ -340,6 +349,8 @@ export default function ChatScreen({ navigation }: Props) {
       });
       setMe(meRes.data?.me ?? null);
 
+      const meIdLocal = String(meRes.data?.me?.id ?? "").trim() || null;
+
       const chatsRes = await client.query<{ myChats: Chat[] }>({
         query: Q_CHATS,
         fetchPolicy: "network-only",
@@ -354,8 +365,66 @@ export default function ChatScreen({ navigation }: Props) {
 
       setChats(sorted);
 
-      if (!sel && sorted.length) {
+      const fallbackToUserId = "support";
+
+      const openToChat = async (toUserId: string) => {
+        const toUser = String(toUserId ?? "").trim();
+        if (!toUser || !meIdLocal) return;
+        if (toUser === meIdLocal) return;
+        if (handledToRef.current === toUser) return;
+
+        const chatList = sorted;
+        const existing = chatList.find((c) => {
+          if (c?.is_group) return false;
+          const memberIds = (c.members ?? []).map((m) => m?.id).filter(Boolean);
+          const hasMe = memberIds.includes(meIdLocal);
+          const hasTo = memberIds.includes(toUser);
+          return hasMe && hasTo;
+        });
+
+        handledToRef.current = toUser;
+
+        if (existing?.id) {
+          openChatById(existing.id);
+          return;
+        }
+
+        try {
+          const createRes = await client.mutate<{ createChat: { id: string } }>({
+            mutation: MUT_CREATE_CHAT,
+            variables: { name: null, isGroup: false, memberIds: [toUser] },
+          });
+          const newId = createRes.data?.createChat?.id;
+          if (!newId) {
+            Alert.alert("Chat", "Cannot create chat");
+            return;
+          }
+
+          // refresh chat list then open
+          const chatsRes2 = await client.query<{ myChats: Chat[] }>({
+            query: Q_CHATS,
+            fetchPolicy: "network-only",
+          });
+          const list2 = chatsRes2.data?.myChats ?? [];
+          const sorted2 = [...list2].sort((a, b) => {
+            const at = a.last_message_at ? safeDate(a.last_message_at).getTime() : 0;
+            const bt = b.last_message_at ? safeDate(b.last_message_at).getTime() : 0;
+            return bt - at;
+          });
+          setChats(sorted2);
+
+          openChatById(newId);
+        } catch (e: any) {
+          Alert.alert("Chat", e?.message || "Cannot create chat");
+        }
+      };
+
+      if (toParam) {
+        await openToChat(toParam);
+      } else if (!sel && sorted.length) {
         openChatById(sorted[0].id);
+      } else if (!sel && sorted.length === 0) {
+        await openToChat(fallbackToUserId);
       }
     } catch (e: any) {
       Alert.alert("Load error", e?.message || "unknown");
@@ -363,7 +432,7 @@ export default function ChatScreen({ navigation }: Props) {
       setLoadingChats(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sel]);
+  }, [sel, toParam]);
 
   useEffect(() => {
     loadMeAndChats();

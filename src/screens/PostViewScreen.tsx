@@ -61,6 +61,15 @@ import {
   type StoredReportedBankMap,
 } from "../lib/jachoeiLocalState";
 
+import {
+  toastBookmarkResult,
+  toastGenericError,
+  toastTelReportedSuccessfully,
+  toastTelReportRemoved,
+  toastBankReportedSuccessfully,
+  toastBankReportRemoved,
+} from "../lib/toast";
+
 /* =======================
  * GraphQL
  * ======================= */
@@ -560,7 +569,7 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
           });
         }
 
-        Alert.alert("สำเร็จ", prevEntry ? "อัปเดตรายงานแล้ว" : "บล็อกเบอร์แล้ว");
+        toastTelReportedSuccessfully();
       } catch (e: any) {
         setBlockedMap((prev) => {
           const next: StoredBlockedTelMap = { ...prev };
@@ -569,7 +578,7 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
           persistBlocked(next);
           return next;
         });
-        Alert.alert("ทำรายการไม่สำเร็จ", e?.message || "ลองใหม่อีกครั้ง");
+        toastGenericError();
       }
     },
     [blockedMap, persistBlocked, reportTel, requireLoginOrGo]
@@ -594,14 +603,14 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
 
       try {
         await unblockTelOnServer(tel);
-        Alert.alert("ยกเลิกบล็อกแล้ว", tel);
+        toastTelReportRemoved();
       } catch (e: any) {
         setBlockedMap((prev) => {
           const next: StoredBlockedTelMap = { ...prev, [tel]: prevEntry };
           persistBlocked(next);
           return next;
         });
-        Alert.alert("Unblock ไม่สำเร็จ", e?.message || "กรุณาลองใหม่");
+        toastGenericError();
       }
     },
     [blockedMap, persistBlocked, unblockTelOnServer, requireLoginOrGo]
@@ -618,7 +627,7 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
 
       const acc = normalizeBankAccount(value.account);
       if (!acc) {
-        Alert.alert("เลขบัญชีไม่ถูกต้อง");
+        toastGenericError();
         return;
       }
 
@@ -667,7 +676,7 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
           });
         }
 
-        Alert.alert("สำเร็จ", wasReported ? "อัปเดตรายงานแล้ว" : "รายงานบัญชีเรียบร้อยแล้ว");
+        toastBankReportedSuccessfully();
       } catch (e: any) {
         setReportedBankMap((prev) => {
           const next: StoredReportedBankMap = { ...prev };
@@ -676,7 +685,7 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
           persistReportedBank(next);
           return next;
         });
-        Alert.alert("ทำรายการไม่สำเร็จ", e?.message || "ลองใหม่อีกครั้ง");
+        toastGenericError();
       }
     },
     [reportedBankMap, persistReportedBank, reportBankOnServer, requireLoginOrGo]
@@ -688,7 +697,7 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
 
       const acc = normalizeBankAccount(accountRaw);
       if (!acc) {
-        Alert.alert("เลขบัญชีไม่ถูกต้อง");
+        toastGenericError();
         return;
       }
 
@@ -711,14 +720,14 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
           accountNorm: acc,
           reason: reasonEncoded,
         });
-        Alert.alert("สำเร็จ", "ยกเลิกรายงานบัญชีแล้ว");
+        toastBankReportRemoved();
       } catch (e: any) {
         setReportedBankMap((prev) => {
           const next: StoredReportedBankMap = { ...prev, [acc]: prevEntry };
           persistReportedBank(next);
           return next;
         });
-        Alert.alert("ทำรายการไม่สำเร็จ", e?.message || "ลองใหม่อีกครั้ง");
+        toastGenericError();
       }
     },
     [reportedBankMap, persistReportedBank, unreportBankOnServer, requireLoginOrGo]
@@ -879,6 +888,8 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
       const ok = !!data?.toggleBookmark?.isBookmarked;
       setPost((p) => (p ? { ...p, is_bookmarked: ok } : p));
 
+      toastBookmarkResult(ok);
+
       // ✅ ส่งผลกลับ Home (แก้ปัญหากลับไปแล้ว list ไม่อัปเดต)
       navigation.navigate({
         name: "Home" as any,
@@ -892,7 +903,7 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
     } catch (e: any) {
       // rollback
       setPost((p) => (p ? { ...p, is_bookmarked: prevVal } : p));
-      Alert.alert("Bookmark error", e?.message || "Please login first or try again.");
+      toastGenericError();
     } finally {
       setBookmarkBusy(false);
     }

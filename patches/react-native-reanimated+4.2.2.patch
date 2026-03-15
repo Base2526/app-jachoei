@@ -1,0 +1,57 @@
+diff --git a/node_modules/react-native-reanimated/android/build.gradle b/node_modules/react-native-reanimated/android/build.gradle
+index 86bace7..52879f6 100644
+--- a/node_modules/react-native-reanimated/android/build.gradle
++++ b/node_modules/react-native-reanimated/android/build.gradle
+@@ -20,6 +20,16 @@ def isNewArchitectureEnabled() {
+     return project.hasProperty("newArchEnabled") && project.newArchEnabled == "true"
+ }
+ 
++def resolveNodeBinary() {
++    return (
++        project.findProperty("REACT_NATIVE_NODE_BINARY") ?:
++        project.findProperty("NODE_BINARY") ?:
++        rootProject.findProperty("REACT_NATIVE_NODE_BINARY") ?:
++        rootProject.findProperty("NODE_BINARY") ?:
++        "node"
++    ).toString()
++}
++
+ def resolveReactNativeDirectory() {
+     def reactNativeLocation = safeAppExtGet("REACT_NATIVE_NODE_MODULES_DIR", null)
+     if (reactNativeLocation != null) {
+@@ -30,7 +40,7 @@ def resolveReactNativeDirectory() {
+     def reactNativePackage = file(
+         providers.exec {
+             workingDir(rootDir)
+-            commandLine("node", "--print", "require.resolve('react-native/package.json')")
++            commandLine(resolveNodeBinary(), "--print", "require.resolve('react-native/package.json')")
+         }.standardOutput.asText.get().trim()
+     )
+     if (reactNativePackage.exists()) {
+@@ -52,7 +62,7 @@ def resolveReactNativeWorkletsDirectory() {
+     def reactNativeWorkletsPackage = file(
+         providers.exec {
+             workingDir(rootDir)
+-            commandLine("node", "--print", "require.resolve('react-native-worklets/package.json')")
++            commandLine(resolveNodeBinary(), "--print", "require.resolve('react-native-worklets/package.json')")
+         }.standardOutput.asText.get().trim()
+     )
+     if (reactNativeWorkletsPackage.exists()) {
+@@ -268,7 +278,7 @@ android {
+ 
+ def validateReactNativeVersionResult = providers.exec {
+     workingDir(projectDir.path)
+-    commandLine("node", "./../scripts/validate-react-native-version.js", REACT_NATIVE_VERSION.toString())
++    commandLine(resolveNodeBinary(), "./../scripts/validate-react-native-version.js", REACT_NATIVE_VERSION.toString())
+     ignoreExitValue = true
+ }
+ 
+@@ -293,7 +303,7 @@ preBuild.dependsOn(assertNewArchitectureEnabledTask)
+ 
+ def validateWorkletsBuildResult = providers.exec {
+     workingDir(projectDir.path)
+-    commandLine("node", "./../scripts/validate-worklets-build.js")
++    commandLine(resolveNodeBinary(), "./../scripts/validate-worklets-build.js")
+     ignoreExitValue = true
+ }
+ 

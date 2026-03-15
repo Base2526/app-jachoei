@@ -1,4 +1,4 @@
-package com.myapp
+package com.jachoei
 
 import android.content.Context
 import android.net.Uri
