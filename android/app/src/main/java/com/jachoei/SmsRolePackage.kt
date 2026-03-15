@@ -1,13 +1,13 @@
-package com.myapp
+package com.jachoei
 
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.NativeModule
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.uimanager.ViewManager
 
-class CallScreenRolePackage : ReactPackage {
+class SmsRolePackage : ReactPackage {
     override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
-        return listOf(CallScreenRoleModule(reactContext))
+        return listOf(SmsRoleModule(reactContext))
     }
 
     override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {

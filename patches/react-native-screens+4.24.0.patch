@@ -1,0 +1,30 @@
+diff --git a/node_modules/react-native-screens/android/build.gradle b/node_modules/react-native-screens/android/build.gradle
+index 885faa6..30a9496 100644
+--- a/node_modules/react-native-screens/android/build.gradle
++++ b/node_modules/react-native-screens/android/build.gradle
+@@ -46,6 +46,16 @@ def isGammaEnabled() {
+     return project.hasProperty("rnsGammaEnabled") && project.rnsGammaEnabled == "true"
+ }
+ 
++def resolveNodeBinary() {
++    return (
++        project.findProperty("REACT_NATIVE_NODE_BINARY") ?:
++        project.findProperty("NODE_BINARY") ?:
++        rootProject.findProperty("REACT_NATIVE_NODE_BINARY") ?:
++        rootProject.findProperty("NODE_BINARY") ?:
++        "node"
++    ).toString()
++}
++
+ def resolveReactNativeDirectory() {
+     def userDefinedRnDirPath = safeAppExtGet("REACT_NATIVE_NODE_MODULES_DIR", null)
+     if (userDefinedRnDirPath != null) {
+@@ -67,7 +77,7 @@ def resolveReactNativeDirectory() {
+     // We're in non standard setup, e.g. monorepo - try to use node resolver to locate the react-native package.
+     String maybeRnPackagePath = providers.exec {
+         workingDir(rootDir)
+-        commandLine("node", "--print", "require.resolve('react-native/package.json')")
++        commandLine(resolveNodeBinary(), "--print", "require.resolve('react-native/package.json')")
+     }.standardOutput.asText.get().trim()
+ 
+     File nodeResolverRnDirFile = null

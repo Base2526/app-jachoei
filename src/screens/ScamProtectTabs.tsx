@@ -34,7 +34,7 @@ function useBadges() {
 }
 
 export const ScamProtectTabs: React.FC = () => {
-  const { blockedCount, logsCount } = useBadges();
+  const { logsCount } = useBadges();
   const { isLoggedIn } = useAuth();
 
   const totalUnread = useGlobalChatStore((s: any) =>
@@ -87,12 +87,6 @@ export const ScamProtectTabs: React.FC = () => {
     if (notifUnreadCount > 99) return "99+";
     return notifUnreadCount;
   }, [isLoggedIn, notifUnreadCount]);
-
-  const blockedBadge = useMemo<undefined | number | string>(() => {
-    if (blockedCount <= 0) return undefined;
-    if (blockedCount > 99) return "99+";
-    return blockedCount;
-  }, [blockedCount]);
 
   // ✅ ถ้า BlockedLogs ต้อง auth เท่านั้น → ซ่อน badge เมื่อไม่ login (optional)
   const logsBadge = useMemo<undefined | number | string>(() => {
@@ -182,7 +176,7 @@ export const ScamProtectTabs: React.FC = () => {
                       name="chatbubble-ellipses-outline"
                       size={22}
                       color="#fff"
-                      onPress={() => goStack("Chat", { to: "support" })}
+                      onPress={() => goStack("Chat")}
                     />
                     {!!chatBadge && (
                       <View
@@ -289,38 +283,22 @@ export const ScamProtectTabs: React.FC = () => {
         <Tab.Screen
           name="BlockedLogs"
           component={SafetyCenterMyListsTab}
-          options={({ navigation }) => {
-            const tabNav =
-              navigation as BottomTabNavigationProp<TabsParamList>;
-            const stackNav =
-              tabNav.getParent<NativeStackNavigationProp<RootStackParamList>>();
-
-            const goStack = <T extends keyof RootStackParamList>(
-              name: T,
-              params?: RootStackParamList[T]
-            ) => {
-              if (!stackNav) return;
-              // @ts-expect-error params optional depending on route
-              stackNav.navigate(name, params);
-            };
-
-            return {
-              title: "Blocked",
-              tabBarBadge: logsBadge,
-              tabBarBadgeStyle: {
-                backgroundColor: "#34c759",
-                color: "#111",
-                fontSize: 10,
-                fontWeight: "900",
-              },
-              tabBarIcon: ({ color, size }) => (
-                <Ionicons
-                  name="shield-checkmark-outline"
-                  size={size}
-                  color={color}
-                />
-              ),
-            };
+          options={{
+            title: "Blocked",
+            tabBarBadge: logsBadge,
+            tabBarBadgeStyle: {
+              backgroundColor: "#34c759",
+              color: "#111",
+              fontSize: 10,
+              fontWeight: "900",
+            },
+            tabBarIcon: ({ color, size }) => (
+              <Ionicons
+                name="shield-checkmark-outline"
+                size={size}
+                color={color}
+              />
+            ),
           }}
         />
       ) : null}

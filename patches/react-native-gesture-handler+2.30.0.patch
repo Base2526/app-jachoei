@@ -1,0 +1,25 @@
+diff --git a/node_modules/react-native-gesture-handler/android/build.gradle b/node_modules/react-native-gesture-handler/android/build.gradle
+index 6348d17..01f99e3 100644
+--- a/node_modules/react-native-gesture-handler/android/build.gradle
++++ b/node_modules/react-native-gesture-handler/android/build.gradle
+@@ -38,11 +38,19 @@ def resolveReactNativeDirectory() {
+         return file(reactNativeLocation)
+     }
+ 
++    def nodeBinary = (
++        project.findProperty("REACT_NATIVE_NODE_BINARY") ?:
++        project.findProperty("NODE_BINARY") ?:
++        rootProject.findProperty("REACT_NATIVE_NODE_BINARY") ?:
++        rootProject.findProperty("NODE_BINARY") ?:
++        "node"
++    ).toString()
++
+     // Fallback to node resolver for custom directory structures like monorepos.
+     def reactNativePackage = file(
+         providers.exec {
+             workingDir(rootDir)
+-            commandLine("node", "--print", "require.resolve('react-native/package.json')")
++            commandLine(nodeBinary, "--print", "require.resolve('react-native/package.json')")
+         }.standardOutput.asText.get().trim()
+     )
+ 

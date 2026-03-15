@@ -1,5 +1,5 @@
 // android/app/src/main/java/com/myapp/SmsAppStatus.kt
-package com.myapp
+package com.jachoei
 
 import android.content.Context
 import android.os.Build

@@ -1,4 +1,4 @@
-package com.myapp
+package com.jachoei
 
 import android.database.sqlite.SQLiteDatabase
 import com.facebook.react.bridge.*
