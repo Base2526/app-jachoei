@@ -25,9 +25,9 @@ type Props = {
 };
 
 export default function SignInScreen({
-  onSignIn,
-  onApplePress,
-  onGooglePress,
+  onSignIn: _onSignIn,
+  onApplePress: _onApplePress,
+  onGooglePress: _onGooglePress,
   onEmailLinkPress,
 }: Props) {
   const navigation = useNavigation();
@@ -61,29 +61,14 @@ export default function SignInScreen({
     try {
       setSubmitting(true);
 
-      // ถ้าไม่ได้ส่ง onSignIn มา จะทำ demo เฉย ๆ
-      if (!onSignIn) {
-        await new Promise((r) => setTimeout(r, 900));
-        Alert.alert("Signed in", `Welcome ${email.trim()}`);
-        return;
-      }
+      // Web parity (LoginClient.tsx): loginUser(input: { email, password })
+      // Token + user are persisted to AsyncStorage via `saveAuth()` inside AuthProvider.
+      await auth.login({ identifier: email.trim(), password });
 
-      await onSignIn({ email: email.trim(), password });
+      Alert.alert("Signed in", `Welcome ${email.trim()}`);
+      navigation.goBack();
     } catch (e: any) {
       setError(e?.message || "Sign in failed");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleApple = async () => {
-    try {
-      setError("");
-      setSubmitting(true);
-      if (onApplePress) await onApplePress();
-      else Alert.alert("Apple Sign In", "TODO: connect Apple auth");
-    } catch (e: any) {
-      setError(e?.message || "Apple sign-in failed");
     } finally {
       setSubmitting(false);
     }
@@ -110,11 +95,11 @@ export default function SignInScreen({
             await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
 
             // เปิดหน้าล็อกอิน
-            const userInfo = await GoogleSignin.signIn();
+            await GoogleSignin.signIn();
 
             // เอา token (แนะนำใช้ idToken ส่งไป backend)
             const tokens = await GoogleSignin.getTokens(); // { idToken, accessToken } :contentReference[oaicite:3]{index=3}
-            const idToken = userInfo?.idToken || tokens?.idToken;
+            const idToken = tokens?.idToken;
             const accessToken = tokens?.accessToken;
 
             const credential = idToken || accessToken;

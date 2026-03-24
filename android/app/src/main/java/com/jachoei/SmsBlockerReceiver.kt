@@ -4,8 +4,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.provider.Telephony
-import android.util.Log
 import android.database.sqlite.SQLiteDatabase
+import android.util.Log
+import kotlin.concurrent.thread
 
 class SmsBlockerReceiver : BroadcastReceiver() {
 
@@ -16,51 +17,43 @@ class SmsBlockerReceiver : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent) {
-        Log.d(TAG, "onReceive called, action=${intent.action}")
-
+        // Keep work lightweight in the broadcast path.
+        // We do NOT abort/intercept SMS delivery and we do NOT read SMS history.
         val action = intent.action
+        if (action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
 
-        // รองรับ Broadcast ทั้ง 2 แบบ
-        if (action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION &&
-            action != Telephony.Sms.Intents.SMS_DELIVER_ACTION) {
-            Log.d(TAG, "Not an SMS broadcast, ignore")
-            return
-        }
+        val pendingResult = goAsync()
+        thread(name = "SmsBlockerReceiver") {
+            try {
+                // Only process incoming SMS from the broadcast intent.
+                // Do NOT read or store message body content.
+                val msgs = Telephony.Sms.Intents.getMessagesFromIntent(intent)
+                for (sms in msgs) {
+                    val sender = sms.displayOriginatingAddress ?: ""
+                    val normalized = normalizePhone(sender)
+                    if (normalized.isEmpty()) continue
 
-        Log.d(TAG, "SMS matched ($action), processing...")
+                    val shouldFlag = isBlockedByDb(context, normalized)
+                    if (shouldFlag) {
+                        BlockLogUtils.logBlocked(
+                            context = context,
+                            phone = normalized,
+                            rawPhone = sender,
+                            type = "sms",
+                            detail = "SMS flagged by SmsBlockerReceiver"
+                        )
 
-        val msgs = Telephony.Sms.Intents.getMessagesFromIntent(intent)
-        for (sms in msgs) {
-            val sender = sms.displayOriginatingAddress ?: ""
-            Log.d(TAG, "Incoming SMS from: $sender")
-
-            val normalized = normalizePhone(sender)
-            Log.d(TAG, "Normalized: $normalized")
-
-            val shouldBlock = isBlockedByDb(context, normalized)
-
-            if (shouldBlock) {
-                Log.d(TAG, "SMS BLOCKED from $normalized")
-
-                BlockLogUtils.logBlocked(
-                    context = context,
-                    phone = normalized,
-                    rawPhone = sender,
-                    type = "sms",
-                    detail = "SMS blocked by SmsBlockerReceiver"
-                )
-
-                try {
-                    // Android 4–10
-                    abortBroadcast()
-                } catch (e: Exception) {
-                    Log.w(TAG, "abortBroadcast failed: ${e.message}")
+                        // NOTE: A non-default SMS app cannot reliably block/delete incoming SMS.
+                        // We only detect and record the event here.
+                        break
+                    }
                 }
-
-                // ลบ SMS (เฉพาะ default SMS app)
-                SmsUtils.deleteSmsByAddress(context, sender)
-
-                return
+            } catch (e: Exception) {
+                if (BuildConfig.DEBUG) {
+                    Log.e(TAG, "onReceive processing error", e)
+                }
+            } finally {
+                pendingResult.finish()
             }
         }
     }
@@ -77,17 +70,20 @@ class SmsBlockerReceiver : BroadcastReceiver() {
 
     private fun openDb(context: Context): SQLiteDatabase? {
         val dbFile = context.getDatabasePath(DB_NAME)
-        Log.d(TAG, "[openDb] path = ${dbFile.absolutePath}")
-
+        if (BuildConfig.DEBUG) {
+            Log.d(TAG, "[openDb] present=${dbFile.exists()}")
+        }
         if (!dbFile.exists()) {
-            Log.w(TAG, "[openDb] DB NOT FOUND")
+            if (BuildConfig.DEBUG) {
+                Log.w(TAG, "[openDb] DB NOT FOUND")
+            }
             return null
         }
 
         return SQLiteDatabase.openDatabase(
             dbFile.absolutePath,
             null,
-            SQLiteDatabase.OPEN_READWRITE
+            SQLiteDatabase.OPEN_READONLY
         )
     }
 
