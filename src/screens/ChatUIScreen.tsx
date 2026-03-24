@@ -17,7 +17,11 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Platform,
+  ToastAndroid,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import Clipboard from "@react-native-clipboard/clipboard";
 import Ionicons from "react-native-vector-icons/Ionicons";
 import { gql } from "@apollo/client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -270,6 +274,9 @@ function getImgSrc(img: any) {
  * Screen
  * ========================= */
 export default function ChatScreen({ navigation, route }: Props) {
+  const insets = useSafeAreaInsets();
+  const composerBottomPad = Platform.OS === "android" ? Math.max(insets.bottom, 8) : 0;
+
   const [me, setMe] = useState<Me | null>(null);
   const [chats, setChats] = useState<Chat[]>([]);
   const [sel, setSel] = useState<string | null>(null);
@@ -813,6 +820,19 @@ export default function ChatScreen({ navigation, route }: Props) {
           .catch(() => {});
       };
 
+      const copyText = (text: string) => {
+        try {
+          Clipboard.setString(text);
+          if (Platform.OS === "android") {
+            ToastAndroid.show("Copied", ToastAndroid.SHORT);
+          } else {
+            Alert.alert("Copied");
+          }
+        } catch (e) {
+          console.warn("[Chat] copy failed", e);
+        }
+      };
+
       const bubbleStyle = isMine ? styles.bubbleMine : styles.bubbleOther;
       const bubbleTextStyle = isMine ? styles.textMine : styles.textOther;
 
@@ -893,7 +913,15 @@ export default function ChatScreen({ navigation, route }: Props) {
             ) : null}
 
             {hasText ? (
-              <Pressable onPress={markThisRead}>
+              <Pressable
+                onPress={markThisRead}
+                onLongPress={() => {
+                  const t = String(item.text ?? "");
+                  if (!t.trim()) return;
+                  copyText(t);
+                }}
+                delayLongPress={250}
+              >
                 <View style={[styles.msgBubble, bubbleStyle]}>
                   <Text style={[styles.msgText, bubbleTextStyle]}>{item.text}</Text>
                 </View>
@@ -956,16 +984,18 @@ export default function ChatScreen({ navigation, route }: Props) {
               }
             />
 
-            <SendMessageSection
-              chats={{ myChats: chats }}
-              sel={sel}
-              text={text}
-              setText={setText}
-              onSend={onSend}
-              me={me}
-              replyTarget={replyTarget}
-              setReplyTarget={setReplyTarget}
-            />
+            <View style={{ paddingBottom: composerBottomPad }}>
+              <SendMessageSection
+                chats={{ myChats: chats }}
+                sel={sel}
+                text={text}
+                setText={setText}
+                onSend={onSend}
+                me={me}
+                replyTarget={replyTarget}
+                setReplyTarget={setReplyTarget}
+              />
+            </View>
           </>
         )}
       </View>

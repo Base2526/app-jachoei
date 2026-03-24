@@ -1,0 +1,125 @@
+export type PaymentProviderType = "bank" | "ewallet";
+
+export type PostFormBankItem = {
+  id: string;
+  name_th: string;
+  name_en: string;
+  type: PaymentProviderType;
+  description?: string;
+};
+
+export type PostFormProvinceItem = {
+  id: string;
+  name_th: string;
+  name_en: string;
+};
+
+// Ported from: next-apollo-pg-ws/apps/web/components/post/PostForm.tsx
+// Keep ids/labels/order exactly aligned with web to avoid UUID mismatches.
+export const POST_FORM_PROVINCES: PostFormProvinceItem[] = [
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00001", name_th: "กรุงเทพมหานคร", name_en: "Bangkok" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00002", name_th: "กระบี่", name_en: "Krabi" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00003", name_th: "กาญจนบุรี", name_en: "Kanchanaburi" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00004", name_th: "กาฬสินธุ์", name_en: "Kalasin" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00005", name_th: "กำแพงเพชร", name_en: "Kamphaeng Phet" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00006", name_th: "ขอนแก่น", name_en: "Khon Kaen" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00007", name_th: "จันทบุรี", name_en: "Chanthaburi" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00008", name_th: "ฉะเชิงเทรา", name_en: "Chachoengsao" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00009", name_th: "ชลบุรี", name_en: "Chonburi" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00010", name_th: "ชัยนาท", name_en: "Chai Nat" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00011", name_th: "ชัยภูมิ", name_en: "Chaiyaphum" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00012", name_th: "ชุมพร", name_en: "Chumphon" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00013", name_th: "เชียงราย", name_en: "Chiang Rai" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00014", name_th: "เชียงใหม่", name_en: "Chiang Mai" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00015", name_th: "ตรัง", name_en: "Trang" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00016", name_th: "ตราด", name_en: "Trat" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00017", name_th: "ตาก", name_en: "Tak" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00018", name_th: "นครนายก", name_en: "Nakhon Nayok" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00019", name_th: "นครปฐม", name_en: "Nakhon Pathom" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00020", name_th: "นครพนม", name_en: "Nakhon Phanom" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00021", name_th: "นครราชสีมา", name_en: "Nakhon Ratchasima" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00022", name_th: "นครศรีธรรมราช", name_en: "Nakhon Si Thammarat" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00023", name_th: "นครสวรรค์", name_en: "Nakhon Sawan" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00024", name_th: "นนทบุรี", name_en: "Nonthaburi" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00025", name_th: "นราธิวาส", name_en: "Narathiwat" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00026", name_th: "น่าน", name_en: "Nan" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00027", name_th: "บึงกาฬ", name_en: "Bueng Kan" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00028", name_th: "บุรีรัมย์", name_en: "Buriram" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00029", name_th: "ปทุมธานี", name_en: "Pathum Thani" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00030", name_th: "ประจวบคีรีขันธ์", name_en: "Prachuap Khiri Khan" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00031", name_th: "ปราจีนบุรี", name_en: "Prachinburi" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00032", name_th: "ปัตตานี", name_en: "Pattani" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00033", name_th: "พระนครศรีอยุธยา", name_en: "Phra Nakhon Si Ayutthaya" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00034", name_th: "พะเยา", name_en: "Phayao" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00035", name_th: "พังงา", name_en: "Phang Nga" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00036", name_th: "พัทลุง", name_en: "Phatthalung" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00037", name_th: "พิจิตร", name_en: "Phichit" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00038", name_th: "พิษณุโลก", name_en: "Phitsanulok" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00039", name_th: "เพชรบุรี", name_en: "Phetchaburi" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00040", name_th: "เพชรบูรณ์", name_en: "Phetchabun" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00041", name_th: "แพร่", name_en: "Phrae" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00042", name_th: "ภูเก็ต", name_en: "Phuket" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00043", name_th: "มหาสารคาม", name_en: "Maha Sarakham" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00044", name_th: "มุกดาหาร", name_en: "Mukdahan" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00045", name_th: "แม่ฮ่องสอน", name_en: "Mae Hong Son" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00046", name_th: "ยโสธร", name_en: "Yasothon" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00047", name_th: "ยะลา", name_en: "Yala" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00048", name_th: "ร้อยเอ็ด", name_en: "Roi Et" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00049", name_th: "ระนอง", name_en: "Ranong" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00050", name_th: "ระยอง", name_en: "Rayong" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00051", name_th: "ราชบุรี", name_en: "Ratchaburi" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00052", name_th: "ลพบุรี", name_en: "Lopburi" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00053", name_th: "ลำปาง", name_en: "Lampang" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00054", name_th: "ลำพูน", name_en: "Lamphun" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00055", name_th: "เลย", name_en: "Loei" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00056", name_th: "ศรีสะเกษ", name_en: "Si Sa Ket" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00057", name_th: "สกลนคร", name_en: "Sakon Nakhon" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00058", name_th: "สงขลา", name_en: "Songkhla" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00059", name_th: "สตูล", name_en: "Satun" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00060", name_th: "สมุทรปราการ", name_en: "Samut Prakan" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00061", name_th: "สมุทรสงคราม", name_en: "Samut Songkhram" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00062", name_th: "สมุทรสาคร", name_en: "Samut Sakhon" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00063", name_th: "สระแก้ว", name_en: "Sa Kaeo" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00064", name_th: "สระบุรี", name_en: "Saraburi" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00065", name_th: "สิงห์บุรี", name_en: "Sing Buri" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00066", name_th: "สุโขทัย", name_en: "Sukhothai" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00067", name_th: "สุพรรณบุรี", name_en: "Suphan Buri" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00068", name_th: "สุราษฎร์ธานี", name_en: "Surat Thani" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00069", name_th: "สุรินทร์", name_en: "Surin" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00070", name_th: "หนองคาย", name_en: "Nong Khai" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00071", name_th: "หนองบัวลำภู", name_en: "Nong Bua Lam Phu" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00072", name_th: "อ่างทอง", name_en: "Ang Thong" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00073", name_th: "อำนาจเจริญ", name_en: "Amnat Charoen" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00074", name_th: "อุดรธานี", name_en: "Udon Thani" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00075", name_th: "อุตรดิตถ์", name_en: "Uttaradit" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00076", name_th: "อุทัยธานี", name_en: "Uthai Thani" },
+  { id: "1a6c1a5a-1f01-4f3a-9a45-001a01a00077", name_th: "อุบลราชธานี", name_en: "Ubon Ratchathani" },
+];
+
+// Ported from: next-apollo-pg-ws/apps/web/components/post/PostForm.tsx
+export const POST_FORM_BANKS: PostFormBankItem[] = [
+  { id: "bbl", name_th: "ธนาคารกรุงเทพ", name_en: "Bangkok Bank", type: "bank" },
+  { id: "kbank", name_th: "ธนาคารกสิกรไทย", name_en: "Kasikorn Bank", type: "bank" },
+  { id: "scb", name_th: "ธนาคารไทยพาณิชย์", name_en: "Siam Commercial Bank", type: "bank" },
+  { id: "bay", name_th: "ธนาคารกรุงศรีอยุธยา", name_en: "Bank of Ayudhya", type: "bank" },
+  { id: "ktb", name_th: "ธนาคารกรุงไทย", name_en: "Krung Thai Bank", type: "bank" },
+  { id: "tmb", name_th: "ธนาคารทหารไทยธนชาต", name_en: "TTB Bank", type: "bank" },
+  { id: "uob", name_th: "ธนาคารยูโอบี", name_en: "United Overseas Bank (Thai)", type: "bank" },
+  { id: "cimb", name_th: "ธนาคารซีไอเอ็มบีไทย", name_en: "CIMB Thai Bank", type: "bank" },
+  { id: "lhb", name_th: "ธนาคารแลนด์ แอนด์ เฮ้าส์", name_en: "Land and Houses Bank", type: "bank" },
+  { id: "tisco", name_th: "ธนาคารทิสโก้", name_en: "TISCO Bank", type: "bank" },
+  { id: "kkp", name_th: "ธนาคารเกียรตินาคินภัทร", name_en: "Kiatnakin Phatra Bank", type: "bank" },
+  { id: "ibank", name_th: "ธนาคารอิสลามแห่งประเทศไทย", name_en: "Islamic Bank of Thailand", type: "bank" },
+  { id: "gsb", name_th: "ธนาคารออมสิน", name_en: "Government Savings Bank", type: "bank" },
+  { id: "baac", name_th: "ธนาคารเพื่อการเกษตรและสหกรณ์การเกษตร", name_en: "BAAC", type: "bank" },
+  { id: "ghb", name_th: "ธนาคารอาคารสงเคราะห์", name_en: "Government Housing Bank", type: "bank" },
+  { id: "exim", name_th: "ธนาคารเพื่อการส่งออกและนำเข้าแห่งประเทศไทย", name_en: "EXIM Thailand", type: "bank" },
+  { id: "sme", name_th: "ธนาคารพัฒนาวิสาหกิจขนาดกลางและขนาดย่อมแห่งประเทศไทย", name_en: "SME D Bank", type: "bank" },
+  { id: "truemoney", name_th: "ทรูมันนี่ วอลเล็ท", name_en: "TrueMoney Wallet", type: "ewallet" },
+  { id: "shopeepay", name_th: "ช้อปปี้เพย์", name_en: "ShopeePay", type: "ewallet" },
+  { id: "linepay", name_th: "ไลน์เพย์", name_en: "LINE Pay", type: "ewallet" },
+  { id: "rabbit", name_th: "แรบบิท ไลน์ เพย์", name_en: "Rabbit LINE Pay", type: "ewallet" },
+  { id: "paotang", name_th: "เป๋าตัง / ถุงเงิน", name_en: "Pao Tang / Tung Ngern", type: "ewallet" },
+  { id: "grabpay", name_th: "แกร็บเพย์", name_en: "GrabPay", type: "ewallet" },
+  { id: "airpay", name_th: "แอร์เพย์", name_en: "AirPay", type: "ewallet" },
+];
