@@ -12,7 +12,9 @@ object BlockLogUtils {
     private fun openDb(context: Context): SQLiteDatabase? {
         val file = context.getDatabasePath(DB_NAME)
         if (!file.exists()) {
-            Log.w(TAG, "[openDb] DB not found at ${file.absolutePath}")
+            if (BuildConfig.DEBUG) {
+                Log.w(TAG, "[openDb] DB not found")
+            }
             return null
         }
         return SQLiteDatabase.openDatabase(
@@ -34,7 +36,9 @@ object BlockLogUtils {
             )
             db.close()
 
-            Log.d(TAG, "[insert] type=$type phone=$phone raw=$rawPhone detail=$detail")
+            if (BuildConfig.DEBUG) {
+                Log.d(TAG, "[insert] type=$type")
+            }
 
         } catch (e: Exception) {
             Log.e(TAG, "logBlocked error", e)

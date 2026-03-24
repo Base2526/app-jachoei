@@ -18,7 +18,6 @@ class MainApplication : Application(), ReactApplication {
           // add(MyReactNativePackage())
 
             add(CallBlockerPackage())
-            add(SmsRolePackage())
 
             add(CallScreenRolePackage())
         },

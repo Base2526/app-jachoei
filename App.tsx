@@ -47,11 +47,11 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
 export async function ensureSmsPermissions() {
-  const res = await PermissionsAndroid.requestMultiple([
-    PermissionsAndroid.PERMISSIONS.RECEIVE_SMS,
-    PermissionsAndroid.PERMISSIONS.READ_SMS,
-  ]);
-  console.log("[PERM] sms =", res);
+  if (Platform.OS !== "android") return;
+  const res = await PermissionsAndroid.request(
+    PermissionsAndroid.PERMISSIONS.RECEIVE_SMS
+  );
+  console.log("[PERM] RECEIVE_SMS =", res);
 }
 
 GoogleSignin.configure({

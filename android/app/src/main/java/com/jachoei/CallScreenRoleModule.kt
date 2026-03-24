@@ -29,7 +29,9 @@ class CallScreenRoleModule(private val reactContext: ReactApplicationContext) :
         try {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
                 // Android < 10 ไม่มีระบบ Role แบบนี้
-                Log.d(TAG, "[isCallScreeningEnabled] Android < 10 → false")
+                if (BuildConfig.DEBUG) {
+                    Log.d(TAG, "[isCallScreeningEnabled] Android < 10 → false")
+                }
                 promise.resolve(false)
                 return
             }
@@ -38,7 +40,9 @@ class CallScreenRoleModule(private val reactContext: ReactApplicationContext) :
                 reactContext.getSystemService(RoleManager::class.java) as RoleManager
             val held = roleManager.isRoleHeld(RoleManager.ROLE_CALL_SCREENING)
 
-            Log.d(TAG, "[isCallScreeningEnabled] held=$held")
+            if (BuildConfig.DEBUG) {
+                Log.d(TAG, "[isCallScreeningEnabled] held=$held")
+            }
             promise.resolve(held)
         } catch (e: Exception) {
             Log.e(TAG, "[isCallScreeningEnabled] error", e)
@@ -49,15 +53,19 @@ class CallScreenRoleModule(private val reactContext: ReactApplicationContext) :
     // ขอ ROLE_CALL_SCREENING จากระบบ
     @ReactMethod
     fun requestCallScreeningRole(promise: Promise) {
-        val activity: Activity? = getCurrentActivity()
+        val activity: Activity? = reactContext.currentActivity
         if (activity == null) {
-            Log.e(TAG, "[requestCallScreeningRole] currentActivity is null")
+            if (BuildConfig.DEBUG) {
+                Log.e(TAG, "[requestCallScreeningRole] currentActivity is null")
+            }
             promise.reject("NO_ACTIVITY", "Current activity is null")
             return
         }
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            Log.e(TAG, "[requestCallScreeningRole] Android < 10, unsupported")
+            if (BuildConfig.DEBUG) {
+                Log.e(TAG, "[requestCallScreeningRole] Android < 10, unsupported")
+            }
             promise.reject("UNSUPPORTED", "ROLE_CALL_SCREENING requires Android 10+")
             return
         }
@@ -66,13 +74,17 @@ class CallScreenRoleModule(private val reactContext: ReactApplicationContext) :
             reactContext.getSystemService(RoleManager::class.java) as RoleManager
 
         if (roleManager.isRoleHeld(RoleManager.ROLE_CALL_SCREENING)) {
-            Log.d(TAG, "[requestCallScreeningRole] already held")
+            if (BuildConfig.DEBUG) {
+                Log.d(TAG, "[requestCallScreeningRole] already held")
+            }
             promise.resolve(true)
             return
         }
 
         if (pendingPromise != null) {
-            Log.w(TAG, "[requestCallScreeningRole] already requesting, skip")
+            if (BuildConfig.DEBUG) {
+                Log.w(TAG, "[requestCallScreeningRole] already requesting, skip")
+            }
             promise.reject("ALREADY_REQUESTING", "Another request in progress")
             return
         }
@@ -81,7 +93,9 @@ class CallScreenRoleModule(private val reactContext: ReactApplicationContext) :
 
         try {
             val intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_CALL_SCREENING)
-            Log.d(TAG, "[requestCallScreeningRole] startActivityForResult ROLE_CALL_SCREENING")
+            if (BuildConfig.DEBUG) {
+                Log.d(TAG, "[requestCallScreeningRole] startActivityForResult ROLE_CALL_SCREENING")
+            }
             activity.startActivityForResult(intent, REQ_CALL_SCREENING_ROLE)
         } catch (e: Exception) {
             Log.e(TAG, "[requestCallScreeningRole] error starting intent", e)
@@ -111,16 +125,20 @@ class CallScreenRoleModule(private val reactContext: ReactApplicationContext) :
             reactContext.getSystemService(RoleManager::class.java) as RoleManager
         val held = roleManager.isRoleHeld(RoleManager.ROLE_CALL_SCREENING)
 
-        Log.d(
-            TAG,
-            "[onActivityResult] req=$requestCode result=$resultCode held=$held"
-        )
+        if (BuildConfig.DEBUG) {
+            Log.d(
+                TAG,
+                "[onActivityResult] req=$requestCode result=$resultCode held=$held"
+            )
+        }
 
         promise.resolve(held)
     }
 
     override fun onNewIntent(intent: Intent) {
         // ไม่ได้ใช้ แต่ต้อง implement ให้ครบ interface
-        Log.d(TAG, "[onNewIntent] intent=$intent (not used)")
+        if (BuildConfig.DEBUG) {
+            Log.d(TAG, "[onNewIntent] (not used)")
+        }
     }
 }

@@ -3,8 +3,8 @@ package com.jachoei
 
 import android.telecom.Call
 import android.telecom.CallScreeningService
-import android.util.Log
 import android.database.sqlite.SQLiteDatabase
+import android.util.Log
 
 class CallBlockerService : CallScreeningService() {
 
@@ -17,16 +17,13 @@ class CallBlockerService : CallScreeningService() {
     override fun onScreenCall(callDetails: Call.Details) {
         val handle = callDetails.handle
         val number = handle?.schemeSpecificPart ?: ""
-
-        Log.d(TAG, "Incoming call: raw number=$number")
-
         val normalized = normalizePhone(number)
-        Log.d(TAG, "Normalized number=$normalized")
-
         val shouldBlock = isBlockedByDb(normalized)
 
         if (shouldBlock) {
-            Log.d(TAG, "Blocking call from $normalized")
+            if (BuildConfig.DEBUG) {
+                Log.d(TAG, "Blocking call (normalized)")
+            }
 
             BlockLogUtils.logBlocked(
                 context = this,
@@ -45,7 +42,9 @@ class CallBlockerService : CallScreeningService() {
 
             respondToCall(callDetails, response)
         } else {
-            Log.d(TAG, "Allow call from $normalized")
+            if (BuildConfig.DEBUG) {
+                Log.d(TAG, "Allow call")
+            }
 
             val response = CallResponse.Builder()
                 .setDisallowCall(false)
@@ -57,9 +56,10 @@ class CallBlockerService : CallScreeningService() {
 
     private fun openDb(): SQLiteDatabase? {
         val dbFile = getDatabasePath(DB_NAME)
-        Log.d(TAG, "DB path = ${dbFile.absolutePath}")
         if (!dbFile.exists()) {
-            Log.w(TAG, "DB file not found")
+            if (BuildConfig.DEBUG) {
+                Log.w(TAG, "DB file not found")
+            }
             return null
         }
         return SQLiteDatabase.openDatabase(
@@ -89,7 +89,6 @@ class CallBlockerService : CallScreeningService() {
 
             cursor.use { c ->
                 if (!c.moveToFirst()) {
-                    Log.d(TAG, "Number not found in db: $phone")
                     db.close()
                     return false
                 }
@@ -100,11 +99,6 @@ class CallBlockerService : CallScreeningService() {
                     c.getInt(c.getColumnIndexOrThrow("server_deleted"))
                 val localBlocked =
                     c.getInt(c.getColumnIndexOrThrow("local_blocked"))
-
-                Log.d(
-                    TAG,
-                    "DB result for $phone: risk=$riskLevel, deleted=$serverDeleted, local_blocked=$localBlocked"
-                )
 
                 db.close()
 
