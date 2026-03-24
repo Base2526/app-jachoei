@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   StatusBar,
   ActivityIndicator,
@@ -7,12 +7,14 @@ import {
   PermissionsAndroid,
   Pressable,
   StyleSheet,
-  Platform
+  Platform,
+  InteractionManager,
 } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 import {
   NavigationContainer,
   createNavigationContainerRef,
+  DarkTheme,
 } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { ApolloProvider } from "@apollo/client/react";
@@ -35,6 +37,7 @@ import NotificationPage from "./src/screens/NotificationPage";
 import type { RootStackParamList } from "./src/navigation/types";
 
 import { AuthProvider } from "./src/auth/AuthProvider";
+import { useAuth } from "./src/auth/AuthProvider";
 
 import { GlobalWiresWrapper } from "./src/components/GlobalWiresWrapper";
 
@@ -60,19 +63,26 @@ GoogleSignin.configure({
   offlineAccess: false,
 });
 
-function Root() {
-  const { ready } = useInitScamSync();
-
+function Root({ initReady }: { initReady: boolean }) {
   useEffect(() => {
     ensureSmsPermissions();
     loadDeviceInfo();
   }, []);
 
-  if (!ready) {
+  if (!initReady) {
     return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+      <View
+        style={{
+          flex: 1,
+          justifyContent: "center",
+          alignItems: "center",
+          backgroundColor: "#0b0b0f",
+        }}
+      >
         <ActivityIndicator />
-        <Text style={{ marginTop: 8 }}>กำลังเตรียมฐานข้อมูลบนเครื่อง...</Text>
+        <Text style={{ marginTop: 8, color: "#fff" }}>
+          กำลังเตรียมฐานข้อมูลบนเครื่อง...
+        </Text>
       </View>
     );
   }
@@ -81,6 +91,7 @@ function Root() {
     <Stack.Navigator
       screenOptions={{
         headerShown: false,
+        contentStyle: { backgroundColor: "#0b0b0f" },
       }}
     >
       {/* ✅ หน้าแรกเป็น ScamProtect ตามเดิม ไม่บังคับ login */}
@@ -278,20 +289,56 @@ function Root() {
   );
 }
 
+function AppShell() {
+  const { booting } = useAuth();
+  const { ready: initReady } = useInitScamSync();
+
+  const [navReady, setNavReady] = useState(false);
+  const hasHiddenSplashRef = useRef(false);
+
+  const appReady = useMemo(() => {
+    return navReady && !booting && initReady;
+  }, [booting, initReady, navReady]);
+
+  useEffect(() => {
+    if (!appReady) return;
+    if (hasHiddenSplashRef.current) return;
+    hasHiddenSplashRef.current = true;
+
+    InteractionManager.runAfterInteractions(() => {
+      BootSplash.hide({ fade: true }).catch(() => {
+        // no-op: avoid crashing if hide is called in a bad state
+      });
+    });
+  }, [appReady]);
+
+  return (
+    <NavigationContainer
+      ref={navigationRef}
+      theme={{
+        ...DarkTheme,
+        colors: {
+          ...DarkTheme.colors,
+          background: "#0b0b0f",
+        },
+      }}
+      onReady={() => setNavReady(true)}
+    >
+      <GlobalWiresWrapper />
+      <StatusBar barStyle="light-content" backgroundColor="#0b0b0f" />
+      <View style={{ flex: 1 }}>
+        <Root initReady={initReady} />
+      </View>
+    </NavigationContainer>
+  );
+}
+
 export default function App() {
   return (
     <ApolloProvider client={client}>
       <AuthProvider>
-      <NavigationContainer 
-        ref={navigationRef}
-        onReady={() => { BootSplash.hide(); }}>
-        <GlobalWiresWrapper />
-        <StatusBar barStyle="light-content" backgroundColor="#0b0b0f" />
-        <View style={{ flex: 1 }}>
-          <Root />
-        </View>
-      </NavigationContainer>
-      <Toast />
+        <AppShell />
+        <Toast />
       </AuthProvider>
     </ApolloProvider>
   );

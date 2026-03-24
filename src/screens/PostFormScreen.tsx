@@ -24,6 +24,12 @@ import { gql } from "@apollo/client";
 import { client } from "../apollo/client";
 import type { RootStackParamList } from "../navigation/types";
 import { ENV } from "../config/env";
+import {
+  POST_FORM_BANKS,
+  POST_FORM_PROVINCES,
+  type PostFormBankItem,
+  type PostFormProvinceItem,
+} from "../constants/postFormOptions";
 
 // ====================== GraphQL ======================
 
@@ -102,30 +108,23 @@ type ISellerAccount = {
 type ExistingFile = { _id: string | number; url: string; delete?: boolean };
 type FileValue = ExistingFile | Asset;
 
-type ProvinceItem = { id: string; name_th: string };
-type BankItem = { id: string; name_th: string; type: "bank" | "ewallet" };
+type ProvinceItem = PostFormProvinceItem;
+type BankItem = PostFormBankItem;
 
-// ====================== dropdown data (ตัวอย่าง) ======================
-// ✅ ใส่ของจริงของคุณแทนได้
-const provinces: ProvinceItem[] = [
-  { id: "1a6c...00001", name_th: "กรุงเทพมหานคร" },
-  { id: "1a6c...00009", name_th: "ชลบุรี" },
-  { id: "1a6c...00014", name_th: "เชียงใหม่" },
-  { id: "1a6c...00042", name_th: "ภูเก็ต" },
-];
-
-const banks: BankItem[] = [
-  { id: "bbl", name_th: "ธนาคารกรุงเทพ", type: "bank" },
-  { id: "kbank", name_th: "ธนาคารกสิกรไทย", type: "bank" },
-  { id: "scb", name_th: "ธนาคารไทยพาณิชย์", type: "bank" },
-  { id: "truemoney", name_th: "ทรูมันนี่ วอลเล็ท", type: "ewallet" },
-  { id: "linepay", name_th: "ไลน์เพย์", type: "ewallet" },
-];
+// ====================== dropdown data ======================
+// Keep aligned with the web implementation.
+const provinces: ProvinceItem[] = POST_FORM_PROVINCES;
+const banks: BankItem[] = POST_FORM_BANKS;
 
 // ====================== helpers ======================
 
 const makeLocalId = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+function isUuid(v: unknown): v is string {
+  if (typeof v !== "string") return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+}
 
 function toUploadFromAsset(a: Asset) {
   if (!a?.uri) return null;
@@ -482,7 +481,7 @@ export default function PostFormScreen({ route, navigation }: Props) {
 
   // ====================== submit ======================
 
-  const onSubmit = async () => {
+  const onSubmit = useCallback(async () => {
     if (saving) return;
 
     if (!first_last_name.trim()) return Alert.alert("กรุณากรอก", "ชื่อ-นามสกุล คนขาย");
@@ -490,12 +489,17 @@ export default function PostFormScreen({ route, navigation }: Props) {
     if (!transfer_amount || Number(transfer_amount) <= 0) return Alert.alert("กรุณากรอก", "ยอดโอน");
     if (!transfer_date) return Alert.alert("กรุณาเลือก", "วันโอนเงิน");
     if (!province_id) return Alert.alert("กรุณาเลือก", "จังหวัด");
+    if (!isUuid(province_id)) {
+      if (__DEV__) console.log("[PostForm] invalid province_id (expected UUID):", province_id);
+      return Alert.alert("กรุณาเลือก", "จังหวัด");
+    }
 
     try {
       setSaving(true);
 
-      const existingDeleteIds = (files.filter((f: any) => f && "url" in f && f.delete) as ExistingFile[])
-        .map((f) => String(f._id));
+      const existingDeleteIds = (files.filter((f: any) => f && "url" in f && f.delete) as ExistingFile[]).map((f) =>
+        String(f._id)
+      );
 
       const newAssets = files.filter((f: any) => f && "uri" in f && !("url" in f)) as Asset[];
       const uploadFiles = newAssets.map(toUploadFromAsset).filter(Boolean);
@@ -533,6 +537,15 @@ export default function PostFormScreen({ route, navigation }: Props) {
         image_ids_delete: existingDeleteIds,
       };
 
+      if (__DEV__) {
+        console.log("[PostForm] UPSERT variables =", {
+          id: variables?.id,
+          province_id: variables?.data?.province_id,
+          hasImages: Array.isArray(variables?.images) ? variables.images.length : 0,
+          image_ids_delete: variables?.image_ids_delete,
+        });
+      }
+
       if (uploadFiles.length > 0) variables.images = uploadFiles;
 
       const { data } = await client.mutate({ mutation: UPSERT, variables });
@@ -546,8 +559,12 @@ export default function PostFormScreen({ route, navigation }: Props) {
       Alert.alert(
         "สำเร็จ",
         saved.auto_publish
-          ? (isEdit ? "บันทึกสำเร็จ และระบบจะเผยแพร่อัตโนมัติ" : "สร้างรายการสำเร็จ และระบบจะเผยแพร่อัตโนมัติ")
-          : (isEdit ? "บันทึกสำเร็จ" : "สร้างรายการสำเร็จ")
+          ? isEdit
+            ? "บันทึกสำเร็จ และระบบจะเผยแพร่อัตโนมัติ"
+            : "สร้างรายการสำเร็จ และระบบจะเผยแพร่อัตโนมัติ"
+          : isEdit
+            ? "บันทึกสำเร็จ"
+            : "สร้างรายการสำเร็จ"
       );
 
       const savedImgs: ExistingFile[] = (saved.images || []).map((img: any) => ({
@@ -556,9 +573,7 @@ export default function PostFormScreen({ route, navigation }: Props) {
       }));
       setFiles(savedImgs);
 
-      const nextTel = telNumbers
-        .filter((t) => t.mode !== Mode.Deleted)
-        .map((t) => ({ ...t, mode: Mode.Unchanged }));
+      const nextTel = telNumbers.filter((t) => t.mode !== Mode.Deleted).map((t) => ({ ...t, mode: Mode.Unchanged }));
       const nextSeller = sellerAccounts
         .filter((s) => s.mode !== Mode.Deleted)
         .map((s) => ({ ...s, mode: Mode.Unchanged }));
@@ -581,7 +596,26 @@ export default function PostFormScreen({ route, navigation }: Props) {
     } finally {
       setSaving(false);
     }
-  };
+  }, [
+    saving,
+    first_last_name,
+    postTitle,
+    transfer_amount,
+    transfer_date,
+    province_id,
+    files,
+    telNumbers,
+    sellerAccounts,
+    isEdit,
+    id,
+    id_card,
+    website,
+    detail,
+    status,
+    auto_publish,
+    navigation,
+    normalizeComparable,
+  ]);
 
   // ====================== header config + Save button ======================
 
@@ -610,7 +644,7 @@ export default function PostFormScreen({ route, navigation }: Props) {
         </Pressable>
       ),
     });
-  }, [navigation, headerTitle, canSave, saving, dirty, initialLoading]);
+  }, [navigation, headerTitle, canSave, saving, dirty, initialLoading, onSubmit]);
 
   // ✅ เตือนก่อนออก ถ้า dirty
   useEffect(() => {

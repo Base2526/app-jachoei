@@ -237,7 +237,12 @@ export default function SettingsScreen() {
   // Logout
   const [loggingOut, setLoggingOut] = useState(false);
 
-  const { logout } = useAuth();
+  const { logout, user, booting } = useAuth();
+
+  const currentUserId = useMemo(() => {
+    const id = user?.id;
+    return id ? String(id) : null;
+  }, [user?.id]);
 
   // ===== Dirty tracking =====
   const profileSnapRef = useRef<{ name: string; phone: string; language: "en" | "th"; username: string } | null>(null);
@@ -703,7 +708,28 @@ export default function SettingsScreen() {
             </View>
 
             <View style={{ gap: 8 }}>
-              <Pressable style={styles.smallBtn} onPress={() => navigation.navigate("PostView", { id: String(p.id) })}>
+              <Pressable
+                style={[styles.smallBtn, (!currentUserId || booting) && { opacity: 0.45 }]}
+                disabled={!currentUserId || booting}
+                onPress={() => {
+                  const postId = String(p.id);
+                  console.debug("[Settings] navigate PostView", {
+                    postId,
+                    currentUserId,
+                    booting,
+                  });
+
+                  if (!currentUserId) {
+                    Alert.alert("Error", "Missing user id. Please login again.");
+                    return;
+                  }
+
+                  navigation.navigate("PostView", {
+                    id: postId,
+                    currentUserId,
+                  });
+                }}
+              >
                 <Text style={styles.smallBtnText}>View</Text>
               </Pressable>
 

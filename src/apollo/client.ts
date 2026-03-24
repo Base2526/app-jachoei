@@ -18,6 +18,10 @@ import {
 import { ENV } from "../config/env";
 import { getCachedDeviceInfo } from "../device/deviceInfo";
 import { loadAuth } from "../auth/auth.storage";
+import {
+  createGraphQLMultipartLink,
+  operationHasReactNativeUpload,
+} from "./multipartLink";
 
 // ================= Error Link (HTTP only) =================
 const errorLink = new ErrorLink(({ error, operation }) => {
@@ -45,6 +49,12 @@ const errorLink = new ErrorLink(({ error, operation }) => {
 
 // ================= HTTP Link =================
 const httpLink = new HttpLink({
+  uri: `${ENV.apiBase}/api/graphql`,
+});
+
+// ================= Multipart Upload Link (React Native) =================
+// Sends GraphQL multipart requests for variables containing { uri, name, type }
+const multipartLink = createGraphQLMultipartLink({
   uri: `${ENV.apiBase}/api/graphql`,
 });
 
@@ -127,9 +137,11 @@ const splitLink = split(
   },
   wsLink,
   ApolloLink.from([
-    errorLink,          // log errors
-    authLink,           // ✅ ใส่ header token ที่นี่
-    httpLink,
+    errorLink, // log errors
+    authLink, // ✅ ใส่ header token ที่นี่
+
+    // If the operation contains RN upload objects, use multipart.
+    split(operationHasReactNativeUpload, multipartLink, httpLink),
   ])
 );
 
