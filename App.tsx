@@ -40,6 +40,7 @@ import { AuthProvider } from "./src/auth/AuthProvider";
 import { useAuth } from "./src/auth/AuthProvider";
 
 import { GlobalWiresWrapper } from "./src/components/GlobalWiresWrapper";
+import { FcmWires } from "./src/notifications/fcmWires";
 
 import Toast from "react-native-toast-message";
 
@@ -315,6 +316,14 @@ function AppShell() {
   return (
     <NavigationContainer
       ref={navigationRef}
+      linking={{
+        prefixes: ["jachoei://chat"],
+        config: {
+          screens: {
+            Chat: ":chatId",
+          },
+        },
+      }}
       theme={{
         ...DarkTheme,
         colors: {
@@ -325,6 +334,7 @@ function AppShell() {
       onReady={() => setNavReady(true)}
     >
       <GlobalWiresWrapper />
+      <FcmWires />
       <StatusBar barStyle="light-content" backgroundColor="#0b0b0f" />
       <View style={{ flex: 1 }}>
         <Root initReady={initReady} />

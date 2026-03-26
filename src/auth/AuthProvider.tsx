@@ -15,6 +15,8 @@ import {
   saveAuth,
 } from "./auth.storage";
 
+import { gql } from "@apollo/client";
+
 /* =======================
  * Types
  * ======================= */
@@ -142,6 +144,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    * logout
    * ======================= */
   const logout = async () => {
+    // best-effort: unregister push token (if any) before clearing auth
+    try {
+      const fcmToken = await (async () => {
+        try {
+          const messaging = (await import("@react-native-firebase/messaging")).default;
+          return await messaging().getToken();
+        } catch {
+          return null;
+        }
+      })();
+
+      if (fcmToken) {
+        const MUT_UNREGISTER_PUSH = gql`
+          mutation UnregisterPushToken($fcmToken: String!) {
+            unregisterPushToken(fcmToken: $fcmToken)
+          }
+        `;
+
+        await client
+          .mutate({
+            mutation: MUT_UNREGISTER_PUSH,
+            variables: { fcmToken },
+          })
+          .catch(() => {});
+      }
+    } catch {
+      // ignore
+    }
+
     await clearAuth();
     setToken(null);
     setUser(null);

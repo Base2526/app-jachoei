@@ -29,6 +29,7 @@ import type { RootStackParamList } from "../navigation/types";
 import { client } from "../apollo/client";
 import SendMessageSection, { UploadImage } from "../components/SendMessageSection";
 import { ENV } from "../config/env";
+import { refreshUnreadChatBadge } from "../notifications/badge";
 
 // ✅ Zustand global unread/currentChat sync (RN)
 import { useGlobalChatStore } from "../store/globalChatStore";
@@ -285,9 +286,17 @@ export default function ChatScreen({ navigation, route }: Props) {
   const toParam = String(toParamRaw ?? "").trim() || null;
   const handledToRef = useRef<string | null>(null);
 
+  const chatIdParamRaw = (route.params as any)?.chatId;
+  const chatIdParam = String(chatIdParamRaw ?? "").trim() || null;
+  const handledChatIdRef = useRef<string | null>(null);
+
   useEffect(() => {
     handledToRef.current = null;
   }, [toParam]);
+
+  useEffect(() => {
+    handledChatIdRef.current = null;
+  }, [chatIdParam]);
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [loadingChats, setLoadingChats] = useState(false);
@@ -372,6 +381,13 @@ export default function ChatScreen({ navigation, route }: Props) {
 
       setChats(sorted);
 
+      // Open a specific conversation (deep link / push) by chat id
+      if (chatIdParam && handledChatIdRef.current !== chatIdParam) {
+        handledChatIdRef.current = chatIdParam;
+        openChatById(chatIdParam);
+        return;
+      }
+
       const fallbackToUserId = "support";
 
       const openToChat = async (toUserId: string) => {
@@ -439,7 +455,7 @@ export default function ChatScreen({ navigation, route }: Props) {
       setLoadingChats(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sel, toParam]);
+  }, [sel, toParam, chatIdParam]);
 
   useEffect(() => {
     loadMeAndChats();
@@ -489,6 +505,7 @@ export default function ChatScreen({ navigation, route }: Props) {
               mutation: MUT_MARK_UPTO,
               variables: { chat_id: chatId, cursor: last.created_at },
             })
+            .then(() => refreshUnreadChatBadge())
             .catch(() => {});
         }
       } catch (e: any) {

@@ -15,7 +15,7 @@ export type RootStackParamList = {
 
   PostView: { id: string; currentUserId?: string };
   Profile: { id: string };
-  Chat: { to?: string } | undefined;
+  Chat: { to?: string; chatId?: string } | undefined;
 
   Setting: undefined;
   PostForm: { id?: string } | undefined;
