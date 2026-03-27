@@ -13,6 +13,7 @@ import SafetyCenterMyListsTab from "./SafetyCenterMyListsTab";
 import { HeaderAccountButton } from "../components/HeaderAccountButton";
 import { useAuth } from "../auth/AuthProvider";
 import { useGlobalChatStore } from "../store/globalChatStore";
+import { useI18n } from "../i18n";
 
 import { client } from "../apollo/client";
 import { gql } from "@apollo/client";
@@ -34,6 +35,7 @@ function useBadges() {
 }
 
 export const ScamProtectTabs: React.FC = () => {
+  const { t } = useI18n();
   const { logsCount } = useBadges();
   const { isLoggedIn } = useAuth();
 
@@ -136,11 +138,11 @@ export const ScamProtectTabs: React.FC = () => {
                   marginLeft: 14,
                 }}
               >
-                จ่าเฉย (JACHOEI)
+                {t("tabs.app_title")}
               </Text>
             ),
 
-            tabBarLabel: "Home",
+            tabBarLabel: t("tabs.home"),
             tabBarBadge: logsBadge,
             tabBarBadgeStyle: {
               backgroundColor: "#34c759",
@@ -271,7 +273,7 @@ export const ScamProtectTabs: React.FC = () => {
         name="CheckPhone"
         component={PhoneCenterLookupTab}
         options={{
-          title: "ตรวจเบอร์",
+          title: t("tabs.check_phone"),
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="call-outline" size={size} color={color} />
           ),
@@ -284,7 +286,7 @@ export const ScamProtectTabs: React.FC = () => {
           name="BlockedLogs"
           component={SafetyCenterMyListsTab}
           options={{
-            title: "Blocked",
+            title: t("tabs.blocked"),
             tabBarBadge: logsBadge,
             tabBarBadgeStyle: {
               backgroundColor: "#34c759",

@@ -12,9 +12,12 @@ import {
   Alert,
   Keyboard,
   Platform,
+  ActivityIndicator,
 } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 import { launchImageLibrary, Asset, ImageLibraryOptions } from "react-native-image-picker";
+import { createClientMessageId } from "../utils/chat";
+import { useI18n } from "../i18n";
 
 const MAX_IMAGES = 4;
 
@@ -45,6 +48,7 @@ type Props = {
     to_user_ids: string[];
     images?: UploadImage[];
     reply_to_id?: string | null;
+    client_message_id?: string | null;
   }) => Promise<void>;
 
   me: Me;
@@ -65,9 +69,14 @@ export default function SendMessageSection({
   replyTarget,
   setReplyTarget,
 }: Props) {
+  const { t } = useI18n();
   const [showEmoji, setShowEmoji] = useState(false);
   const [images, setImages] = useState<UploadImage[]>([]);
   const [previewUri, setPreviewUri] = useState<string | null>(null);
+  const [isSendingText, setIsSendingText] = useState(false);
+  const [isSendingMedia, setIsSendingMedia] = useState(false);
+
+  const inFlightPayloadsRef = useRef<Set<string>>(new Set());
 
   const inputRef = useRef<TextInput>(null);
 
@@ -90,6 +99,8 @@ export default function SendMessageSection({
     toUserIds.length > 0 &&
     (trimmed.length > 0 || images.length > 0);
 
+  const isSending = isSendingText || isSendingMedia;
+
   const disabled = !me?.id || !chat || !sel;
 
   // ปิด emoji เมื่อคีย์บอร์ดเปิด / กดส่ง
@@ -108,10 +119,10 @@ export default function SendMessageSection({
 
   // ===== pick images (max 4) =====
   const pickImages = useCallback(async () => {
-    if (disabled) return;
+    if (disabled || isSending) return;
 
     if (images.length >= MAX_IMAGES) {
-      Alert.alert("จำกัดรูป", `แนบได้สูงสุด ${MAX_IMAGES} รูปต่อ 1 ข้อความ`);
+      Alert.alert(t("chat.image_limit_title"), t("chat.image_limit_text", { count: MAX_IMAGES }));
       return;
     }
 
@@ -127,7 +138,7 @@ export default function SendMessageSection({
 
     if (res.didCancel) return;
     if (res.errorCode) {
-      Alert.alert("เลือกภาพไม่ได้", `${res.errorCode}: ${res.errorMessage ?? ""}`);
+      Alert.alert(t("chat.pick_image_failed"), `${res.errorCode}: ${res.errorMessage ?? ""}`);
       return;
     }
 
@@ -147,22 +158,23 @@ export default function SendMessageSection({
     setImages((prev) => {
       const next = [...prev, ...mapped].slice(0, MAX_IMAGES);
       if (next.length >= MAX_IMAGES) {
-        Alert.alert("จำกัดรูป", `แนบได้สูงสุด ${MAX_IMAGES} รูปต่อ 1 ข้อความ`);
+        Alert.alert(t("chat.image_limit_title"), t("chat.image_limit_text", { count: MAX_IMAGES }));
       }
       return next;
     });
-  }, [disabled, images.length]);
+  }, [disabled, images.length, isSending, t]);
 
   const removeImage = useCallback((uri: string) => {
+    if (isSending) return;
     setImages((prev) => prev.filter((x) => x.uri !== uri));
-  }, []);
+  }, [isSending]);
 
   // ===== reply preview =====
   const replySenderLabel = useMemo(() => {
     if (!replyTarget) return "";
     const isMine = replyTarget?.sender?.id === me?.id;
-    return isMine ? "You" : replyTarget?.sender?.name || "User";
-  }, [replyTarget, me?.id]);
+    return isMine ? t("chat.you") : replyTarget?.sender?.name || t("chat.user");
+  }, [replyTarget, me?.id, t]);
 
   const replyText = useMemo(() => {
     if (!replyTarget) return "";
@@ -178,7 +190,26 @@ export default function SendMessageSection({
   }, [replyTarget]);
 
   const handleSend = useCallback(async () => {
-    if (!canSend) return;
+    if (!canSend || isSending) return;
+
+    const imageFingerprint = images
+      .map((img) => `${img.uri}|${img.name ?? ""}|${img.fileSize ?? ""}`)
+      .join(",");
+
+    const payloadFingerprint = [
+      sel ?? "",
+      trimmed,
+      toUserIds.join(","),
+      replyTarget?.id ?? "",
+      imageFingerprint,
+    ].join("::");
+
+    if (inFlightPayloadsRef.current.has(payloadFingerprint)) return;
+
+    const hasMedia = images.length > 0;
+    inFlightPayloadsRef.current.add(payloadFingerprint);
+    setIsSendingText(!hasMedia);
+    setIsSendingMedia(hasMedia);
 
     try {
       await onSend({
@@ -187,6 +218,7 @@ export default function SendMessageSection({
         to_user_ids: toUserIds,
         images,
         reply_to_id: replyTarget?.id ?? null,
+        client_message_id: createClientMessageId(),
       });
 
       setText("");
@@ -195,19 +227,23 @@ export default function SendMessageSection({
       setShowEmoji(false);
       Keyboard.dismiss();
     } catch (e: any) {
-      Alert.alert("ส่งไม่สำเร็จ", e?.message || "unknown error");
+      Alert.alert(t("chat.send_failed"), e?.message || t("common.unknown_error"));
+    } finally {
+      inFlightPayloadsRef.current.delete(payloadFingerprint);
+      setIsSendingText(false);
+      setIsSendingMedia(false);
     }
-  }, [canSend, onSend, sel, trimmed, toUserIds, images, replyTarget?.id, setText, setReplyTarget]);
+  }, [canSend, isSending, onSend, sel, trimmed, toUserIds, images, replyTarget?.id, setText, setReplyTarget, t]);
 
   const onPressSend = useCallback(() => {
     handleSend();
   }, [handleSend]);
 
   const onToggleEmoji = useCallback(() => {
-    if (disabled) return;
+    if (disabled || isSending) return;
     Keyboard.dismiss();
     setShowEmoji((s) => !s);
-  }, [disabled]);
+  }, [disabled, isSending]);
 
   return (
     <View style={styles.wrap}>
@@ -215,7 +251,7 @@ export default function SendMessageSection({
       {!!replyTarget && (
         <View style={styles.replyBox}>
           <View style={{ flex: 1, minWidth: 0 }}>
-            <Text style={styles.replyTitle}>Replying to {replySenderLabel}</Text>
+            <Text style={styles.replyTitle}>{t("chat.replying_to")} {replySenderLabel}</Text>
 
             {!!replyText && (
               <Text style={styles.replyText} numberOfLines={2}>
@@ -281,10 +317,10 @@ export default function SendMessageSection({
       <View style={styles.bar}>
         <Pressable
           onPress={pickImages}
-          disabled={disabled || images.length >= MAX_IMAGES}
+          disabled={disabled || isSending || images.length >= MAX_IMAGES}
           style={({ pressed }) => [
             styles.iconBtn,
-            (disabled || images.length >= MAX_IMAGES) && { opacity: 0.35 },
+            (disabled || isSending || images.length >= MAX_IMAGES) && { opacity: 0.35 },
             pressed && { opacity: 0.8 },
           ]}
         >
@@ -293,8 +329,8 @@ export default function SendMessageSection({
 
         <Pressable
           onPress={onToggleEmoji}
-          disabled={disabled}
-          style={({ pressed }) => [styles.iconBtn, disabled && { opacity: 0.35 }, pressed && { opacity: 0.8 }]}
+          disabled={disabled || isSending}
+          style={({ pressed }) => [styles.iconBtn, (disabled || isSending) && { opacity: 0.35 }, pressed && { opacity: 0.8 }]}
         >
           <Ionicons name="happy-outline" size={20} color="#e5e7eb" />
         </Pressable>
@@ -303,8 +339,8 @@ export default function SendMessageSection({
           ref={inputRef}
           value={text}
           onChangeText={setText}
-          editable={!disabled}
-          placeholder="Type a message..."
+          editable={!disabled && !isSending}
+          placeholder={t("chat.type_message")}
           placeholderTextColor="#6b7280"
           style={styles.input}
           multiline
@@ -313,14 +349,18 @@ export default function SendMessageSection({
 
         <Pressable
           onPress={onPressSend}
-          disabled={!canSend}
+          disabled={!canSend || isSending}
           style={({ pressed }) => [
             styles.sendBtn,
-            !canSend && { opacity: 0.45 },
-            pressed && canSend && { opacity: 0.88 },
+            (!canSend || isSending) && { opacity: 0.45 },
+            pressed && canSend && !isSending && { opacity: 0.88 },
           ]}
         >
-          <Ionicons name="send" size={18} color="#0b0b0f" />
+          {isSending ? (
+            <ActivityIndicator size="small" color="#0b0b0f" />
+          ) : (
+            <Ionicons name="send" size={18} color="#0b0b0f" />
+          )}
         </Pressable>
       </View>
 

@@ -17,6 +17,7 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Linking,
   Platform,
   ToastAndroid,
 } from "react-native";
@@ -29,6 +30,8 @@ import type { RootStackParamList } from "../navigation/types";
 import { client } from "../apollo/client";
 import SendMessageSection, { UploadImage } from "../components/SendMessageSection";
 import { ENV } from "../config/env";
+import { refreshUnreadChatBadge } from "../notifications/badge";
+import { useI18n } from "../i18n";
 
 // ✅ Zustand global unread/currentChat sync (RN)
 import { useGlobalChatStore } from "../store/globalChatStore";
@@ -142,6 +145,15 @@ const Q_MSGS = gql`
   ${MESSAGE_FIELDS}
 `;
 
+const Q_MY_CHAT_SETTINGS = gql`
+  query ($chat_id: ID!) {
+    myChatSettings(chat_id: $chat_id) {
+      is_muted
+      notifications_enabled
+    }
+  }
+`;
+
 const MUT_SEND = gql`
   mutation (
     $chat_id: ID!
@@ -149,6 +161,7 @@ const MUT_SEND = gql`
     $to_user_ids: [ID!]!
     $images: [Upload!]
     $reply_to_id: ID
+    $client_message_id: String
   ) {
     sendMessage(
       chat_id: $chat_id
@@ -156,6 +169,7 @@ const MUT_SEND = gql`
       to_user_ids: $to_user_ids
       images: $images
       reply_to_id: $reply_to_id
+      client_message_id: $client_message_id
     ) {
       ...MessageFields
     }
@@ -185,6 +199,23 @@ const MUT_CREATE_CHAT = gql`
   mutation ($name: String, $isGroup: Boolean!, $memberIds: [ID!]!) {
     createChat(name: $name, isGroup: $isGroup, memberIds: $memberIds) {
       id
+    }
+  }
+`;
+
+const MUT_UPDATE_MY_CHAT_SETTINGS = gql`
+  mutation (
+    $chat_id: ID!
+    $is_muted: Boolean
+    $notifications_enabled: Boolean
+  ) {
+    updateMyChatSettings(
+      chat_id: $chat_id
+      is_muted: $is_muted
+      notifications_enabled: $notifications_enabled
+    ) {
+      is_muted
+      notifications_enabled
     }
   }
 `;
@@ -240,10 +271,21 @@ type Message = {
   readersCount?: number | null;
 };
 
+type ChatSettings = {
+  is_muted: boolean;
+  notifications_enabled: boolean;
+};
+
+type MessageTextPart =
+  | { type: "text"; value: string }
+  | { type: "link"; value: string; href: string };
+
 /** =========================
  * Helpers
  * ========================= */
 const PAGE_SIZE = 40;
+const URL_RE = /(?:https?:\/\/|www\.)[^\s]+/gi;
+const TRAILING_PUNCT_RE = /[),.!?;:\]\}]+$/;
 
 function getInitial(name?: string | null) {
   if (!name) return "?";
@@ -270,10 +312,80 @@ function getImgSrc(img: any) {
   return img?.url || "";
 }
 
+function normalizeExternalUrl(url?: string | null) {
+  if (!url) return "";
+  const trimmed = String(url)
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .trim();
+  if (!trimmed) return "";
+
+  const unwrapped = trimmed
+    .replace(/^[\(<\[\{"'`]+/, "")
+    .replace(/[\)>\]\}"'`]+$/, "");
+
+  const clean = unwrapped.replace(TRAILING_PUNCT_RE, "");
+  if (!clean) return "";
+
+  if (/^https?:\/\//i.test(clean)) return clean;
+  if (/^www\./i.test(clean)) return `https://${clean}`;
+
+  return "";
+}
+
+function displayUrlForWrap(url: string) {
+  return url.replace(/([/?&=#._-])/g, "$1\u200B");
+}
+
+function parseMessageTextParts(text?: string | null): MessageTextPart[] {
+  const raw = String(text ?? "");
+  if (!raw.trim()) return [];
+
+  const parts: MessageTextPart[] = [];
+  let lastIndex = 0;
+
+  for (const match of raw.matchAll(URL_RE)) {
+    const start = match.index ?? -1;
+    const full = match[0] ?? "";
+    if (start < 0 || !full) continue;
+
+    if (start > lastIndex) {
+      parts.push({ type: "text", value: raw.slice(lastIndex, start) });
+    }
+
+    let linkText = full;
+    let trailing = "";
+    const punct = full.match(TRAILING_PUNCT_RE)?.[0] ?? "";
+    if (punct && punct.length < full.length) {
+      linkText = full.slice(0, full.length - punct.length);
+      trailing = punct;
+    }
+
+    const href = normalizeExternalUrl(linkText);
+    if (href) {
+      parts.push({ type: "link", value: linkText, href });
+    } else {
+      parts.push({ type: "text", value: full });
+    }
+
+    if (trailing) {
+      parts.push({ type: "text", value: trailing });
+    }
+
+    lastIndex = start + full.length;
+  }
+
+  if (lastIndex < raw.length) {
+    parts.push({ type: "text", value: raw.slice(lastIndex) });
+  }
+
+  return parts;
+}
+
 /** =========================
  * Screen
  * ========================= */
 export default function ChatScreen({ navigation, route }: Props) {
+  const { t } = useI18n();
   const insets = useSafeAreaInsets();
   const composerBottomPad = Platform.OS === "android" ? Math.max(insets.bottom, 8) : 0;
 
@@ -285,9 +397,17 @@ export default function ChatScreen({ navigation, route }: Props) {
   const toParam = String(toParamRaw ?? "").trim() || null;
   const handledToRef = useRef<string | null>(null);
 
+  const chatIdParamRaw = (route.params as any)?.chatId;
+  const chatIdParam = String(chatIdParamRaw ?? "").trim() || null;
+  const handledChatIdRef = useRef<string | null>(null);
+
   useEffect(() => {
     handledToRef.current = null;
   }, [toParam]);
+
+  useEffect(() => {
+    handledChatIdRef.current = null;
+  }, [chatIdParam]);
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [loadingChats, setLoadingChats] = useState(false);
@@ -300,6 +420,12 @@ export default function ChatScreen({ navigation, route }: Props) {
   const [replyTarget, setReplyTarget] = useState<any | null>(null);
 
   const [chatsModalOpen, setChatsModalOpen] = useState(false);
+  const [chatSettings, setChatSettings] = useState<ChatSettings>({
+    is_muted: false,
+    notifications_enabled: true,
+  });
+  const [chatSettingsBusy, setChatSettingsBusy] = useState(false);
+  const [isMenuVisible, setIsMenuVisible] = useState(false);
 
   const subAddedRef = useRef<any>(null);
   const subDeletedRef = useRef<any>(null);
@@ -328,10 +454,10 @@ export default function ChatScreen({ navigation, route }: Props) {
   }, [selectedChat, meId]);
 
   const title = useMemo(() => {
-    if (!selectedChat) return "Chat";
-    if (selectedChat.is_group) return selectedChat.name?.trim() || "Group Chat";
-    return partner?.name || "Chat";
-  }, [selectedChat, partner]);
+    if (!selectedChat) return t("app.chat_title");
+    if (selectedChat.is_group) return selectedChat.name?.trim() || t("chat.group_chat");
+    return partner?.name || t("app.chat_title");
+  }, [selectedChat, partner, t]);
 
   const subtitle = useMemo(() => {
     if (!selectedChat) return "";
@@ -343,8 +469,8 @@ export default function ChatScreen({ navigation, route }: Props) {
         .filter(Boolean)
         .join(", ");
     }
-    return partner?.id ? "Tap to view profile" : "";
-  }, [selectedChat, meId, partner?.id]);
+    return partner?.id ? t("chat.tap_to_view_profile") : "";
+  }, [selectedChat, meId, partner?.id, t]);
 
   /** ===== load me + chats ===== */
   const loadMeAndChats = useCallback(async () => {
@@ -371,6 +497,13 @@ export default function ChatScreen({ navigation, route }: Props) {
       });
 
       setChats(sorted);
+
+      // Open a specific conversation (deep link / push) by chat id
+      if (chatIdParam && handledChatIdRef.current !== chatIdParam) {
+        handledChatIdRef.current = chatIdParam;
+        openChatById(chatIdParam);
+        return;
+      }
 
       const fallbackToUserId = "support";
 
@@ -403,7 +536,7 @@ export default function ChatScreen({ navigation, route }: Props) {
           });
           const newId = createRes.data?.createChat?.id;
           if (!newId) {
-            Alert.alert("Chat", "Cannot create chat");
+            Alert.alert(t("app.chat_title"), t("chat.cannot_create_chat"));
             return;
           }
 
@@ -422,7 +555,7 @@ export default function ChatScreen({ navigation, route }: Props) {
 
           openChatById(newId);
         } catch (e: any) {
-          Alert.alert("Chat", e?.message || "Cannot create chat");
+          Alert.alert(t("app.chat_title"), e?.message || t("chat.cannot_create_chat"));
         }
       };
 
@@ -434,12 +567,12 @@ export default function ChatScreen({ navigation, route }: Props) {
         await openToChat(fallbackToUserId);
       }
     } catch (e: any) {
-      Alert.alert("Load error", e?.message || "unknown");
+      Alert.alert(t("chat.load_error"), e?.message || t("common.unknown_error"));
     } finally {
       setLoadingChats(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sel, toParam]);
+  }, [sel, toParam, chatIdParam]);
 
   useEffect(() => {
     loadMeAndChats();
@@ -489,17 +622,37 @@ export default function ChatScreen({ navigation, route }: Props) {
               mutation: MUT_MARK_UPTO,
               variables: { chat_id: chatId, cursor: last.created_at },
             })
+            .then(() => refreshUnreadChatBadge())
             .catch(() => {});
         }
       } catch (e: any) {
-        Alert.alert("Load messages error", e?.message || "unknown");
+        Alert.alert(t("chat.load_messages_error"), e?.message || t("common.unknown_error"));
       } finally {
         if (mode === "replace") setLoadingMsgs(false);
         else setLoadingMore(false);
       }
     },
-    []
+    [t]
   );
+
+  const loadChatSettings = useCallback(async (chatId: string) => {
+    if (!chatId) return;
+    try {
+      const res = await client.query<{ myChatSettings: ChatSettings }>({
+        query: Q_MY_CHAT_SETTINGS,
+        variables: { chat_id: chatId },
+        fetchPolicy: "network-only",
+      });
+
+      const got = res.data?.myChatSettings;
+      setChatSettings({
+        is_muted: !!got?.is_muted,
+        notifications_enabled: got?.notifications_enabled !== false,
+      });
+    } catch {
+      setChatSettings({ is_muted: false, notifications_enabled: true });
+    }
+  }, []);
 
   /** ===== open chat ===== */
   const openChatById = useCallback(
@@ -530,6 +683,7 @@ export default function ChatScreen({ navigation, route }: Props) {
     setCurrentChat(sel);
     clearUnread(sel);
 
+    loadChatSettings(sel);
     loadMessages(sel, "replace", 0);
 
     try {
@@ -615,7 +769,7 @@ export default function ChatScreen({ navigation, route }: Props) {
         subDeletedRef.current?.unsubscribe?.();
       } catch {}
     };
-  }, [sel, loadMessages, setCurrentChat, clearUnread]);
+  }, [sel, loadMessages, loadChatSettings, setCurrentChat, clearUnread]);
 
   /** ===== load older (pagination) ===== */
   const loadOlder = useCallback(async () => {
@@ -635,6 +789,7 @@ export default function ChatScreen({ navigation, route }: Props) {
       to_user_ids: string[];
       images?: UploadImage[];
       reply_to_id?: string | null;
+      client_message_id?: string | null;
     }) => {
       const uploadFiles = (args.images ?? []).map((f) => ({
         uri: f.uri,
@@ -650,6 +805,7 @@ export default function ChatScreen({ navigation, route }: Props) {
           to_user_ids: args.to_user_ids,
           images: uploadFiles.length ? uploadFiles : null,
           reply_to_id: args.reply_to_id ?? null,
+          client_message_id: args.client_message_id ?? null,
         },
       });
 
@@ -679,10 +835,10 @@ export default function ChatScreen({ navigation, route }: Props) {
 
   /** ===== delete message ===== */
   const onDeleteMessage = useCallback(async (m: Message) => {
-    Alert.alert("Delete message?", "ต้องการลบข้อความนี้ใช่ไหม", [
-      { text: "Cancel", style: "cancel" },
+    Alert.alert(t("chat.delete_message_confirm_title"), t("chat.delete_message_confirm_text"), [
+      { text: t("common.cancel"), style: "cancel" },
       {
-        text: "Delete",
+        text: t("common.delete"),
         style: "destructive",
         onPress: async () => {
           try {
@@ -692,15 +848,139 @@ export default function ChatScreen({ navigation, route }: Props) {
             });
             setMessages((prev) => prev.filter((x) => x.id !== m.id));
           } catch (e: any) {
-            Alert.alert("Delete failed", e?.message || "unknown");
+            Alert.alert(t("chat.delete_failed"), e?.message || t("common.unknown_error"));
           }
         },
       },
     ]);
-  }, []);
+  }, [t]);
 
   /** ===== image preview ===== */
   const [previewUri, setPreviewUri] = useState<string | null>(null);
+
+  const handleRefreshChat = useCallback(async () => {
+    if (!sel) {
+      await loadMeAndChats();
+      return;
+    }
+    await Promise.all([loadMessages(sel, "replace", 0), loadMeAndChats()]);
+  }, [sel, loadMeAndChats, loadMessages]);
+
+  const handleToggleMuteChat = useCallback(async () => {
+    if (!sel || chatSettingsBusy) return;
+    setChatSettingsBusy(true);
+    try {
+      const res = await client.mutate<{ updateMyChatSettings: ChatSettings }>({
+        mutation: MUT_UPDATE_MY_CHAT_SETTINGS,
+        variables: {
+          chat_id: sel,
+          is_muted: !chatSettings.is_muted,
+          notifications_enabled: null,
+        },
+      });
+      const next = res.data?.updateMyChatSettings;
+      if (next) {
+        setChatSettings({
+          is_muted: !!next.is_muted,
+          notifications_enabled: next.notifications_enabled !== false,
+        });
+      }
+    } catch (e: any) {
+      Alert.alert(t("app.chat_title"), e?.message || t("chat.mute"));
+      await loadChatSettings(sel);
+    } finally {
+      setChatSettingsBusy(false);
+    }
+  }, [sel, chatSettingsBusy, chatSettings.is_muted, loadChatSettings, t]);
+
+  const handleToggleChatNotifications = useCallback(async () => {
+    if (!sel || chatSettingsBusy) return;
+    setChatSettingsBusy(true);
+    try {
+      const res = await client.mutate<{ updateMyChatSettings: ChatSettings }>({
+        mutation: MUT_UPDATE_MY_CHAT_SETTINGS,
+        variables: {
+          chat_id: sel,
+          is_muted: null,
+          notifications_enabled: !chatSettings.notifications_enabled,
+        },
+      });
+      const next = res.data?.updateMyChatSettings;
+      if (next) {
+        setChatSettings({
+          is_muted: !!next.is_muted,
+          notifications_enabled: next.notifications_enabled !== false,
+        });
+      }
+    } catch (e: any) {
+      Alert.alert(t("app.chat_title"), e?.message || t("chat.turn_off_notifications"));
+      await loadChatSettings(sel);
+    } finally {
+      setChatSettingsBusy(false);
+    }
+  }, [sel, chatSettingsBusy, chatSettings.notifications_enabled, loadChatSettings, t]);
+
+  const handleOpenChatMenu = useCallback(() => {
+    setIsMenuVisible(true);
+  }, []);
+
+  const handleCloseChatMenu = useCallback(() => {
+    setIsMenuVisible(false);
+  }, []);
+
+  const runMenuAction = useCallback((action: () => Promise<void> | void) => {
+    setIsMenuVisible(false);
+    setTimeout(() => {
+      void action();
+    }, 10);
+  }, []);
+
+  const handleOpenUrl = useCallback(
+    async (rawUrl: string) => {
+      const url = normalizeExternalUrl(rawUrl);
+      if (!url) {
+        Alert.alert(t("common.error"), "Invalid link.");
+        return;
+      }
+
+      try {
+        const candidates = [url];
+        const encoded = encodeURI(url);
+        if (encoded !== url) candidates.push(encoded);
+
+        // For standard web links, try opening directly first.
+        if (/^https?:\/\//i.test(url)) {
+          let opened = false;
+          for (const candidate of candidates) {
+            try {
+              await Linking.openURL(candidate);
+              opened = true;
+              break;
+            } catch {
+              // try next candidate
+            }
+          }
+
+          if (!opened) {
+            Alert.alert(t("common.error"), "Unable to open this link.");
+          }
+          return;
+        }
+
+        const ok = await Linking.canOpenURL(url);
+        if (!ok) {
+          Alert.alert(t("common.error"), "Unable to open this link.");
+          return;
+        }
+
+        await Linking.openURL(url);
+      } catch (e: any) {
+        console.warn("[Chat] open url failed", e);
+        Alert.alert(t("common.error"), "Unable to open this link.");
+      }
+    },
+    [t]
+  );
 
   /** ===== Header ===== */
   useLayoutEffect(() => {
@@ -734,17 +1014,26 @@ export default function ChatScreen({ navigation, route }: Props) {
             <Ionicons name="chatbubbles-outline" size={20} color="#fff" />
           </Pressable>
 
-          <Pressable onPress={loadMeAndChats} style={styles.headerBtn}>
-            {loadingChats ? (
+          <Pressable onPress={handleOpenChatMenu} style={styles.headerBtn}>
+            {loadingChats || chatSettingsBusy ? (
               <ActivityIndicator />
             ) : (
-              <Ionicons name="refresh-outline" size={20} color="#fff" />
+              <Ionicons name="ellipsis-vertical" size={18} color="#fff" />
             )}
           </Pressable>
         </View>
       ),
     });
-  }, [navigation, title, subtitle, selectedChat, partner?.id, loadMeAndChats, loadingChats]);
+  }, [
+    navigation,
+    title,
+    subtitle,
+    selectedChat,
+    partner?.id,
+    loadingChats,
+    chatSettingsBusy,
+    handleOpenChatMenu,
+  ]);
 
   /** ===== render chat item ===== */
   const renderChatItem = useCallback(
@@ -755,7 +1044,7 @@ export default function ChatScreen({ navigation, route }: Props) {
         ? (item.members ?? []).find((m) => m.id !== meId)
         : null;
 
-      const name = item.is_group ? item.name?.trim() || "Group" : partnerUser?.name || "User";
+      const name = item.is_group ? item.name?.trim() || t("chat.group_chat") : partnerUser?.name || t("chat.user");
       const initial = getInitial(name);
 
       const last = item.last_message;
@@ -767,8 +1056,8 @@ export default function ChatScreen({ navigation, route }: Props) {
             : String(last.text).trim()
           : lastImages.length
           ? lastImages.length === 1
-            ? "📷 Photo"
-            : `📷 ${lastImages.length} photos`
+            ? `📷 ${t("chat.photo")}`
+            : `📷 ${lastImages.length} ${t("chat.photos")}`
           : "";
 
       return (
@@ -802,7 +1091,7 @@ export default function ChatScreen({ navigation, route }: Props) {
         </Pressable>
       );
     },
-    [sel, meId, openChatById]
+    [sel, meId, openChatById, t]
   );
 
   /** ===== render message item ===== */
@@ -824,9 +1113,9 @@ export default function ChatScreen({ navigation, route }: Props) {
         try {
           Clipboard.setString(text);
           if (Platform.OS === "android") {
-            ToastAndroid.show("Copied", ToastAndroid.SHORT);
+            ToastAndroid.show(t("chat.copied"), ToastAndroid.SHORT);
           } else {
-            Alert.alert("Copied");
+            Alert.alert(t("chat.copied"));
           }
         } catch (e) {
           console.warn("[Chat] copy failed", e);
@@ -835,6 +1124,7 @@ export default function ChatScreen({ navigation, route }: Props) {
 
       const bubbleStyle = isMine ? styles.bubbleMine : styles.bubbleOther;
       const bubbleTextStyle = isMine ? styles.textMine : styles.textOther;
+      const textParts = parseMessageTextParts(item.text);
 
       return (
         <View style={[styles.msgRow, { justifyContent: isMine ? "flex-end" : "flex-start" }]}>
@@ -854,7 +1144,7 @@ export default function ChatScreen({ navigation, route }: Props) {
 
             {item.reply_to ? (
               <Pressable
-                onPress={() => Alert.alert("Reply", "ข้อความนี้เป็นการตอบกลับ")}
+                onPress={() => Alert.alert(t("chat.reply"), t("chat.reply_notice"))}
                 style={[
                   styles.replyPreview,
                   isMine ? styles.replyMine : styles.replyOther,
@@ -868,8 +1158,8 @@ export default function ChatScreen({ navigation, route }: Props) {
                   numberOfLines={1}
                 >
                   {item.reply_to?.sender?.id === meId
-                    ? "You"
-                    : item.reply_to?.sender?.name || "User"}
+                    ? t("chat.you")
+                    : item.reply_to?.sender?.name || t("chat.user")}
                 </Text>
 
                 {item.reply_to?.text ? (
@@ -923,7 +1213,28 @@ export default function ChatScreen({ navigation, route }: Props) {
                 delayLongPress={250}
               >
                 <View style={[styles.msgBubble, bubbleStyle]}>
-                  <Text style={[styles.msgText, bubbleTextStyle]}>{item.text}</Text>
+                  <Text style={[styles.msgText, bubbleTextStyle]}>
+                    {textParts.map((part, idx) => {
+                      if (part.type === "link") {
+                        return (
+                          <Text
+                            key={`${item.id}-link-${idx}`}
+                            style={[styles.msgLink, isMine ? styles.msgLinkMine : styles.msgLinkOther]}
+                            onPress={() => {
+                              void handleOpenUrl(part.href);
+                            }}
+                            suppressHighlighting
+                          >
+                            {displayUrlForWrap(part.value)}
+                          </Text>
+                        );
+                      }
+
+                      return (
+                        <Text key={`${item.id}-txt-${idx}`}>{part.value}</Text>
+                      );
+                    })}
+                  </Text>
                 </View>
               </Pressable>
             ) : null}
@@ -945,7 +1256,7 @@ export default function ChatScreen({ navigation, route }: Props) {
         </View>
       );
     },
-    [meId, navigation, onDeleteMessage]
+    [meId, navigation, onDeleteMessage, t, handleOpenUrl]
   );
 
   const invertedMessages = useMemo(() => [...messages].reverse(), [messages]);
@@ -955,12 +1266,12 @@ export default function ChatScreen({ navigation, route }: Props) {
       <View style={styles.body}>
         {!sel ? (
           <View style={styles.center}>
-            <Text style={{ color: "#9ca3af" }}>Select a chat</Text>
+            <Text style={{ color: "#9ca3af" }}>{t("chat.select_chat")}</Text>
           </View>
         ) : loadingMsgs ? (
           <View style={styles.center}>
             <ActivityIndicator />
-            <Text style={{ color: "#9ca3af", marginTop: 8 }}>Loading messages…</Text>
+            <Text style={{ color: "#9ca3af", marginTop: 8 }}>{t("chat.loading_messages")}</Text>
           </View>
         ) : (
           <>
@@ -977,7 +1288,7 @@ export default function ChatScreen({ navigation, route }: Props) {
                   <View style={{ paddingVertical: 10, alignItems: "center" }}>
                     <ActivityIndicator />
                     <Text style={{ color: "#9ca3af", marginTop: 6, fontSize: 12 }}>
-                      Loading older…
+                      {t("chat.loading_older")}
                     </Text>
                   </View>
                 ) : null
@@ -1008,7 +1319,7 @@ export default function ChatScreen({ navigation, route }: Props) {
       >
         <View style={styles.modalWrap}>
           <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Chats</Text>
+            <Text style={styles.modalTitle}>{t("chat.chats")}</Text>
             <Pressable onPress={() => setChatsModalOpen(false)} hitSlop={10}>
               <Ionicons name="close" size={22} color="#fff" />
             </Pressable>
@@ -1017,7 +1328,7 @@ export default function ChatScreen({ navigation, route }: Props) {
           {loadingChats ? (
             <View style={styles.center}>
               <ActivityIndicator />
-              <Text style={{ color: "#9ca3af", marginTop: 8 }}>Loading chats…</Text>
+              <Text style={{ color: "#9ca3af", marginTop: 8 }}>{t("chat.loading_chats")}</Text>
             </View>
           ) : (
             <FlatList
@@ -1027,12 +1338,76 @@ export default function ChatScreen({ navigation, route }: Props) {
               renderItem={renderChatItem}
               ListEmptyComponent={
                 <View style={styles.center}>
-                  <Text style={{ color: "#9ca3af" }}>No chats</Text>
+                  <Text style={{ color: "#9ca3af" }}>{t("chat.no_chats")}</Text>
                 </View>
               }
             />
           )}
         </View>
+      </Modal>
+
+      {/* ===== Chat Action Sheet (LINE style) ===== */}
+      <Modal
+        visible={isMenuVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={handleCloseChatMenu}
+      >
+        <Pressable style={styles.actionSheetOverlay} onPress={handleCloseChatMenu}>
+          <Pressable style={styles.actionSheetContainer} onPress={() => {}}>
+            <Text style={styles.actionSheetTitle}>{t("app.chat_title")}</Text>
+
+            <Pressable
+              android_ripple={{ color: "rgba(255,255,255,0.10)" }}
+              style={({ pressed }) => [
+                styles.actionItem,
+                pressed && styles.actionItemPressed,
+              ]}
+              onPress={() => runMenuAction(handleToggleChatNotifications)}
+            >
+              <Ionicons
+                name={chatSettings.notifications_enabled ? "notifications-off-outline" : "notifications-outline"}
+                size={18}
+                color="#f3f4f6"
+              />
+              <Text style={styles.actionItemText}>
+                {chatSettings.notifications_enabled
+                  ? t("chat.turn_off_notifications")
+                  : t("chat.turn_on_notifications")}
+              </Text>
+            </Pressable>
+
+            <Pressable
+              android_ripple={{ color: "rgba(255,255,255,0.10)" }}
+              style={({ pressed }) => [
+                styles.actionItem,
+                pressed && styles.actionItemPressed,
+              ]}
+              onPress={() => runMenuAction(handleToggleMuteChat)}
+            >
+              <Ionicons
+                name={chatSettings.is_muted ? "volume-high-outline" : "volume-mute-outline"}
+                size={18}
+                color="#f3f4f6"
+              />
+              <Text style={styles.actionItemText}>
+                {chatSettings.is_muted ? t("chat.unmute") : t("chat.mute")}
+              </Text>
+            </Pressable>
+
+            <Pressable
+              android_ripple={{ color: "rgba(255,255,255,0.10)" }}
+              style={({ pressed }) => [
+                styles.actionItem,
+                pressed && styles.actionItemPressed,
+              ]}
+              onPress={() => runMenuAction(handleRefreshChat)}
+            >
+              <Ionicons name="refresh-outline" size={18} color="#f3f4f6" />
+              <Text style={styles.actionItemText}>{t("chat.refresh")}</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
       </Modal>
 
       {/* ===== Image Preview ===== */}
@@ -1100,6 +1475,50 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   modalTitle: { color: "#fff", fontSize: 16, fontWeight: "900" },
+
+  actionSheetOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.4)",
+    justifyContent: "flex-end",
+  },
+  actionSheetContainer: {
+    backgroundColor: "#1C1C1E",
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 18,
+  },
+  actionSheetTitle: {
+    color: "#fff",
+    fontSize: 17,
+    fontWeight: "900",
+    textAlign: "left",
+    marginBottom: 10,
+    paddingHorizontal: 4,
+  },
+  actionItem: {
+    width: "100%",
+    minHeight: 52,
+    backgroundColor: "#2C2C2E",
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    marginBottom: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  actionItemPressed: {
+    opacity: 0.8,
+  },
+  actionItemText: {
+    color: "#f3f4f6",
+    fontSize: 15,
+    fontWeight: "700",
+    textAlign: "left",
+    flex: 1,
+  },
 
   chatItem: {
     backgroundColor: "#111116",
@@ -1189,6 +1608,16 @@ const styles = StyleSheet.create({
   },
 
   msgText: { fontSize: 14, lineHeight: 18 },
+  msgLink: {
+    textDecorationLine: "underline",
+    textDecorationStyle: "solid",
+  },
+  msgLinkMine: {
+    color: "#dbeafe",
+  },
+  msgLinkOther: {
+    color: "#60a5fa",
+  },
 
   // ✅ text colors
   textMine: { color: "#fff" },

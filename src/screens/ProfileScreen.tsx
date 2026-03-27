@@ -15,6 +15,7 @@ import { NativeStackScreenProps } from "@react-navigation/native-stack";
 
 import { client } from "../apollo/client";
 import type { RootStackParamList } from "../navigation/types";
+import { useI18n } from "../i18n";
 
 import { useAuth } from "../auth/AuthProvider"
 
@@ -114,6 +115,7 @@ type ProfileQueryVars = { id: string };
 type Props = NativeStackScreenProps<RootStackParamList, "Profile">;
 
 export const ProfileScreen: React.FC<Props> = ({ route, navigation }) => {
+  const { t } = useI18n();
   const id = route.params?.id;
 
   const { isLoggedIn, user, logout } = useAuth();
@@ -131,7 +133,7 @@ export const ProfileScreen: React.FC<Props> = ({ route, navigation }) => {
 
   const load = useCallback(async () => {
     if (!id) {
-      setErrorMsg("Missing user id");
+      setErrorMsg(t("profile.missing_user_id"));
       setLoading(false);
       return;
     }
@@ -148,7 +150,7 @@ export const ProfileScreen: React.FC<Props> = ({ route, navigation }) => {
       setU(res.data?.user ?? null);
       setPosts(res.data?.postsByUserId ?? []);
     } catch (e: any) {
-      setErrorMsg(e?.message || "Load failed");
+      setErrorMsg(e?.message || t("profile.load_failed"));
       setU(null);
       setPosts([]);
     } finally {
@@ -162,7 +164,7 @@ export const ProfileScreen: React.FC<Props> = ({ route, navigation }) => {
 
   useLayoutEffect(() => {
     navigation.setOptions({
-      title: "User Profile",
+      title: t("profile.title"),
       headerStyle: { backgroundColor: "#111" },
       headerTintColor: "#fff",
       headerTitleStyle: { fontWeight: "800" },
@@ -184,7 +186,7 @@ export const ProfileScreen: React.FC<Props> = ({ route, navigation }) => {
         );
       },
     });
-  }, [navigation, u?.id, isMe]);
+  }, [navigation, u?.id, isMe, t]);
 
   const onOpenPost = useCallback(
     (p: PostItem) => {
@@ -216,11 +218,11 @@ export const ProfileScreen: React.FC<Props> = ({ route, navigation }) => {
           </View>
 
           <Text style={styles.postMeta} numberOfLines={1}>
-            Phone: {firstTel}
+            {t("profile.phone")}: {firstTel}
           </Text>
 
           <Text style={styles.postMeta2} numberOfLines={1}>
-            Created at: {formatTs(item.created_at)}
+            {t("profile.created_at")}: {formatTs(item.created_at)}
           </Text>
 
           <View style={styles.postChevron}>
@@ -229,14 +231,14 @@ export const ProfileScreen: React.FC<Props> = ({ route, navigation }) => {
         </Pressable>
       );
     },
-    [onOpenPost]
+    [onOpenPost, t]
   );
 
   if (loading) {
     return (
       <View style={styles.center}>
         <ActivityIndicator />
-        <Text style={styles.centerText}>Loading...</Text>
+        <Text style={styles.centerText}>{t("profile.loading")}</Text>
       </View>
     );
   }
@@ -246,7 +248,7 @@ export const ProfileScreen: React.FC<Props> = ({ route, navigation }) => {
       <View style={styles.center}>
         <Text style={[styles.centerText, { color: "#ff453a" }]}>{errorMsg}</Text>
         <Pressable onPress={load} style={styles.retryBtn}>
-          <Text style={styles.retryText}>Retry</Text>
+          <Text style={styles.retryText}>{t("common.retry")}</Text>
         </Pressable>
       </View>
     );
@@ -255,7 +257,7 @@ export const ProfileScreen: React.FC<Props> = ({ route, navigation }) => {
   if (!u) {
     return (
       <View style={styles.center}>
-        <Text style={styles.centerText}>User not found</Text>
+        <Text style={styles.centerText}>{t("profile.user_not_found")}</Text>
       </View>
     );
   }
@@ -303,20 +305,20 @@ export const ProfileScreen: React.FC<Props> = ({ route, navigation }) => {
               style={styles.chatBtn}
             >
               <Ionicons name="chatbubble-ellipses-outline" size={18} color="#111" />
-              <Text style={styles.chatBtnText}>Chat</Text>
+              <Text style={styles.chatBtnText}>{t("profile.chat")}</Text>
             </Pressable>
           )}
         </View>
 
         <View style={styles.profileInfo}>
-          <InfoRow label="Phone" value={u.phone || "-"} />
-          <InfoRow label="Joined" value={formatTs(u.created_at)} />
+          <InfoRow label={t("profile.phone")} value={u.phone || "-"} />
+          <InfoRow label={t("profile.joined")} value={formatTs(u.created_at)} />
         </View>
       </View>
 
       {/* ===== Posts List ===== */}
       <View style={styles.postsHeader}>
-        <Text style={styles.postsTitle}>Posts by this user</Text>
+        <Text style={styles.postsTitle}>{t("profile.posts_by_user")}</Text>
         <Text style={styles.postsCount}>{posts.length}</Text>
       </View>
 
@@ -325,7 +327,7 @@ export const ProfileScreen: React.FC<Props> = ({ route, navigation }) => {
         keyExtractor={(it) => String(it.id)}
         renderItem={renderPostItem}
         contentContainerStyle={posts.length === 0 ? styles.emptyWrap : { paddingBottom: 16 }}
-        ListEmptyComponent={<Text style={styles.emptyText}>No posts</Text>}
+        ListEmptyComponent={<Text style={styles.emptyText}>{t("profile.no_posts")}</Text>}
       />
     </View>
   );

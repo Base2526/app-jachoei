@@ -24,6 +24,7 @@ import { gql } from "@apollo/client";
 import { client } from "../apollo/client";
 import type { RootStackParamList } from "../navigation/types";
 import { ENV } from "../config/env";
+import { useI18n } from "../i18n";
 import {
   POST_FORM_BANKS,
   POST_FORM_PROVINCES,
@@ -87,6 +88,15 @@ export type PostRecord = {
 
   tel_numbers?: Array<{ id?: string | number; tel: string }>;
   seller_accounts?: Array<{ id?: string | number; bank_id: string; bank_name: string; seller_account?: string }>;
+};
+
+type PostQueryData = { post?: any | null };
+type UpsertMutationData = {
+  upsertPost?: {
+    id?: string | number;
+    auto_publish?: boolean;
+    images?: Array<{ id: string | number; url: string }>;
+  } | null;
 };
 
 enum Mode {
@@ -159,6 +169,7 @@ function normalizeImageUrl(url: string): string {
 type Props = NativeStackScreenProps<RootStackParamList, "PostForm">;
 
 export default function PostFormScreen({ route, navigation }: Props) {
+  const { t } = useI18n();
   const id = route.params?.id ? String(route.params.id) : undefined;
   const isEdit = !!id;
 
@@ -276,14 +287,14 @@ export default function PostFormScreen({ route, navigation }: Props) {
     setInitialError(null);
 
     try {
-      const { data } = await client.query({
+      const { data } = await client.query<PostQueryData>({
         query: Q_POST,
         variables: { id },
         fetchPolicy: "network-only",
       });
 
       const p = data?.post;
-      if (!p?.id) throw new Error("ไม่พบโพสต์");
+      if (!p?.id) throw new Error(t("postForm.errors.post_not_found"));
 
       const mapped: PostRecord = {
         id: p.id,
@@ -309,11 +320,11 @@ export default function PostFormScreen({ route, navigation }: Props) {
 
       setInitialData(mapped);
     } catch (e: any) {
-      setInitialError(e?.message || "โหลดข้อมูลสำหรับแก้ไขไม่สำเร็จ");
+      setInitialError(e?.message || t("postForm.errors.load_edit_failed"));
     } finally {
       setInitialLoading(false);
     }
-  }, [id]);
+  }, [id, t]);
 
   useEffect(() => {
     if (isEdit) fetchInitial();
@@ -449,12 +460,11 @@ export default function PostFormScreen({ route, navigation }: Props) {
     const res = await launchImageLibrary({
       mediaType: "photo",
       selectionLimit: 0,
-      quality: 0.85,
     });
 
     if (res.didCancel) return;
     if (res.errorCode) {
-      Alert.alert("Pick image failed", res.errorMessage || res.errorCode);
+      Alert.alert(t("postForm.alerts.pick_image_failed_title"), res.errorMessage || res.errorCode);
       return;
     }
 
@@ -484,14 +494,24 @@ export default function PostFormScreen({ route, navigation }: Props) {
   const onSubmit = useCallback(async () => {
     if (saving) return;
 
-    if (!first_last_name.trim()) return Alert.alert("กรุณากรอก", "ชื่อ-นามสกุล คนขาย");
-    if (!postTitle.trim()) return Alert.alert("กรุณากรอก", "สินค้า/บริการ ที่สั่งซื้อ");
-    if (!transfer_amount || Number(transfer_amount) <= 0) return Alert.alert("กรุณากรอก", "ยอดโอน");
-    if (!transfer_date) return Alert.alert("กรุณาเลือก", "วันโอนเงิน");
-    if (!province_id) return Alert.alert("กรุณาเลือก", "จังหวัด");
+    if (!first_last_name.trim()) {
+      return Alert.alert(t("postForm.alerts.validation_title"), t("postForm.validation.seller_name_required"));
+    }
+    if (!postTitle.trim()) {
+      return Alert.alert(t("postForm.alerts.validation_title"), t("postForm.validation.product_required"));
+    }
+    if (!transfer_amount || Number(transfer_amount) <= 0) {
+      return Alert.alert(t("postForm.alerts.validation_title"), t("postForm.validation.transfer_amount_required"));
+    }
+    if (!transfer_date) {
+      return Alert.alert(t("postForm.alerts.select_title"), t("postForm.validation.transfer_date_required"));
+    }
+    if (!province_id) {
+      return Alert.alert(t("postForm.alerts.select_title"), t("postForm.validation.province_required"));
+    }
     if (!isUuid(province_id)) {
       if (__DEV__) console.log("[PostForm] invalid province_id (expected UUID):", province_id);
-      return Alert.alert("กรุณาเลือก", "จังหวัด");
+      return Alert.alert(t("postForm.alerts.select_title"), t("postForm.validation.province_required"));
     }
 
     try {
@@ -548,23 +568,26 @@ export default function PostFormScreen({ route, navigation }: Props) {
 
       if (uploadFiles.length > 0) variables.images = uploadFiles;
 
-      const { data } = await client.mutate({ mutation: UPSERT, variables });
+      const { data } = await client.mutate<UpsertMutationData>({ mutation: UPSERT, variables });
       const saved = data?.upsertPost;
 
       if (!saved?.id) {
-        Alert.alert("ไม่สำเร็จ", isEdit ? "บันทึกไม่สำเร็จ" : "สร้างรายการไม่สำเร็จ");
+        Alert.alert(
+          t("postForm.alerts.not_success_title"),
+          isEdit ? t("postForm.alerts.save_failed") : t("postForm.alerts.create_failed")
+        );
         return;
       }
 
       Alert.alert(
-        "สำเร็จ",
+        t("common.success"),
         saved.auto_publish
           ? isEdit
-            ? "บันทึกสำเร็จ และระบบจะเผยแพร่อัตโนมัติ"
-            : "สร้างรายการสำเร็จ และระบบจะเผยแพร่อัตโนมัติ"
+            ? t("postForm.alerts.saved_auto")
+            : t("postForm.alerts.created_auto")
           : isEdit
-            ? "บันทึกสำเร็จ"
-            : "สร้างรายการสำเร็จ"
+            ? t("postForm.alerts.saved")
+            : t("postForm.alerts.created")
       );
 
       const savedImgs: ExistingFile[] = (saved.images || []).map((img: any) => ({
@@ -592,7 +615,7 @@ export default function PostFormScreen({ route, navigation }: Props) {
         navigation.replace("PostForm", { id: String(saved.id) });
       }
     } catch (e: any) {
-      Alert.alert("Error", e?.message || "Save failed");
+      Alert.alert(t("common.error"), e?.message || t("postForm.alerts.save_failed"));
     } finally {
       setSaving(false);
     }
@@ -615,11 +638,12 @@ export default function PostFormScreen({ route, navigation }: Props) {
     auto_publish,
     navigation,
     normalizeComparable,
+    t,
   ]);
 
   // ====================== header config + Save button ======================
 
-  const headerTitle = isEdit ? "แก้ไขรายการ" : "สร้างรายการใหม่";
+  const headerTitle = isEdit ? t("postForm.title_edit") : t("postForm.title_create");
   const canSave = dirty && !saving && !initialLoading;
 
   useLayoutEffect(() => {
@@ -640,11 +664,11 @@ export default function PostFormScreen({ route, navigation }: Props) {
             (!canSave || pressed) && { opacity: !canSave ? 0.35 : 0.7 },
           ]}
         >
-          {saving ? <ActivityIndicator /> : <Text style={styles.headerBtnText}>Save</Text>}
+          {saving ? <ActivityIndicator /> : <Text style={styles.headerBtnText}>{t("common.save")}</Text>}
         </Pressable>
       ),
     });
-  }, [navigation, headerTitle, canSave, saving, dirty, initialLoading, onSubmit]);
+  }, [navigation, headerTitle, canSave, saving, dirty, initialLoading, onSubmit, t]);
 
   // ✅ เตือนก่อนออก ถ้า dirty
   useEffect(() => {
@@ -652,21 +676,21 @@ export default function PostFormScreen({ route, navigation }: Props) {
       if (!dirty || saving) return;
       e.preventDefault();
 
-      Alert.alert("ยังไม่ได้บันทึก", "คุณแก้ไขข้อมูลแล้ว ต้องการออกโดยไม่บันทึกไหม?", [
-        { text: "อยู่ต่อ", style: "cancel" },
-        { text: "ออกเลย", style: "destructive", onPress: () => navigation.dispatch(e.data.action) },
+      Alert.alert(t("postForm.before_leave.title"), t("postForm.before_leave.message"), [
+        { text: t("postForm.before_leave.stay"), style: "cancel" },
+        { text: t("postForm.before_leave.leave"), style: "destructive", onPress: () => navigation.dispatch(e.data.action) },
       ]);
     });
 
     return unsub;
-  }, [navigation, dirty, saving]);
+  }, [navigation, dirty, saving, t]);
 
   // ====================== UI ======================
 
   const showTransferDateLabel = useMemo(() => {
-    if (!transfer_date) return "กรุณาเลือกวันโอนเงิน";
+    if (!transfer_date) return t("postForm.fields.transfer_date_placeholder");
     return dayjs(transfer_date).format("DD/MM/YYYY");
-  }, [transfer_date]);
+  }, [transfer_date, t]);
 
   const [showDatePicker, setShowDatePicker] = useState(false);
 
@@ -675,7 +699,7 @@ export default function PostFormScreen({ route, navigation }: Props) {
     return (
       <View style={styles.center}>
         <ActivityIndicator color="#fff" />
-        <Text style={[styles.hint, { marginTop: 10 }]}>กำลังโหลดข้อมูลเพื่อแก้ไข…</Text>
+        <Text style={[styles.hint, { marginTop: 10 }]}>{t("postForm.loading_edit")}</Text>
       </View>
     );
   }
@@ -685,7 +709,7 @@ export default function PostFormScreen({ route, navigation }: Props) {
       <View style={styles.center}>
         <Text style={styles.errorText}>{initialError}</Text>
         <Pressable style={[styles.outlineBtn, { marginTop: 12, width: 160 }]} onPress={fetchInitial}>
-          <Text style={styles.outlineText}>ลองใหม่</Text>
+          <Text style={styles.outlineText}>{t("common.retry")}</Text>
         </Pressable>
       </View>
     );
@@ -693,21 +717,21 @@ export default function PostFormScreen({ route, navigation }: Props) {
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.container}>
-      <Field label="ชื่อ-นามสกุล คนขาย">
+      <Field label={t("postForm.fields.seller_name")}> 
         <TextInput
           value={first_last_name}
           onChangeText={setFirstLastName}
-          placeholder="กรุณากรอกชื่อ-นามสกุล คนขาย"
+          placeholder={t("postForm.fields.seller_name_placeholder")}
           placeholderTextColor="rgba(255,255,255,0.35)"
           style={styles.input}
         />
       </Field>
 
-      <Field label="เลขบัตรประชาชนคนขาย (13 หลัก) หรือ พาสปอร์ต">
+      <Field label={t("postForm.fields.id_card")}> 
         <TextInput
           value={id_card}
           onChangeText={setIdCard}
-          placeholder="กรุณากรอกเลขบัตรประชาชน หรือ พาสปอร์ต"
+          placeholder={t("postForm.fields.id_card_placeholder")}
           placeholderTextColor="rgba(255,255,255,0.35)"
           style={styles.input}
           maxLength={13}
@@ -715,28 +739,28 @@ export default function PostFormScreen({ route, navigation }: Props) {
         />
       </Field>
 
-      <Field label="สินค้า/บริการ ที่สั่งซื้อ">
+      <Field label={t("postForm.fields.product")}> 
         <TextInput
           value={postTitle}
           onChangeText={setPostTitle}
-          placeholder="กรุณากรอกสินค้า/บริการ ที่สั่งซื้อ"
+          placeholder={t("postForm.fields.product_placeholder")}
           placeholderTextColor="rgba(255,255,255,0.35)"
           style={styles.input}
         />
       </Field>
 
-      <Field label="ยอดโอน">
+      <Field label={t("postForm.fields.transfer_amount")}> 
         <TextInput
           value={transfer_amount}
           onChangeText={setTransferAmount}
-          placeholder="กรุณากรอกยอดโอน"
+          placeholder={t("postForm.fields.transfer_amount_placeholder")}
           placeholderTextColor="rgba(255,255,255,0.35)"
           style={styles.input}
           keyboardType="numeric"
         />
       </Field>
 
-      <Field label="วันโอนเงิน">
+      <Field label={t("postForm.fields.transfer_date")}> 
         <Pressable style={styles.dateBtn} onPress={() => setShowDatePicker(true)}>
           <Text style={styles.dateText}>{showTransferDateLabel}</Text>
         </Pressable>
@@ -755,84 +779,84 @@ export default function PostFormScreen({ route, navigation }: Props) {
 
         {Platform.OS === "ios" && showDatePicker && (
           <Pressable style={styles.smallBtn} onPress={() => setShowDatePicker(false)}>
-            <Text style={styles.smallBtnText}>เสร็จสิ้น</Text>
+            <Text style={styles.smallBtnText}>{t("postForm.done")}</Text>
           </Pressable>
         )}
       </Field>
 
-      <Field label="เว็บ/แพลตฟอร์มที่ประกาศขาย">
+      <Field label={t("postForm.fields.website")}> 
         <TextInput
           value={website}
           onChangeText={setWebsite}
-          placeholder="เช่น Facebook Marketplace, Kaidee, Shopee"
+          placeholder={t("postForm.fields.website_placeholder")}
           placeholderTextColor="rgba(255,255,255,0.35)"
           style={styles.input}
         />
       </Field>
 
-      <Field label="รายละเอียดเพิ่มเติม">
+      <Field label={t("postForm.fields.detail")}> 
         <TextInput
           value={detail}
           onChangeText={setDetail}
-          placeholder="กรุณากรอกรายละเอียดเพิ่มเติม"
+          placeholder={t("postForm.fields.detail_placeholder")}
           placeholderTextColor="rgba(255,255,255,0.35)"
           style={[styles.input, styles.textarea]}
           multiline
         />
       </Field>
 
-      <Section title="เบอร์โทรศัพท์ / LINE / ช่องทางติดต่อ">
-        {telNumbers.map((t, index) =>
-          t.mode === Mode.Deleted ? null : (
-            <View key={t.id} style={styles.box}>
-              <Text style={styles.boxTitle}>ช่องทางติดต่อ {index + 1}</Text>
+      <Section title={t("postForm.sections.contact_channels")}>
+        {telNumbers.map((telItem, index) =>
+          telItem.mode === Mode.Deleted ? null : (
+            <View key={telItem.id} style={styles.box}>
+              <Text style={styles.boxTitle}>{t("postForm.contact_item", { index: index + 1 })}</Text>
               <TextInput
-                value={t.tel}
+                value={telItem.tel}
                 onChangeText={(v) => updateTel(index, v)}
-                placeholder="เช่น 08x-xxx-xxxx หรือ LINE ID"
+                placeholder={t("postForm.fields.contact_placeholder")}
                 placeholderTextColor="rgba(255,255,255,0.35)"
                 style={styles.input}
               />
               <Pressable style={styles.dangerBtn} onPress={() => removeTelNumber(index)}>
-                <Text style={styles.dangerText}>ลบ</Text>
+                <Text style={styles.dangerText}>{t("common.delete")}</Text>
               </Pressable>
             </View>
           )
         )}
 
         <Pressable style={styles.outlineBtn} onPress={addTelNumber}>
-          <Text style={styles.outlineText}>+ เพิ่มช่องทางติดต่อ</Text>
+          <Text style={styles.outlineText}>{t("postForm.actions.add_contact")}</Text>
         </Pressable>
       </Section>
 
-      <Section title="บัญชีคนขาย">
+      <Section title={t("postForm.sections.seller_accounts")}>
         {sellerAccounts.map((s, index) =>
           s.mode === Mode.Deleted ? null : (
             <View key={s.id} style={styles.box}>
-              <Text style={styles.boxTitle}>บัญชีคนขาย {index + 1}</Text>
+              <Text style={styles.boxTitle}>{t("postForm.seller_item", { index: index + 1 })}</Text>
 
-              <Field label="ชื่อบัญชีคนขาย">
+              <Field label={t("postForm.fields.seller_account_name")}>
                 <TextInput
                   value={s.bank_name}
                   onChangeText={(v) => updateSeller(index, { bank_name: v })}
-                  placeholder="ชื่อบัญชีตามหน้า Bank"
+                  placeholder={t("postForm.fields.seller_account_name_placeholder")}
                   placeholderTextColor="rgba(255,255,255,0.35)"
                   style={styles.input}
                 />
               </Field>
 
-              <Field label="เลขที่บัญชีคนขาย">
+              <Field label={t("postForm.fields.seller_account_number")}>
                 <TextInput
                   value={s.seller_account}
                   onChangeText={(v) => updateSeller(index, { seller_account: v })}
-                  placeholder="กรอกเลขบัญชี"
+                  placeholder={t("postForm.fields.seller_account_number_placeholder")}
                   placeholderTextColor="rgba(255,255,255,0.35)"
                   style={styles.input}
                   keyboardType="number-pad"
                 />
               </Field>
 
-              <Field label="เลือกธนาคาร">
+              <Field label={t("postForm.fields.select_bank")}>
                 <View style={styles.pickerWrap}>
                   <Picker
                     selectedValue={s.bank_id}
@@ -840,7 +864,7 @@ export default function PostFormScreen({ route, navigation }: Props) {
                     dropdownIconColor="#fff"
                     style={styles.picker}
                   >
-                    <Picker.Item label="กรุณาเลือกธนาคาร" value="" />
+                    <Picker.Item label={t("postForm.fields.select_bank_placeholder")} value="" />
                     {banks.map((b) => (
                       <Picker.Item key={b.id} label={b.name_th} value={b.id} />
                     ))}
@@ -849,20 +873,20 @@ export default function PostFormScreen({ route, navigation }: Props) {
               </Field>
 
               <Pressable style={styles.dangerBtn} onPress={() => removeSellerAccount(index)}>
-                <Text style={styles.dangerText}>ลบ</Text>
+                <Text style={styles.dangerText}>{t("common.delete")}</Text>
               </Pressable>
             </View>
           )
         )}
 
         <Pressable style={styles.outlineBtn} onPress={addSellerAccount}>
-          <Text style={styles.outlineText}>+ เพิ่มบัญชีคนขายใหม่</Text>
+          <Text style={styles.outlineText}>{t("postForm.actions.add_seller_account")}</Text>
         </Pressable>
       </Section>
 
-      <Section title="ไฟล์แนบ (รูปภาพ)">
+      <Section title={t("postForm.sections.attachments")}>
         <Pressable style={styles.outlineBtn} onPress={pickImages}>
-          <Text style={styles.outlineText}>+ เลือกรูปภาพ</Text>
+          <Text style={styles.outlineText}>{t("postForm.actions.pick_images")}</Text>
         </Pressable>
 
         <View style={styles.imagesRow}>
@@ -876,7 +900,7 @@ export default function PostFormScreen({ route, navigation }: Props) {
                   onPress={() => toggleDeleteExistingImage(f._id)}
                 >
                   <Image source={{ uri: f.url }} style={styles.thumb} />
-                  <Text style={styles.thumbLabel}>{deleted ? "จะลบ" : "แตะเพื่อลบ"}</Text>
+                  <Text style={styles.thumbLabel}>{deleted ? t("postForm.image.will_delete") : t("postForm.image.tap_to_delete")}</Text>
                 </Pressable>
               );
             }
@@ -889,7 +913,7 @@ export default function PostFormScreen({ route, navigation }: Props) {
                   onPress={() => removeNewPickedImage(f.uri)}
                 >
                   <Image source={{ uri: f.uri }} style={styles.thumb} />
-                  <Text style={styles.thumbLabel}>แตะเพื่อลบ</Text>
+                  <Text style={styles.thumbLabel}>{t("postForm.image.tap_to_delete")}</Text>
                 </Pressable>
               );
             }
@@ -899,7 +923,7 @@ export default function PostFormScreen({ route, navigation }: Props) {
         </View>
       </Section>
 
-      <Field label="จังหวัดของคนสร้างรายงาน">
+      <Field label={t("postForm.fields.province")}> 
         <View style={styles.pickerWrap}>
           <Picker
             selectedValue={province_id || ""}
@@ -907,7 +931,7 @@ export default function PostFormScreen({ route, navigation }: Props) {
             dropdownIconColor="#fff"
             style={styles.picker}
           >
-            <Picker.Item label="กรุณาเลือกจังหวัด" value="" />
+            <Picker.Item label={t("postForm.fields.province_placeholder")} value="" />
             {provinces.map((p) => (
               <Picker.Item key={p.id} label={p.name_th} value={p.id} />
             ))}
@@ -917,30 +941,30 @@ export default function PostFormScreen({ route, navigation }: Props) {
 
       <View style={styles.autoBox}>
         <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-          <Text style={styles.autoTitle}>เผยแพร่อัตโนมัติ (Auto Publish)</Text>
+          <Text style={styles.autoTitle}>{t("postForm.fields.auto_publish")}</Text>
           <Switch value={auto_publish} onValueChange={setAutoPublish} />
         </View>
         <Text style={styles.autoDesc}>
-          เมื่อเปิด ระบบจะนำข้อมูลนี้ไปเผยแพร่ไปยังช่องทางที่ตั้งค่าไว้ (เช่น X / Facebook) แบบอัตโนมัติหลังบันทึก
+          {t("postForm.fields.auto_publish_desc")}
         </Text>
       </View>
 
-      <Field label="สถานะ">
+      <Field label={t("postForm.fields.status")}>
         <View style={styles.pickerWrap}>
           <Picker
             selectedValue={status}
-            onValueChange={(v) => setStatus(v)}
+            onValueChange={(v) => setStatus(v as "public" | "unpublic")}
             dropdownIconColor="#fff"
             style={styles.picker}
           >
-            <Picker.Item label="public" value="public" />
-            <Picker.Item label="unpublic" value="unpublic" />
+            <Picker.Item label={t("postForm.fields.status_public")} value="public" />
+            <Picker.Item label={t("postForm.fields.status_unpublic")} value="unpublic" />
           </Picker>
         </View>
       </Field>
 
-      {!dirty && <Text style={styles.hint}>ยังไม่มีการแก้ไขข้อมูล</Text>}
-      {dirty && <Text style={styles.hint}>มีการแก้ไขแล้ว (กด Save ด้านขวาบน)</Text>}
+      {!dirty && <Text style={styles.hint}>{t("postForm.hint.no_changes")}</Text>}
+      {dirty && <Text style={styles.hint}>{t("postForm.hint.has_changes")}</Text>}
     </ScrollView>
   );
 }

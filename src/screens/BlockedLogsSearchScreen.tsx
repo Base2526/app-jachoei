@@ -23,6 +23,7 @@ import { client } from "../apollo/client";
 import { Q_GLOBAL_SEARCH } from "../graphql/globalSearch.gql";
 import { HeaderSearchInput } from "../components/HeaderSearchInput";
 import { useAuth } from "../auth/AuthProvider";
+import { formatDateTime } from "../utils/date";
 
 import type { RootStackParamList } from "../navigation/types";
 
@@ -275,7 +276,7 @@ export const BlockedLogsSearchScreen: React.FC<Props> = ({ navigation }) => {
           <Text style={styles.title}>{p.title}</Text>
           {!!p.snippet && <Text style={styles.sub}>{p.snippet}</Text>}
           {!!p.created_at && (
-            <Text style={styles.meta}>{new Date(p.created_at).toLocaleString()}</Text>
+            <Text style={styles.meta}>{formatDateTime(p.created_at)}</Text>
           )}
         </TouchableOpacity>
       );

@@ -14,6 +14,11 @@
     -->
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
 
+    <!-- Android 13+ notification permission for FCM notifications -->
+    <uses-permission
+        android:name="android.permission.POST_NOTIFICATIONS"
+        tools:targetApi="33" />
+
     <!-- Enforce Play-compliant permission set even if a dependency adds them. -->
     <uses-permission android:name="android.permission.READ_CALL_LOG" tools:node="remove" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" tools:node="remove" />
@@ -42,6 +47,17 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Deep link: jachoei://chat/:conversationId -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:scheme="jachoei"
+                    android:host="chat" />
             </intent-filter>
         </activity>
 

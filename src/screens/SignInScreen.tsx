@@ -16,6 +16,7 @@ import { useNavigation } from "@react-navigation/native";
 
 import { GoogleSignin } from "@react-native-google-signin/google-signin";
 import { useAuth } from "../auth/AuthProvider";
+import { useI18n } from "../i18n";
 
 type Props = {
   onSignIn?: (payload: { email: string; password: string }) => Promise<void> | void;
@@ -31,6 +32,7 @@ export default function SignInScreen({
   onEmailLinkPress,
 }: Props) {
   const navigation = useNavigation();
+  const { t } = useI18n();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -45,8 +47,8 @@ export default function SignInScreen({
 
   const validate = () => {
     const e = email.trim();
-    if (!e.includes("@")) return "Email ไม่ถูกต้อง";
-    if (password.length < 6) return "Password ต้องอย่างน้อย 6 ตัวอักษร";
+    if (!e.includes("@")) return t("auth.invalid_email");
+    if (password.length < 6) return t("auth.invalid_password_len");
     return "";
   };
 
@@ -65,10 +67,10 @@ export default function SignInScreen({
       // Token + user are persisted to AsyncStorage via `saveAuth()` inside AuthProvider.
       await auth.login({ identifier: email.trim(), password });
 
-      Alert.alert("Signed in", `Welcome ${email.trim()}`);
+      Alert.alert(t("auth.signed_in"), email.trim());
       navigation.goBack();
     } catch (e: any) {
-      setError(e?.message || "Sign in failed");
+      setError(e?.message || t("auth.sign_in_failed"));
     } finally {
       setSubmitting(false);
     }
@@ -116,7 +118,7 @@ export default function SignInScreen({
             // ปิด modal
             navigation.goBack();
         } catch (e: any) {
-            setError(e?.message || "Google sign-in failed");
+          setError(e?.message || t("auth.sign_in_failed"));
         } finally {
             setSubmitting(false);
         }
@@ -145,7 +147,7 @@ export default function SignInScreen({
             </View>
 
             <Text style={styles.title}>Jachoei</Text>
-            <Text style={styles.subTitle}>Sign in to continue</Text>
+            <Text style={styles.subTitle}>{t("auth.sign_in_to_continue")}</Text>
 
             {/* <Pressable
                 style={[styles.socialBtn, styles.appleBtn]}
@@ -163,17 +165,17 @@ export default function SignInScreen({
                 disabled={submitting}
             >
                 <Text style={[styles.socialText, styles.googleText]}>
-                Continue with Google
+                {t("auth.continue_with_google")}
                 </Text>
             </Pressable>
 
             <View style={styles.dividerRow}>
                 <View style={styles.divider} />
-                <Text style={styles.dividerText}>or sign in with email</Text>
+                <Text style={styles.dividerText}>{t("auth.or_sign_in_with_email")}</Text>
                 <View style={styles.divider} />
             </View>
 
-            <Text style={styles.label}>Email</Text>
+              <Text style={styles.label}>{t("auth.email")}</Text>
             <TextInput
                 value={email}
                 onChangeText={setEmail}
@@ -185,7 +187,7 @@ export default function SignInScreen({
                 editable={!submitting}
             />
 
-            <Text style={styles.label}>Password</Text>
+            <Text style={styles.label}>{t("auth.password")}</Text>
             <TextInput
                 value={password}
                 onChangeText={setPassword}
@@ -206,21 +208,21 @@ export default function SignInScreen({
                 {submitting ? (
                 <ActivityIndicator />
                 ) : (
-                <Text style={styles.primaryText}>Sign In</Text>
+                <Text style={styles.primaryText}>{t("auth.sign_in")}</Text>
                 )}
             </Pressable>
 
             <Pressable
                 style={styles.linkRow}
-                onPress={() => (onEmailLinkPress ? onEmailLinkPress() : Alert.alert("TODO"))}
+                onPress={() => (onEmailLinkPress ? onEmailLinkPress() : Alert.alert(t("common.error"), t("auth.email_link_not_ready")))}
             >
-                <Text style={styles.linkText}>Forgot password?</Text>
-                <Text style={styles.linkText}>Create account</Text>
+              <Text style={styles.linkText}>{t("auth.forgot_password")}</Text>
+              <Text style={styles.linkText}>{t("auth.create_account")}</Text>
             </Pressable>
 
             <View style={styles.footerRow}>
-                <Text style={styles.footerText}>Privacy policy</Text>
-                <Text style={styles.footerText}>Terms of service</Text>
+              <Text style={styles.footerText}>{t("auth.privacy_policy")}</Text>
+              <Text style={styles.footerText}>{t("auth.terms_of_service")}</Text>
             </View>
             </View>
         </KeyboardAvoidingView>

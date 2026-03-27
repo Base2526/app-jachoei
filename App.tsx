@@ -40,6 +40,8 @@ import { AuthProvider } from "./src/auth/AuthProvider";
 import { useAuth } from "./src/auth/AuthProvider";
 
 import { GlobalWiresWrapper } from "./src/components/GlobalWiresWrapper";
+import { FcmWires } from "./src/notifications/fcmWires";
+import { LanguageProvider, useI18n } from "./src/i18n";
 
 import Toast from "react-native-toast-message";
 
@@ -64,6 +66,8 @@ GoogleSignin.configure({
 });
 
 function Root({ initReady }: { initReady: boolean }) {
+  const { t } = useI18n();
+
   useEffect(() => {
     ensureSmsPermissions();
     loadDeviceInfo();
@@ -81,7 +85,7 @@ function Root({ initReady }: { initReady: boolean }) {
       >
         <ActivityIndicator />
         <Text style={{ marginTop: 8, color: "#fff" }}>
-          กำลังเตรียมฐานข้อมูลบนเครื่อง...
+          {t("app.preparing_local_db")}
         </Text>
       </View>
     );
@@ -121,7 +125,7 @@ function Root({ initReady }: { initReady: boolean }) {
         component={BlockedLogsSearchScreen}
         options={{
           headerShown: true,
-          title: "ค้นหา Blocked Logs",
+          title: t("app.blocked_logs_search_title"),
           presentation: "card",
           headerBackVisible: false,
           headerLeft(props) {
@@ -141,7 +145,7 @@ function Root({ initReady }: { initReady: boolean }) {
         name="PostView"
         component={PostViewScreen}
         options={{
-          title: "รายละเอียดโพสต์",
+          title: t("app.post_detail_title"),
           presentation: "card",
           headerBackVisible: false,
           headerLeft(props) {
@@ -162,7 +166,7 @@ function Root({ initReady }: { initReady: boolean }) {
         component={ProfileScreen}
         options={{
           headerShown: true,
-          title: "User Profile",
+          title: t("profile.title"),
           presentation: "card",
 
           headerBackVisible: false,
@@ -184,7 +188,7 @@ function Root({ initReady }: { initReady: boolean }) {
         component={ChatScreen}
         options={{ 
           headerShown: true, 
-          title: "Chat", 
+          title: t("app.chat_title"), 
           presentation: "card" ,
           headerBackVisible: false,
           headerLeft(props) {
@@ -219,7 +223,7 @@ function Root({ initReady }: { initReady: boolean }) {
         name="PostForm"
         component={PostFormScreen}
         options={({ navigation }) => ({
-          title: "สร้าง/แก้ไขรายการ",
+          title: t("app.post_form_title"),
           presentation: "modal",
           headerShown: true,                 // ✅ เปิด header
           gestureEnabled: true,
@@ -248,7 +252,7 @@ function Root({ initReady }: { initReady: boolean }) {
         component={NotificationPage}
         options={{
           headerShown: true,
-          title: "Notifications",
+          title: t("app.notifications_title"),
           headerStyle: { backgroundColor: "#0b0b0f" },
           headerTintColor: "#fff",
 
@@ -271,7 +275,7 @@ function Root({ initReady }: { initReady: boolean }) {
         component={SettingScreen}
         options={{ 
           headerShown: true, 
-          title: "สร้าง/แก้ไขรายการ",
+          title: t("app.settings_title"),
           headerBackVisible: false,
           headerLeft(props) {
             return (
@@ -290,6 +294,7 @@ function Root({ initReady }: { initReady: boolean }) {
 }
 
 function AppShell() {
+  const { ready: languageReady, t } = useI18n();
   const { booting } = useAuth();
   const { ready: initReady } = useInitScamSync();
 
@@ -312,9 +317,33 @@ function AppShell() {
     });
   }, [appReady]);
 
+  if (!languageReady) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          justifyContent: "center",
+          alignItems: "center",
+          backgroundColor: "#0b0b0f",
+        }}
+      >
+        <ActivityIndicator />
+        <Text style={{ marginTop: 8, color: "#fff" }}>{t("common.loading")}</Text>
+      </View>
+    );
+  }
+
   return (
     <NavigationContainer
       ref={navigationRef}
+      linking={{
+        prefixes: ["jachoei://chat"],
+        config: {
+          screens: {
+            Chat: ":chatId",
+          },
+        },
+      }}
       theme={{
         ...DarkTheme,
         colors: {
@@ -325,6 +354,7 @@ function AppShell() {
       onReady={() => setNavReady(true)}
     >
       <GlobalWiresWrapper />
+      <FcmWires />
       <StatusBar barStyle="light-content" backgroundColor="#0b0b0f" />
       <View style={{ flex: 1 }}>
         <Root initReady={initReady} />
@@ -336,10 +366,12 @@ function AppShell() {
 export default function App() {
   return (
     <ApolloProvider client={client}>
-      <AuthProvider>
-        <AppShell />
-        <Toast />
-      </AuthProvider>
+      <LanguageProvider>
+        <AuthProvider>
+          <AppShell />
+          <Toast />
+        </AuthProvider>
+      </LanguageProvider>
     </ApolloProvider>
   );
 }
