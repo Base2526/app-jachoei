@@ -38,6 +38,7 @@ type AuthState = {
 
   login: (payload: { identifier: string; password: string }) => Promise<void>;
   loginWithSocial: (payload: SocialInput) => Promise<void>;
+  patchUser: (patch: Partial<AuthUser>) => void;
   logout: () => Promise<void>;
 };
 
@@ -140,6 +141,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(nextUser);
   };
 
+  const patchUser = (patch: Partial<AuthUser>) => {
+    if (!patch || Object.keys(patch).length === 0) return;
+
+    setUser((prev) => {
+      if (!prev) return prev;
+
+      const next: AuthUser = {
+        ...prev,
+        ...patch,
+      };
+
+      if (token) {
+        void saveAuth(token, next);
+      }
+
+      return next;
+    });
+  };
+
   /* =======================
    * logout
    * ======================= */
@@ -189,6 +209,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isLoggedIn,
       login,
       loginWithSocial,
+      patchUser,
       logout,
     }),
     [booting, token, user]

@@ -6,7 +6,7 @@ export const LOGIN = gql`
       ok
       message
       token
-      user { id name email role }
+      user { id name email avatar role }
     }
   }
 `;
@@ -17,7 +17,7 @@ export const LOGIN_SOCIAL = gql`
       ok
       message
       token
-      user { id name email role }
+      user { id name email avatar role }
     }
   }
 `;

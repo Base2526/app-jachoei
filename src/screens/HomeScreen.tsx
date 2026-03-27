@@ -53,6 +53,7 @@ import {
 } from "../hooks/useJachoeiStatusKeys";
 
 import { subscribeBookmarkStatusChanged } from "../events/bookmarkSync";
+import { formatDateTime } from "../utils/date";
 
 import type { RootStackParamList, TabsParamList } from "../navigation/types";
 import { useAuth } from "../auth/AuthProvider";
@@ -293,15 +294,6 @@ function isFacebookPublished(r: PostItem) {
     String(r?.fb_status ?? "").toUpperCase() === "PUBLISHED" &&
     !!r?.fb_permalink_url
   );
-}
-
-function formatDateTime(ts?: string | null) {
-  if (!ts) return "";
-  const n = Number(ts);
-  if (!Number.isNaN(n)) return new Date(n).toLocaleString();
-  const d = new Date(ts);
-  if (!Number.isNaN(d.getTime())) return d.toLocaleString();
-  return String(ts);
 }
 
 function buildSharePayload(r: PostItem) {

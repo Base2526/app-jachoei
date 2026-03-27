@@ -7,17 +7,21 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
 } from "react-native";
 import { useNavigation } from "@react-navigation/native";
 import { Picker } from "@react-native-picker/picker";
+import Ionicons from "react-native-vector-icons/Ionicons";
 import dayjs from "dayjs";
 import { launchImageLibrary, Asset } from "react-native-image-picker";
 import { gql } from "@apollo/client";
 import AsyncStorage from "@react-native-async-storage/async-storage"; // ถ้าไม่ใช้ ลบได้
 import { client } from "../apollo/client";
+import { ENV } from "../config/env";
+import { useI18n } from "../i18n";
 
 import { subscribeBookmarkStatusChanged } from "../events/bookmarkSync";
 
@@ -33,6 +37,7 @@ type Me = {
   phone?: string;
   username?: string;
   language?: "en" | "th";
+  notifications_enabled?: boolean;
   role?: string;
   avatar?: string;
   created_at?: string;
@@ -56,6 +61,16 @@ type BookmarkRow = {
   is_bookmarked?: boolean;
 };
 
+type MeQueryData = { me: Me | null };
+type MyPostsQueryData = { myPosts: PostRow[] };
+type MyBookmarksQueryData = { myBookmarks: BookmarkRow[] };
+type UpdateMeMutationData = { updateMe: Me | null };
+type UploadAvatarMutationData = { uploadAvatar: string | null };
+type DeletePostMutationData = { deletePost: boolean };
+type ToggleBookmarkMutationData = {
+  toggleBookmark: { ok: boolean; is_bookmarked: boolean } | null;
+};
+
 const Q_ME = gql`
   query {
     me {
@@ -65,6 +80,7 @@ const Q_ME = gql`
       phone
       username
       language
+      notifications_enabled
       role
       avatar
       created_at
@@ -81,6 +97,7 @@ const M_UPDATE_ME = gql`
       phone
       username
       language
+      notifications_enabled
       avatar
     }
   }
@@ -160,6 +177,38 @@ function toUploadFromAsset(a: Asset) {
   } as any;
 }
 
+function normalizeImageUri(uri?: string | null) {
+  if (!uri) return "";
+
+  const value = String(uri).trim();
+  if (!value) return "";
+
+  if (
+    value.startsWith("http://") ||
+    value.startsWith("https://") ||
+    value.startsWith("file://") ||
+    value.startsWith("content://") ||
+    value.startsWith("data:")
+  ) {
+    return value;
+  }
+
+  if (value.startsWith("/")) {
+    const base = ENV.apiBase.endsWith("/") ? ENV.apiBase.slice(0, -1) : ENV.apiBase;
+    return `${base}${value}`;
+  }
+
+  return value;
+}
+
+function withCacheBust(uri: string, version: number) {
+  if (!uri || version <= 0) return uri;
+  if (!(uri.startsWith("http://") || uri.startsWith("https://"))) return uri;
+
+  const sep = uri.includes("?") ? "&" : "?";
+  return `${uri}${sep}v=${version}`;
+}
+
 function Divider() {
   return <View style={styles.divider} />;
 }
@@ -206,6 +255,7 @@ function Pill({
 
 export default function SettingsScreen() {
   const navigation = useNavigation<any>();
+  const { t, setLanguage: setAppLanguage } = useI18n();
   const [active, setActive] = useState<MenuKey>("profile");
 
   // Me/Profile
@@ -217,7 +267,10 @@ export default function SettingsScreen() {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [language, setLanguage] = useState<"en" | "th">("en");
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [updatingNotifications, setUpdatingNotifications] = useState(false);
   const [username, setUsername] = useState("");
+  const [avatarVersion, setAvatarVersion] = useState(0);
 
   // Posts
   const [qPosts, setQPosts] = useState("");
@@ -237,12 +290,20 @@ export default function SettingsScreen() {
   // Logout
   const [loggingOut, setLoggingOut] = useState(false);
 
-  const { logout, user, booting } = useAuth();
+  const { logout, user, booting, patchUser } = useAuth();
 
   const currentUserId = useMemo(() => {
     const id = user?.id;
     return id ? String(id) : null;
   }, [user?.id]);
+
+  const displayAvatarUri = useMemo(() => {
+    const localUri = normalizeImageUri(avatarLocal);
+    if (localUri) return localUri;
+
+    const remoteUri = normalizeImageUri(me?.avatar);
+    return withCacheBust(remoteUri, avatarVersion);
+  }, [avatarLocal, me?.avatar, avatarVersion]);
 
   // ===== Dirty tracking =====
   const profileSnapRef = useRef<{ name: string; phone: string; language: "en" | "th"; username: string } | null>(null);
@@ -266,15 +327,24 @@ export default function SettingsScreen() {
   const loadMe = async () => {
     setLoadingMe(true);
     try {
-      const res = await client.query({ query: Q_ME, fetchPolicy: "network-only" });
-      const m: Me = res?.data?.me;
+      const res = await client.query<MeQueryData>({ query: Q_ME, fetchPolicy: "network-only" });
+      const m = res?.data?.me ?? null;
 
       setMe(m || null);
       setName(m?.name || "");
       setPhone(m?.phone || "");
-      setLanguage((m?.language as any) || "en");
+      const nextLanguage = ((m?.language as any) || "en") as "en" | "th";
+      setLanguage(nextLanguage);
+      setNotificationsEnabled(m?.notifications_enabled !== false);
+      void setAppLanguage(nextLanguage);
       setUsername(m?.username || "");
       setAvatarLocal("");
+
+      patchUser({
+        name: m?.name ?? null,
+        email: m?.email ?? null,
+        avatar: normalizeImageUri(m?.avatar),
+      });
 
       profileSnapRef.current = {
         name: m?.name || "",
@@ -283,7 +353,7 @@ export default function SettingsScreen() {
         username: m?.username || "",
       };
     } catch (e: any) {
-      Alert.alert("Error", e?.message || "Load profile failed");
+      Alert.alert(t("common.error"), e?.message || t("settings.load_profile_failed"));
     } finally {
       setLoadingMe(false);
     }
@@ -292,14 +362,14 @@ export default function SettingsScreen() {
   const loadPosts = async (q?: string) => {
     setLoadingPosts(true);
     try {
-      const res = await client.query({
+      const res = await client.query<MyPostsQueryData>({
         query: Q_MY_POSTS,
         variables: { q: q ?? "" },
         fetchPolicy: "network-only",
       });
       setPosts((res?.data?.myPosts || []).map((x: any) => ({ ...x, id: String(x.id) })));
     } catch (e: any) {
-      Alert.alert("Error", e?.message || "Load posts failed");
+      Alert.alert(t("common.error"), e?.message || t("settings.load_posts_failed"));
     } finally {
       setLoadingPosts(false);
     }
@@ -308,10 +378,10 @@ export default function SettingsScreen() {
   const loadBookmarks = async () => {
     setLoadingBookmarks(true);
     try {
-      const res = await client.query({ query: Q_MY_BOOKMARKS, fetchPolicy: "network-only" });
+      const res = await client.query<MyBookmarksQueryData>({ query: Q_MY_BOOKMARKS, fetchPolicy: "network-only" });
       setBookmarks((res?.data?.myBookmarks || []).map((x: any) => ({ ...x, id: String(x.id) })));
     } catch (e: any) {
-      Alert.alert("Error", e?.message || "Load bookmarks failed");
+      Alert.alert(t("common.error"), e?.message || t("settings.load_bookmarks_failed"));
     } finally {
       setLoadingBookmarks(false);
     }
@@ -353,7 +423,7 @@ export default function SettingsScreen() {
 
   // ===== Actions =====
   const onSaveProfile = async () => {
-    if (!name.trim()) return Alert.alert("กรุณากรอก", "Display name");
+    if (!name.trim()) return Alert.alert(t("common.error"), t("settings.display_name"));
 
     try {
       setSavingMe(true);
@@ -361,71 +431,123 @@ export default function SettingsScreen() {
         name: name.trim(),
         phone: phone.trim(),
         language,
+        notifications_enabled: notificationsEnabled,
         username: username.trim(),
       };
 
-      const res = await client.mutate({ mutation: M_UPDATE_ME, variables: { data: payload } });
-      const saved: Me = res?.data?.updateMe;
+      const res = await client.mutate<UpdateMeMutationData>({ mutation: M_UPDATE_ME, variables: { data: payload } });
+      const saved = res?.data?.updateMe ?? null;
 
       if (saved?.id) {
-        Alert.alert("Saved", "Profile & Account saved");
+        Alert.alert(t("common.success"), t("settings.profile_saved"));
         setMe((prev) => ({ ...(prev || {}), ...saved }));
+        patchUser({ name: saved.name ?? name.trim() });
         profileSnapRef.current = { ...payload };
+        void setAppLanguage(language);
       } else {
-        Alert.alert("Error", "Save failed");
+        Alert.alert(t("common.error"), t("settings.save_failed"));
       }
     } catch (e: any) {
-      Alert.alert("Error", e?.message || "Save error");
+      Alert.alert(t("common.error"), e?.message || t("settings.save_error"));
     } finally {
       setSavingMe(false);
     }
   };
 
+  const onToggleNotifications = async (next: boolean) => {
+    if (!me?.id || updatingNotifications) return;
+
+    const prev = notificationsEnabled;
+    setNotificationsEnabled(next);
+    setUpdatingNotifications(true);
+
+    try {
+      const res = await client.mutate<UpdateMeMutationData>({
+        mutation: M_UPDATE_ME,
+        variables: { data: { notifications_enabled: next } },
+      });
+
+      const saved = res?.data?.updateMe ?? null;
+      if (!saved?.id) {
+        throw new Error(t("settings.notification_update_failed"));
+      }
+
+      setMe((prevMe) => ({ ...(prevMe || {}), ...saved }));
+      setNotificationsEnabled(saved.notifications_enabled !== false);
+    } catch (e: any) {
+      setNotificationsEnabled(prev);
+      Alert.alert(t("common.error"), e?.message || t("settings.notification_update_failed"));
+    } finally {
+      setUpdatingNotifications(false);
+    }
+  };
+
   const onPickAndUploadAvatar = async () => {
-    if (!me?.id) return Alert.alert("Error", "Missing user id");
+    if (!me?.id) return Alert.alert(t("common.error"), t("settings.missing_user_id"));
+    if (savingMe) return;
 
     const res = await launchImageLibrary({ mediaType: "photo", selectionLimit: 1, quality: 0.9 });
     if (res.didCancel) return;
-    if (res.errorCode) return Alert.alert("Pick failed", res.errorMessage || res.errorCode);
+    if (res.errorCode) return Alert.alert(t("settings.pick_failed"), res.errorMessage || res.errorCode);
 
     const asset = res.assets?.[0];
-    if (!asset?.uri) return Alert.alert("Pick failed", "No image selected");
+    if (!asset?.uri) return Alert.alert(t("settings.pick_failed"), t("common.unknown_error"));
 
     setAvatarLocal(asset.uri);
     const file = toUploadFromAsset(asset);
-    if (!file) return Alert.alert("Error", "Invalid image file");
+    if (!file) return Alert.alert(t("common.error"), t("common.upload_failed"));
 
     try {
       setSavingMe(true);
-      const up = await client.mutate({ mutation: M_UPLOAD_AVATAR, variables: { user_id: me.id, file } });
+      const up = await client.mutate<UploadAvatarMutationData>({ mutation: M_UPLOAD_AVATAR, variables: { user_id: me.id, file } });
       const url = up?.data?.uploadAvatar;
 
       if (url) {
-        Alert.alert("Success", "Avatar updated");
-        await loadMe();
+        const nextAvatar = normalizeImageUri(String(url));
+        const nextAvatarVersion = Date.now();
+
+        setMe((prev) => (prev ? { ...prev, avatar: nextAvatar } : prev));
+        setAvatarLocal("");
+        setAvatarVersion(nextAvatarVersion);
+        patchUser({ avatar: nextAvatar });
+
+        try {
+          const cached = client.readQuery<MeQueryData>({ query: Q_ME });
+          if (cached?.me) {
+            client.writeQuery<MeQueryData>({
+              query: Q_ME,
+              data: { me: { ...cached.me, avatar: nextAvatar } },
+            });
+          }
+        } catch {}
+
+        Alert.alert(t("common.success"), t("settings.avatar_updated"));
+        void loadMe();
       } else {
-        Alert.alert("Error", "Upload failed");
+        setAvatarLocal("");
+        Alert.alert(t("common.error"), t("common.upload_failed"));
       }
     } catch (e: any) {
-      Alert.alert("Error", e?.message || "Upload failed");
+      setAvatarLocal("");
+      Alert.alert(t("common.error"), e?.message || t("common.upload_failed"));
     } finally {
       setSavingMe(false);
     }
   };
 
   const onDeletePost = async (id: string) => {
-    Alert.alert("Confirm", "Delete this post?", [
-      { text: "Cancel", style: "cancel" },
+    Alert.alert(t("common.confirm"), t("settings.delete_post_confirm"), [
+      { text: t("common.cancel"), style: "cancel" },
       {
-        text: "Delete",
+        text: t("common.delete"),
         style: "destructive",
         onPress: async () => {
           try {
-            const res = await client.mutate({ mutation: MUT_DEL_POST, variables: { id } });
+            const res = await client.mutate<DeletePostMutationData>({ mutation: MUT_DEL_POST, variables: { id } });
             if (res?.data?.deletePost) setPosts((prev) => prev.filter((p) => p.id !== id));
-            else Alert.alert("Error", "Delete failed");
+            else Alert.alert(t("common.error"), t("settings.delete_failed"));
           } catch (e: any) {
-            Alert.alert("Error", e?.message || "Delete error");
+            Alert.alert(t("common.error"), e?.message || t("settings.delete_failed"));
           }
         },
       },
@@ -434,26 +556,26 @@ export default function SettingsScreen() {
 
   const onToggleBookmark = async (postId: string) => {
     try {
-      const res = await client.mutate({ mutation: M_TOGGLE_BOOKMARK, variables: { postId } });
+      const res = await client.mutate<ToggleBookmarkMutationData>({ mutation: M_TOGGLE_BOOKMARK, variables: { postId } });
       const ok = res?.data?.toggleBookmark?.ok;
       const is_bookmarked = res?.data?.toggleBookmark?.is_bookmarked;
-      if (!ok) return Alert.alert("Error", "Toggle bookmark failed");
+      if (!ok) return Alert.alert(t("common.error"), t("settings.toggle_bookmark_failed"));
 
       setBookmarks((prev) => prev.map((b) => (b.id === postId ? { ...b, is_bookmarked } : b)));
     } catch (e: any) {
-      Alert.alert("Error", e?.message || "Toggle bookmark error");
+      Alert.alert(t("common.error"), e?.message || t("settings.toggle_bookmark_error"));
     }
   };
 
   const onChangePassword = async () => {
-    if (!currentPass) return Alert.alert("กรุณากรอก", "Current password");
-    if (newPass.length < 8) return Alert.alert("กรุณากรอก", "New password อย่างน้อย 8 ตัว");
-    if (newPass !== confirmPass) return Alert.alert("ไม่ตรงกัน", "Confirm password ไม่ตรงกัน");
+    if (!currentPass) return Alert.alert(t("common.error"), t("settings.current_password_required"));
+    if (newPass.length < 8) return Alert.alert(t("common.error"), t("settings.new_password_min"));
+    if (newPass !== confirmPass) return Alert.alert(t("common.error"), t("settings.confirm_password_not_match"));
 
     try {
       setChangingPass(true);
       // TODO: ใส่ mutation เปลี่ยนรหัสผ่านของคุณที่นี่
-      Alert.alert("TODO", "เสียบ mutation เปลี่ยนรหัสผ่านของ backend ได้ที่นี่");
+      Alert.alert("TODO", t("settings.change_password_todo"));
       setCurrentPass("");
       setNewPass("");
       setConfirmPass("");
@@ -485,7 +607,7 @@ export default function SettingsScreen() {
       // 3) reset navigation -> Home
       navigation.replace("ScamProtect");
     } catch (e: any) {
-      Alert.alert("Logout failed", e?.message || "Please try again");
+      Alert.alert(t("settings.logout_failed"), e?.message || t("common.retry"));
     } finally {
       setLoggingOut(false);
     }
@@ -494,19 +616,19 @@ export default function SettingsScreen() {
   const onLogout = () => {
     if (profileDirty) {
       Alert.alert(
-        "Unsaved changes",
-        "คุณมีข้อมูลที่ยังไม่กด Save ต้องการ Logout เลยไหม?",
+        t("settings.unsaved_changes"),
+        t("settings.unsaved_changes_logout"),
         [
-          { text: "Cancel", style: "cancel" },
-          { text: "Logout", style: "destructive", onPress: performLogout },
+          { text: t("common.cancel"), style: "cancel" },
+          { text: t("common.logout"), style: "destructive", onPress: performLogout },
         ]
       );
       return;
     }
 
-    Alert.alert("Logout", "ต้องการออกจากระบบใช่ไหม?", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Logout", style: "destructive", onPress: performLogout },
+    Alert.alert(t("common.logout"), t("settings.logout_confirm"), [
+      { text: t("common.cancel"), style: "cancel" },
+      { text: t("common.logout"), style: "destructive", onPress: performLogout },
     ]);
   };
 
@@ -519,12 +641,12 @@ export default function SettingsScreen() {
       (showSave && (!profileDirty || savingMe || loadingMe)) ||
       (showChange && !passwordReady);
 
-    const label = showSave ? "Save" : showChange ? "Change" : "";
+    const label = showSave ? t("common.save") : showChange ? t("common.confirm") : "";
     const onPress = showSave ? onSaveProfile : showChange ? onChangePassword : undefined;
 
     navigation.setOptions({
       headerShown: true,
-      title: "Settings",
+      title: t("settings.title"),
       headerStyle: { backgroundColor: "#0b0b0f" },
       headerTintColor: "#fff",
       headerTitleStyle: { fontWeight: "900" },
@@ -545,25 +667,25 @@ export default function SettingsScreen() {
             </Pressable>
           ),
     });
-  }, [navigation, active, profileDirty, savingMe, loadingMe, passwordReady, changingPass]);
+  }, [navigation, active, profileDirty, savingMe, loadingMe, passwordReady, changingPass, t]);
 
   // ================= Panels =================
 
   const renderProfile = () => (
     <View style={styles.card}>
-      <SectionTitle>Profile & Account</SectionTitle>
+      <SectionTitle>{t("settings.profile_account")}</SectionTitle>
 
       {loadingMe ? (
         <View style={styles.inlineLoading}>
           <ActivityIndicator />
-          <Text style={styles.inlineLoadingText}>Loading profile…</Text>
+          <Text style={styles.inlineLoadingText}>{t("settings.loading_profile")}</Text>
         </View>
       ) : (
         <>
           <View style={styles.profileRow}>
             <View style={styles.avatarWrap}>
-              {avatarLocal || me?.avatar ? (
-                <Image source={{ uri: avatarLocal || (me?.avatar as string) }} style={styles.avatar} />
+              {displayAvatarUri ? (
+                <Image key={displayAvatarUri} source={{ uri: displayAvatarUri }} style={styles.avatar} />
               ) : (
                 <View style={[styles.avatar, styles.avatarFallback]}>
                   <Text style={styles.avatarFallbackText}>
@@ -574,9 +696,9 @@ export default function SettingsScreen() {
             </View>
 
             <View style={{ flex: 1 }}>
-              <Text style={styles.bigName}>{me?.name || "User"}</Text>
+              <Text style={styles.bigName}>{me?.name || t("settings.user")}</Text>
               <Text style={styles.subText}>{maskEmail(me?.email)}</Text>
-              <Text style={styles.subText}>Role: {me?.role || "-"}</Text>
+              <Text style={styles.subText}>{t("settings.role")}: {me?.role || "-"}</Text>
 
               <View style={{ flexDirection: "row", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
                 <Pressable
@@ -584,7 +706,7 @@ export default function SettingsScreen() {
                   onPress={onPickAndUploadAvatar}
                   disabled={savingMe}
                 >
-                  <Text style={styles.outlineText}>{savingMe ? "Uploading…" : "Upload Avatar"}</Text>
+                  <Text style={styles.outlineText}>{savingMe ? t("settings.uploading") : t("settings.upload_avatar")}</Text>
                 </Pressable>
 
                 {/* ✅ Logout button อยู่ที่ Profile (แนะนำที่สุด) */}
@@ -592,18 +714,19 @@ export default function SettingsScreen() {
                   style={[styles.dangerOutlineBtn]}
                   onPress={onLogout}
                   disabled={loggingOut}
+                  accessibilityLabel="Logout"
                 >
                   {loggingOut ? (
                     <ActivityIndicator />
                   ) : (
-                    <Text style={styles.dangerOutlineText}>Logout</Text>
+                    <Ionicons name="log-out-outline" size={22} color="#ff6b6b" />
                   )}
                 </Pressable>
               </View>
 
               {profileDirty && (
                 <Text style={[styles.hint, { marginTop: 8 }]}>
-                  * You have unsaved changes (กด Save ที่มุมขวาบน)
+                  {t("settings.profile_dirty_hint")}
                 </Text>
               )}
             </View>
@@ -611,50 +734,69 @@ export default function SettingsScreen() {
 
           <Divider />
 
-          <Field label="Display name">
+          <Field label={t("settings.display_name")}>
             <TextInput
               value={name}
               onChangeText={setName}
-              placeholder="Your name"
+              placeholder={t("settings.display_name")}
               placeholderTextColor="rgba(255,255,255,0.35)"
               style={styles.input}
             />
           </Field>
 
-          <Field label="Phone">
+          <Field label={t("settings.phone")}>
             <TextInput
               value={phone}
               onChangeText={setPhone}
-              placeholder="Your phone"
+              placeholder={t("settings.phone")}
               placeholderTextColor="rgba(255,255,255,0.35)"
               style={styles.input}
               keyboardType="phone-pad"
             />
           </Field>
 
-          <Field label="Email">
+          <Field label={t("settings.email")}>
             <View style={styles.readonlyBox}>
               <Text style={styles.readonlyText}>{me?.email || "-"}</Text>
             </View>
           </Field>
 
-          <Field label="Username">
+          <Field label={t("settings.username")}>
             <View style={styles.readonlyBox}>
               <Text style={styles.readonlyText}>{me?.username || username || "-"}</Text>
             </View>
           </Field>
 
-          <Field label="Language">
+          <Field label={t("settings.language")}>
             <View style={styles.pickerWrap}>
               <Picker
                 selectedValue={language}
-                onValueChange={(v) => setLanguage(v)}
+                onValueChange={(v) => {
+                  const next = v as "en" | "th";
+                  setLanguage(next);
+                  void setAppLanguage(next);
+                }}
                 dropdownIconColor="#fff"
                 style={styles.picker}
               >
-                <Picker.Item label="English" value="en" />
-                <Picker.Item label="ไทย" value="th" />
+                <Picker.Item label={t("settings.english")} value="en" />
+                <Picker.Item label={t("settings.thai")} value="th" />
               </Picker>
+            </View>
+          </Field>
+
+          <Field label={t("settings.notifications")} hint={t("settings.notifications_hint")}>
+            <View style={styles.toggleRow}>
+              <Text style={styles.toggleLabel}>{t("settings.enable_notifications")}</Text>
+              {updatingNotifications ? (
+                <ActivityIndicator />
+              ) : (
+                <Switch
+                  value={notificationsEnabled}
+                  onValueChange={onToggleNotifications}
+                  disabled={loadingMe || savingMe || updatingNotifications}
+                />
+              )}
             </View>
           </Field>
 
@@ -666,32 +808,32 @@ export default function SettingsScreen() {
 
   const renderPosts = () => (
     <View style={styles.card}>
-      <SectionTitle>My Posts</SectionTitle>
+      <SectionTitle>{t("settings.my_posts")}</SectionTitle>
 
       <View style={styles.searchRow}>
         <TextInput
           value={qPosts}
           onChangeText={setQPosts}
-          placeholder="Search title/detail"
+          placeholder={t("settings.search_title_detail")}
           placeholderTextColor="rgba(255,255,255,0.35)"
           style={[styles.input, { flex: 1 }]}
         />
         <Pressable style={[styles.outlineBtn, { width: 110 }]} onPress={() => loadPosts(qPosts)}>
-          <Text style={styles.outlineText}>Search</Text>
+          <Text style={styles.outlineText}>{t("common.search")}</Text>
         </Pressable>
       </View>
 
       {loadingPosts && (
         <View style={styles.inlineLoading}>
           <ActivityIndicator />
-          <Text style={styles.inlineLoadingText}>Loading posts…</Text>
+          <Text style={styles.inlineLoadingText}>{t("settings.loading_posts")}</Text>
         </View>
       )}
 
       <Divider />
 
       {!loadingPosts && posts.length === 0 ? (
-        <Text style={styles.emptyText}>No posts</Text>
+        <Text style={styles.emptyText}>{t("settings.no_posts")}</Text>
       ) : (
         posts.map((p) => (
           <View key={p.id} style={styles.listItem}>
@@ -720,7 +862,7 @@ export default function SettingsScreen() {
                   });
 
                   if (!currentUserId) {
-                    Alert.alert("Error", "Missing user id. Please login again.");
+                    Alert.alert(t("common.error"), t("settings.missing_user_id"));
                     return;
                   }
 
@@ -730,11 +872,11 @@ export default function SettingsScreen() {
                   });
                 }}
               >
-                <Text style={styles.smallBtnText}>View</Text>
+                <Text style={styles.smallBtnText}>{t("common.view")}</Text>
               </Pressable>
 
               <Pressable style={[styles.smallBtn, styles.dangerBtn]} onPress={() => onDeletePost(p.id)}>
-                <Text style={[styles.smallBtnText, { color: "#ff6b6b" }]}>Delete</Text>
+                <Text style={[styles.smallBtnText, { color: "#ff6b6b" }]}>{t("common.delete")}</Text>
               </Pressable>
             </View>
           </View>
@@ -745,25 +887,25 @@ export default function SettingsScreen() {
 
   const renderBookmarks = () => (
     <View style={styles.card}>
-      <SectionTitle>My Bookmarks</SectionTitle>
+      <SectionTitle>{t("settings.my_bookmarks")}</SectionTitle>
 
       <View style={styles.searchRow}>
         <Pressable style={[styles.outlineBtn, { width: 120 }]} onPress={loadBookmarks}>
-          <Text style={styles.outlineText}>Refresh</Text>
+          <Text style={styles.outlineText}>{t("common.refresh")}</Text>
         </Pressable>
       </View>
 
       {loadingBookmarks && (
         <View style={styles.inlineLoading}>
           <ActivityIndicator />
-          <Text style={styles.inlineLoadingText}>Loading bookmarks…</Text>
+          <Text style={styles.inlineLoadingText}>{t("settings.loading_bookmarks")}</Text>
         </View>
       )}
 
       <Divider />
 
       {!loadingBookmarks && bookmarks.length === 0 ? (
-        <Text style={styles.emptyText}>No bookmarks</Text>
+        <Text style={styles.emptyText}>{t("settings.no_bookmarks")}</Text>
       ) : (
         bookmarks.map((b) => (
           <View key={b.id} style={styles.listItem}>
@@ -778,7 +920,7 @@ export default function SettingsScreen() {
               style={[styles.smallBtn, b.is_bookmarked ? styles.bookmarked : null]}
               onPress={() => onToggleBookmark(b.id)}
             >
-              <Text style={styles.smallBtnText}>{b.is_bookmarked ? "Bookmarked" : "Bookmark"}</Text>
+              <Text style={styles.smallBtnText}>{b.is_bookmarked ? t("settings.bookmarked") : t("settings.bookmark")}</Text>
             </Pressable>
           </View>
         ))
@@ -788,44 +930,42 @@ export default function SettingsScreen() {
 
   const renderSecurity = () => (
     <View style={styles.card}>
-      <SectionTitle>Security</SectionTitle>
+      <SectionTitle>{t("settings.security")}</SectionTitle>
 
-      <Field label="Current password">
+      <Field label={t("settings.current_password")}>
         <TextInput
           value={currentPass}
           onChangeText={setCurrentPass}
-          placeholder="Current password"
+          placeholder={t("settings.current_password")}
           placeholderTextColor="rgba(255,255,255,0.35)"
           style={styles.input}
           secureTextEntry
         />
       </Field>
 
-      <Field label="New password (min 8)">
+      <Field label={t("settings.new_password")}>
         <TextInput
           value={newPass}
           onChangeText={setNewPass}
-          placeholder="New password"
+          placeholder={t("settings.new_password")}
           placeholderTextColor="rgba(255,255,255,0.35)"
           style={styles.input}
           secureTextEntry
         />
       </Field>
 
-      <Field label="Confirm new password">
+      <Field label={t("settings.confirm_new_password")}>
         <TextInput
           value={confirmPass}
           onChangeText={setConfirmPass}
-          placeholder="Confirm"
+          placeholder={t("settings.confirm_new_password")}
           placeholderTextColor="rgba(255,255,255,0.35)"
           style={styles.input}
           secureTextEntry
         />
       </Field>
 
-      <Text style={styles.hint}>
-        * กด Change ที่มุมขวาบน (ต้องกรอกครบ + new pass ≥ 8 และ confirm ตรงกัน)
-      </Text>
+      <Text style={styles.hint}>{t("settings.password_hint")}</Text>
     </View>
   );
 
@@ -845,6 +985,8 @@ export default function SettingsScreen() {
     phone,
     language,
     username,
+    notificationsEnabled,
+    updatingNotifications,
     qPosts,
     posts,
     bookmarks,
@@ -860,10 +1002,10 @@ export default function SettingsScreen() {
       {/* Pills bar */}
       <View style={styles.pillsBar}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pillsRowContent}>
-          <Pill label="Profile" active={active === "profile"} onPress={() => setActive("profile")} />
-          <Pill label="Posts" active={active === "posts"} onPress={() => setActive("posts")} />
-          <Pill label="Bookmarks" active={active === "bookmarks"} onPress={() => setActive("bookmarks")} />
-          <Pill label="Security" active={active === "security"} onPress={() => setActive("security")} />
+          <Pill label={t("settings.profile")} active={active === "profile"} onPress={() => setActive("profile")} />
+          <Pill label={t("settings.posts")} active={active === "posts"} onPress={() => setActive("posts")} />
+          <Pill label={t("settings.bookmarks")} active={active === "bookmarks"} onPress={() => setActive("bookmarks")} />
+          <Pill label={t("settings.security")} active={active === "security"} onPress={() => setActive("security")} />
         </ScrollView>
       </View>
 
@@ -968,6 +1110,24 @@ const styles = StyleSheet.create({
   },
   picker: { color: "white" },
 
+  toggleRow: {
+    minHeight: 48,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    backgroundColor: "#151515",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  toggleLabel: {
+    color: "#fff",
+    fontWeight: "700",
+    flex: 1,
+    paddingRight: 12,
+  },
+
   outlineBtn: {
     height: 44,
     borderRadius: 12,
@@ -982,13 +1142,14 @@ const styles = StyleSheet.create({
 
   // ✅ Logout button style
   dangerOutlineBtn: {
+    width: 44,
     height: 44,
-    borderRadius: 12,
+    borderRadius: 22,
     borderWidth: 1,
     borderColor: "rgba(255,107,107,0.45)",
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 14,
+    paddingHorizontal: 0,
     backgroundColor: "rgba(255,107,107,0.10)",
   },
   dangerOutlineText: { color: "#ff6b6b", fontWeight: "900" },
