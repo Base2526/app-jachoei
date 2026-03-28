@@ -25,6 +25,9 @@ import {
   Platform,
   PermissionsAndroid,
   ToastAndroid,
+  useWindowDimensions,
+  Animated,
+  Easing,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Clipboard from "@react-native-clipboard/clipboard";
@@ -328,12 +331,25 @@ type MessageTextPart =
   | { type: "text"; value: string }
   | { type: "link"; value: string; href: string };
 
+type AudioMessageBubbleProps = {
+  messageId: string;
+  isMine: boolean;
+  isFocused: boolean;
+  isActive: boolean;
+  isPlaying: boolean;
+  durationSec: number;
+  onToggle: () => void;
+  onLongPress: () => void;
+  getActiveSoundCurrentTime: (cb: (sec: number) => void) => void;
+  getActiveSoundDuration: () => number;
+};
+
 /** =========================
  * Helpers
  * ========================= */
 const PAGE_SIZE = 30;
 const URL_RE = /(?:https?:\/\/|www\.)[^\s]+/gi;
-const TRAILING_PUNCT_RE = /[),.!?;:\]\}]+$/;
+const TRAILING_PUNCT_RE = /[),.!?;:\]}]+$/;
 
 function getInitial(name?: string | null) {
   if (!name) return "?";
@@ -395,8 +411,8 @@ function normalizeExternalUrl(url?: string | null) {
   if (!trimmed) return "";
 
   const unwrapped = trimmed
-    .replace(/^[\(<\[\{"'`]+/, "")
-    .replace(/[\)>\]\}"'`]+$/, "");
+    .replace(/^[[(<{"'`]+/, "")
+    .replace(/[)>\]}'"`]+$/, "");
 
   const clean = unwrapped.replace(TRAILING_PUNCT_RE, "");
   if (!clean) return "";
@@ -456,12 +472,126 @@ function parseMessageTextParts(text?: string | null): MessageTextPart[] {
   return parts;
 }
 
+const AudioMessageBubble = React.memo(function AudioMessageBubbleInner(props: AudioMessageBubbleProps) {
+  const {
+    isMine,
+    isFocused,
+    isActive,
+    isPlaying,
+    durationSec,
+    onToggle,
+    onLongPress,
+    getActiveSoundCurrentTime: getSoundCurrentTime,
+    getActiveSoundDuration: getSoundDuration,
+  } = props;
+
+  const [posSec, setPosSec] = useState(0);
+  const [durSec, setDurSec] = useState(durationSec);
+  const tickRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (!isActive) return;
+
+    if (durationSec > 0) {
+      setDurSec(durationSec);
+      return;
+    }
+
+    const d = getSoundDuration();
+    if (d > 0) setDurSec(d);
+  }, [durationSec, getSoundDuration, isActive]);
+
+  useEffect(() => {
+    if (tickRef.current) {
+      clearInterval(tickRef.current);
+      tickRef.current = null;
+    }
+
+    if (!isActive) {
+      setPosSec(0);
+      return;
+    }
+
+    getSoundCurrentTime((sec) => {
+      setPosSec(Math.max(0, sec));
+    });
+
+    if (!isPlaying) return;
+
+    tickRef.current = setInterval(() => {
+      getSoundCurrentTime((sec) => {
+        setPosSec((prev) => {
+          const next = Math.max(0, sec);
+          if (Math.abs(next - prev) < 0.05) return prev;
+          return next;
+        });
+      });
+    }, 250);
+
+    return () => {
+      if (tickRef.current) {
+        clearInterval(tickRef.current);
+        tickRef.current = null;
+      }
+    };
+  }, [getSoundCurrentTime, isActive, isPlaying]);
+
+  const total = durSec > 0 ? durSec : durationSec;
+  const safeTotal = total > 0 ? total : 0;
+  const safePos = safeTotal > 0 ? Math.min(posSec, safeTotal) : posSec;
+  const progress = safeTotal > 0 ? clamp01(safePos / safeTotal) : 0;
+
+  const leftLabel = formatDurationMMSS(safePos);
+  const rightLabel = safeTotal > 0 ? formatDurationMMSS(safeTotal) : "--:--";
+
+  return (
+    <Pressable onPress={onToggle} onLongPress={onLongPress} delayLongPress={250}>
+      <View
+        style={[
+          styles.audioBubble,
+          isMine ? styles.audioBubbleMine : styles.audioBubbleOther,
+          isFocused && styles.msgBubbleFocused,
+        ]}
+      >
+        <View style={styles.audioPlayBtn}>
+          <Ionicons name={isPlaying ? "pause" : "play"} size={18} color="#0b0b0f" />
+        </View>
+
+        <View style={styles.flexMinWidth0}>
+          <Text
+            style={[styles.audioLabel, isMine ? styles.audioLabelMine : styles.audioLabelOther]}
+            numberOfLines={1}
+          >
+            🎤 Voice message
+          </Text>
+
+          <View style={styles.audioProgressTrack}>
+            <View style={[styles.audioProgressFill, { width: `${progress * 100}%` }]} />
+          </View>
+
+          <View style={styles.audioTimeRow}>
+            <Text style={[styles.audioTimeText, isMine ? styles.audioTimeTextMine : styles.audioTimeTextOther]}>
+              {leftLabel}
+            </Text>
+            <Text style={[styles.audioTimeText, isMine ? styles.audioTimeTextMine : styles.audioTimeTextOther]}>
+              {rightLabel}
+            </Text>
+          </View>
+        </View>
+      </View>
+    </Pressable>
+  );
+});
+
+AudioMessageBubble.displayName = "AudioMessageBubble";
+
 /** =========================
  * Screen
  * ========================= */
 export default function ChatScreen({ navigation, route }: Props) {
   const { t } = useI18n();
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const composerBottomPad = Platform.OS === "android" ? Math.max(insets.bottom, 8) : 0;
 
   const [me, setMe] = useState<Me | null>(null);
@@ -744,7 +874,7 @@ export default function ChatScreen({ navigation, route }: Props) {
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
       if (state !== "active" && isRecording) {
-        void cancelRecording();
+        cancelRecording();
       }
     });
     return () => {
@@ -884,15 +1014,29 @@ export default function ChatScreen({ navigation, route }: Props) {
   const [isMenuVisible, setIsMenuVisible] = useState(false);
   const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
   const [isMessageMenuVisible, setIsMessageMenuVisible] = useState(false);
-  const [isDeleteConfirmVisible, setIsDeleteConfirmVisible] = useState(false);
-  const [pendingDeleteMessage, setPendingDeleteMessage] = useState<Message | null>(null);
 
   const [composerHeight, setComposerHeight] = useState(0);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [composerTopInWindow, setComposerTopInWindow] = useState<number | null>(null);
+  const composerWrapRef = useRef<any>(null);
+
+  const measureComposerTop = useCallback(() => {
+    requestAnimationFrame(() => {
+      try {
+        composerWrapRef.current?.measureInWindow?.((_x: number, y: number) => {
+          if (!Number.isFinite(y)) return;
+          const next = Math.max(0, Math.round(y));
+          setComposerTopInWindow((prev) => (prev === next ? prev : next));
+        });
+      } catch {}
+    });
+  }, []);
 
   const listRef = useRef<FlatList<Message> | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const isNearBottomRef = useRef(true);
+  const fabBottomAnim = useRef(new Animated.Value(0)).current;
+  const fabBottomInitedRef = useRef(false);
   const lastScrollTickRef = useRef(0);
   const lastMsgCountRef = useRef(0);
   const forceScrollOnNextAppendRef = useRef(false);
@@ -915,8 +1059,12 @@ export default function ChatScreen({ navigation, route }: Props) {
     const showSub = Keyboard.addListener(showEvt as any, (e: any) => {
       const h = e?.endCoordinates?.height;
       setKeyboardHeight(Number.isFinite(h) ? Math.max(0, Number(h)) : 0);
+      measureComposerTop();
     });
-    const hideSub = Keyboard.addListener(hideEvt as any, () => setKeyboardHeight(0));
+    const hideSub = Keyboard.addListener(hideEvt as any, () => {
+      setKeyboardHeight(0);
+      measureComposerTop();
+    });
 
     return () => {
       try {
@@ -926,7 +1074,12 @@ export default function ChatScreen({ navigation, route }: Props) {
         hideSub.remove();
       } catch {}
     };
-  }, []);
+  }, [measureComposerTop]);
+
+  // Re-measure on orientation/size changes and when composer height changes.
+  useEffect(() => {
+    measureComposerTop();
+  }, [measureComposerTop, windowHeight, composerHeight, sel]);
 
   // ✅ Zustand sync (เหมือน web)
   const setCurrentChat = useGlobalChatStore((s: any) => s.setCurrentChat);
@@ -1319,7 +1472,7 @@ export default function ChatScreen({ navigation, route }: Props) {
     if (now - lastScrollTickRef.current < 80) return;
     lastScrollTickRef.current = now;
 
-    const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
+    const { contentOffset } = e.nativeEvent;
     // FlatList is inverted, so "bottom" (latest message) is near offset.y ~= 0
     const bottomThreshold = 24;
     const isAtBottom = contentOffset.y <= bottomThreshold;
@@ -1493,7 +1646,7 @@ export default function ChatScreen({ navigation, route }: Props) {
   const runMenuAction = useCallback((action: () => Promise<void> | void) => {
     setIsMenuVisible(false);
     setTimeout(() => {
-      void action();
+      action();
     }, 10);
   }, []);
 
@@ -1507,8 +1660,7 @@ export default function ChatScreen({ navigation, route }: Props) {
     setSelectedMessage(null);
   }, []);
 
-  // Backwards-compatible aliases (older JSX references)
-  const handleOpenMessageMenu = openMenu;
+  // Backwards-compatible alias (older JSX references)
   const handleCloseMessageMenu = closeMenu;
 
   const runMessageMenuAction = useCallback(
@@ -1518,51 +1670,12 @@ export default function ChatScreen({ navigation, route }: Props) {
 
       setTimeout(() => {
         if (!picked) return;
-        void action(picked);
+        action(picked);
       }, 10);
     },
     [closeMenu, selectedMessage]
   );
 
-  const closeDeleteConfirm = useCallback(() => {
-    setIsDeleteConfirmVisible(false);
-    setPendingDeleteMessage(null);
-  }, []);
-
-  const handleReply = useCallback((message: Message) => {
-    closeMenu();
-    setReplyTarget(message);
-  }, [closeMenu]);
-
-  const handleCopy = useCallback((message: Message) => {
-    closeMenu();
-    const textValue = String(message.text ?? "").trim();
-    if (!textValue) return;
-
-    try {
-      Clipboard.setString(textValue);
-      if (Platform.OS === "android") {
-        ToastAndroid.show(t("chat.copied"), ToastAndroid.SHORT);
-      }
-    } catch (e) {
-      console.warn("[Chat] copy failed", e);
-    }
-  }, [closeMenu, t]);
-
-  const handleDelete = useCallback((message: Message) => {
-    closeMenu();
-    if (message.sender?.id !== meId) return;
-    setPendingDeleteMessage(message);
-    setIsDeleteConfirmVisible(true);
-  }, [closeMenu, meId]);
-
-  const handleDeleteConfirmed = useCallback(async () => {
-    const target = pendingDeleteMessage;
-    if (!target) return;
-
-    closeDeleteConfirm();
-    await onDeleteMessage(target);
-  }, [pendingDeleteMessage, onDeleteMessage, closeDeleteConfirm]);
 
   const handleCopyText = useCallback(
     (value: string) => {
@@ -1631,8 +1744,48 @@ export default function ChatScreen({ navigation, route }: Props) {
   useEffect(() => {
     setIsMessageMenuVisible(false);
     setSelectedMessage(null);
-    closeDeleteConfirm();
-  }, [sel, closeDeleteConfirm]);
+  }, [sel]);
+
+  const renderHeaderTitle = useCallback(() => {
+    return (
+      <Pressable
+        style={styles.headerTitlePressable}
+        onPress={() => {
+          if (!selectedChat) return;
+          if (!selectedChat.is_group && partner?.id) {
+            navigation.navigate("Profile", { id: partner.id });
+          }
+        }}
+      >
+        <Text style={styles.navTitle} numberOfLines={1}>
+          {title}
+        </Text>
+        {!!subtitle && (
+          <Text style={styles.navSub} numberOfLines={1}>
+            {subtitle}
+          </Text>
+        )}
+      </Pressable>
+    );
+  }, [navigation, partner?.id, selectedChat, subtitle, title]);
+
+  const renderHeaderRight = useCallback(() => {
+    return (
+      <View style={styles.headerRightRow}>
+        <Pressable onPress={() => setChatsModalOpen(true)} style={styles.headerBtn}>
+          <Ionicons name="chatbubbles-outline" size={20} color="#fff" />
+        </Pressable>
+
+        <Pressable onPress={handleOpenChatMenu} style={styles.headerBtn}>
+          {loadingChats || chatSettingsBusy ? (
+            <ActivityIndicator />
+          ) : (
+            <Ionicons name="ellipsis-vertical" size={18} color="#fff" />
+          )}
+        </Pressable>
+      </View>
+    );
+  }, [chatSettingsBusy, handleOpenChatMenu, loadingChats]);
 
   /** ===== Header ===== */
   useLayoutEffect(() => {
@@ -1640,51 +1793,13 @@ export default function ChatScreen({ navigation, route }: Props) {
       headerShown: true,
       headerStyle: { backgroundColor: "#111" },
       headerTintColor: "#fff",
-      headerTitle: () => (
-        <Pressable
-          style={{ flex: 1, minWidth: 0 }}
-          onPress={() => {
-            if (!selectedChat) return;
-            if (!selectedChat.is_group && partner?.id) {
-              navigation.navigate("Profile", { id: partner.id });
-            }
-          }}
-        >
-          <Text style={styles.navTitle} numberOfLines={1}>
-            {title}
-          </Text>
-          {!!subtitle && (
-            <Text style={styles.navSub} numberOfLines={1}>
-              {subtitle}
-            </Text>
-          )}
-        </Pressable>
-      ),
-      headerRight: () => (
-        <View style={{ flexDirection: "row", gap: 10, marginRight: 8 }}>
-          <Pressable onPress={() => setChatsModalOpen(true)} style={styles.headerBtn}>
-            <Ionicons name="chatbubbles-outline" size={20} color="#fff" />
-          </Pressable>
-
-          <Pressable onPress={handleOpenChatMenu} style={styles.headerBtn}>
-            {loadingChats || chatSettingsBusy ? (
-              <ActivityIndicator />
-            ) : (
-              <Ionicons name="ellipsis-vertical" size={18} color="#fff" />
-            )}
-          </Pressable>
-        </View>
-      ),
+      headerTitle: renderHeaderTitle,
+      headerRight: renderHeaderRight,
     });
   }, [
     navigation,
-    title,
-    subtitle,
-    selectedChat,
-    partner?.id,
-    loadingChats,
-    chatSettingsBusy,
-    handleOpenChatMenu,
+    renderHeaderTitle,
+    renderHeaderRight,
   ]);
 
   /** ===== render chat item ===== */
@@ -1731,7 +1846,7 @@ export default function ChatScreen({ navigation, route }: Props) {
             <Text style={styles.avatarText}>{initial}</Text>
           </View>
 
-          <View style={{ flex: 1, minWidth: 0 }}>
+          <View style={styles.flexMinWidth0}>
             <Text style={styles.chatTitle} numberOfLines={1}>
               {name}
             </Text>
@@ -1773,8 +1888,8 @@ export default function ChatScreen({ navigation, route }: Props) {
       const isFocused = isMessageMenuVisible && selectedMessage?.id === item.id;
 
       return (
-        <View style={[styles.msgRow, { justifyContent: isMine ? "flex-end" : "flex-start" }]}>
-          <View style={[styles.msgBubbleWrap, { alignItems: isMine ? "flex-end" : "flex-start" }]}>
+        <View style={[styles.msgRow, isMine ? styles.msgRowMine : styles.msgRowOther]}>
+          <View style={[styles.msgBubbleWrap, isMine ? styles.msgBubbleWrapMine : styles.msgBubbleWrapOther]}>
             {!isMine ? (
               <Pressable
                 onPress={() => {
@@ -1797,10 +1912,7 @@ export default function ChatScreen({ navigation, route }: Props) {
                 ]}
               >
                 <Text
-                  style={[
-                    styles.replySender,
-                    { color: isMine ? "#fff" : "#93c5fd" },
-                  ]}
+                  style={[styles.replySender, isMine ? styles.replySenderMine : styles.replySenderOther]}
                   numberOfLines={1}
                 >
                   {item.reply_to?.sender?.id === meId
@@ -1810,20 +1922,14 @@ export default function ChatScreen({ navigation, route }: Props) {
 
                 {item.reply_to?.text ? (
                   <Text
-                    style={[
-                      styles.replyText,
-                      { color: isMine ? "#f3f4f6" : "#d1d5db" },
-                    ]}
+                    style={[styles.replyText, isMine ? styles.replyTextMine : styles.replyTextOther]}
                     numberOfLines={2}
                   >
                     {String(item.reply_to.text)}
                   </Text>
                 ) : item.reply_to?.audio ? (
                   <Text
-                    style={[
-                      styles.replyText,
-                      { color: isMine ? "#f3f4f6" : "#d1d5db" },
-                    ]}
+                    style={[styles.replyText, isMine ? styles.replyTextMine : styles.replyTextOther]}
                     numberOfLines={2}
                   >
                     🎤 Voice message
@@ -1833,7 +1939,7 @@ export default function ChatScreen({ navigation, route }: Props) {
             ) : null}
 
             {imgs.length > 0 ? (
-              <View style={[styles.imgGrid, { justifyContent: isMine ? "flex-end" : "flex-start" }]}>
+              <View style={[styles.imgGrid, isMine ? styles.imgGridMine : styles.imgGridOther]}>
                 {imgs.slice(0, 4).map((img, idx) => {
                   const uri = getImgSrc(img);
                   if (!uri) return null;
@@ -1844,7 +1950,7 @@ export default function ChatScreen({ navigation, route }: Props) {
                     <Pressable
                       key={img.id ?? `${item.id}-img-${idx}`}
                       onPress={() => setPreviewUri(uri)}
-                      style={[styles.imgTile, isLast && { opacity: 0.8 }]}
+                      style={[styles.imgTile, isLast && styles.imgTileFaded]}
                     >
                       <Image source={{ uri }} style={styles.imgTileImg} />
                       {isLast ? (
@@ -1888,7 +1994,7 @@ export default function ChatScreen({ navigation, route }: Props) {
                             key={`${item.id}-link-${idx}`}
                             style={[styles.msgLink, isMine ? styles.msgLinkMine : styles.msgLinkOther]}
                             onPress={() => {
-                              void handleOpenUrl(part.href);
+                              handleOpenUrl(part.href);
                             }}
                             suppressHighlighting
                           >
@@ -1906,7 +2012,7 @@ export default function ChatScreen({ navigation, route }: Props) {
               </Pressable>
             ) : null}
 
-            <View style={[styles.msgMetaRow, isMine ? { justifyContent: "flex-end" } : { justifyContent: "flex-start" }]}>
+            <View style={[styles.msgMetaRow, isMine ? styles.msgMetaRowMine : styles.msgMetaRowOther]}>
               <Text style={styles.msgMeta}>{timeLabel}</Text>
             </View>
           </View>
@@ -1916,7 +2022,6 @@ export default function ChatScreen({ navigation, route }: Props) {
     [
       meId,
       navigation,
-      onDeleteMessage,
       t,
       handleOpenUrl,
       toggleAudioPlayback,
@@ -1930,189 +2035,66 @@ export default function ChatScreen({ navigation, route }: Props) {
     ]
   );
 
-  const AudioMessageBubble = useMemo(() => {
-    type BubbleProps = {
-      messageId: string;
-      isMine: boolean;
-      isFocused: boolean;
-      isActive: boolean;
-      isPlaying: boolean;
-      durationSec: number;
-      onToggle: () => void;
-      onLongPress: () => void;
-      getActiveSoundCurrentTime: (cb: (sec: number) => void) => void;
-      getActiveSoundDuration: () => number;
-    };
-
-    const Cmp = React.memo(function AudioMessageBubbleInner(props: BubbleProps) {
-      const {
-        messageId,
-        isMine,
-        isFocused,
-        isActive,
-        isPlaying,
-        durationSec,
-        onToggle,
-        onLongPress,
-        getActiveSoundCurrentTime,
-        getActiveSoundDuration,
-      } = props;
-
-      const [posSec, setPosSec] = useState(0);
-      const [durSec, setDurSec] = useState(durationSec);
-      const tickRef = useRef<any>(null);
-
-      // Keep duration stable (prefer message duration, fallback to sound duration if available)
-      useEffect(() => {
-        if (!isActive) return;
-
-        // If we have a message duration, use it.
-        if (durationSec > 0) {
-          setDurSec(durationSec);
-          return;
-        }
-
-        // Otherwise, attempt to infer from current sound instance.
-        const d = getActiveSoundDuration();
-        if (d > 0) setDurSec(d);
-      }, [durationSec, getActiveSoundDuration, isActive]);
-
-      // Poll current time only while the active message is playing.
-      useEffect(() => {
-        if (tickRef.current) {
-          clearInterval(tickRef.current);
-          tickRef.current = null;
-        }
-
-        if (!isActive) {
-          setPosSec(0);
-          return;
-        }
-
-        // When switching active message, snap position once.
-        getActiveSoundCurrentTime((sec) => {
-          setPosSec(Math.max(0, sec));
-        });
-
-        if (!isPlaying) return;
-
-        tickRef.current = setInterval(() => {
-          getActiveSoundCurrentTime((sec) => {
-            setPosSec((prev) => {
-              const next = Math.max(0, sec);
-              // Avoid extra renders when the native value doesn't move.
-              if (Math.abs(next - prev) < 0.05) return prev;
-              return next;
-            });
-          });
-        }, 250);
-
-        return () => {
-          if (tickRef.current) {
-            clearInterval(tickRef.current);
-            tickRef.current = null;
-          }
-        };
-      }, [getActiveSoundCurrentTime, isActive, isPlaying, messageId]);
-
-      const total = durSec > 0 ? durSec : durationSec;
-      const safeTotal = total > 0 ? total : 0;
-      const safePos = safeTotal > 0 ? Math.min(posSec, safeTotal) : posSec;
-      const progress = safeTotal > 0 ? clamp01(safePos / safeTotal) : 0;
-
-      const leftLabel = formatDurationMMSS(safePos);
-      const rightLabel = safeTotal > 0 ? formatDurationMMSS(safeTotal) : "--:--";
-
-      return (
-        <Pressable onPress={onToggle} onLongPress={onLongPress} delayLongPress={250}>
-          <View
-            style={[
-              styles.audioBubble,
-              isMine ? styles.audioBubbleMine : styles.audioBubbleOther,
-              isFocused && styles.msgBubbleFocused,
-            ]}
-          >
-            <View style={styles.audioPlayBtn}>
-              <Ionicons
-                name={isPlaying ? "pause" : "play"}
-                size={18}
-                color="#0b0b0f"
-              />
-            </View>
-
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text
-                style={[
-                  styles.audioLabel,
-                  isMine ? styles.audioLabelMine : styles.audioLabelOther,
-                ]}
-                numberOfLines={1}
-              >
-                🎤 Voice message
-              </Text>
-
-              <View style={styles.audioProgressTrack}>
-                <View style={[styles.audioProgressFill, { width: `${progress * 100}%` }]} />
-              </View>
-
-              <View style={styles.audioTimeRow}>
-                <Text
-                  style={[
-                    styles.audioTimeText,
-                    isMine
-                      ? { color: "rgba(255,255,255,0.92)" }
-                      : { color: "#d1d5db" },
-                  ]}
-                >
-                  {leftLabel}
-                </Text>
-                <Text
-                  style={[
-                    styles.audioTimeText,
-                    isMine
-                      ? { color: "rgba(255,255,255,0.92)" }
-                      : { color: "#d1d5db" },
-                  ]}
-                >
-                  {rightLabel}
-                </Text>
-              </View>
-            </View>
-          </View>
-        </Pressable>
-      );
-    });
-
-    Cmp.displayName = "AudioMessageBubble";
-    return Cmp;
-  }, []);
-
   const invertedMessages = useMemo(() => [...messages].reverse(), [messages]);
   const keyExtractor = useCallback((it: Message) => it.id, []);
   const isInitialLoading = loadingMsgs;
   const isFetchingMore = loadingMore;
 
   const scrollFabBottom = useMemo(() => {
-    // Place FAB above composer + safe-area and above keyboard if open.
-    // Extra gap keeps it from visually colliding with bubbles/composer.
+    // Place FAB above the highest blocking UI at the bottom:
+    // - If keyboard overlays UI, lift above keyboard.
+    // - If composer is lifted above keyboard (e.g., iOS keyboard avoidance), lift above composer.
+    // Uses measured on-screen composer position to avoid fragile constants.
     const gap = 12;
     const safeBottom = Math.max(insets.bottom, 0);
-    const kb = Math.max(keyboardHeight, 0);
-    const composer = Math.max(composerHeight, 0);
-    return safeBottom + gap + (kb > 0 ? kb : composer);
-  }, [composerHeight, keyboardHeight, insets.bottom]);
+
+    const kb = Math.max(0, keyboardHeight);
+    const composerH = Math.max(0, composerHeight);
+
+    const composerTopFromBottom =
+      typeof composerTopInWindow === "number" &&
+      Number.isFinite(composerTopInWindow) &&
+      windowHeight > 0
+        ? Math.max(0, windowHeight - composerTopInWindow)
+        : composerH;
+
+    // When keyboard is closed, keep iOS bottom safe-area *only if* it isn't already included
+    // by the measured composer position (some layouts already pad the composer).
+    // On Android, the composer wrapper already pads by safe inset (`composerBottomPad`), so don't double count.
+    const alreadyAccountsSafe = Math.max(0, composerTopFromBottom - composerH);
+    const safeWhenClosed =
+      Platform.OS === "ios" ? Math.max(0, safeBottom - alreadyAccountsSafe) : 0;
+
+    const base = kb > 0 ? Math.max(kb, composerTopFromBottom) : composerTopFromBottom + safeWhenClosed;
+    return base + gap;
+  }, [composerHeight, composerTopInWindow, insets.bottom, keyboardHeight, windowHeight]);
+
+  useEffect(() => {
+    if (!fabBottomInitedRef.current) {
+      fabBottomAnim.setValue(scrollFabBottom);
+      fabBottomInitedRef.current = true;
+      return;
+    }
+
+    Animated.timing(fabBottomAnim, {
+      toValue: scrollFabBottom,
+      duration: 180,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [fabBottomAnim, scrollFabBottom]);
 
   return (
     <View style={styles.container}>
       <View style={styles.body}>
         {!sel ? (
           <View style={styles.center}>
-            <Text style={{ color: "#9ca3af" }}>{t("chat.select_chat")}</Text>
+            <Text style={styles.centerMutedText}>{t("chat.select_chat")}</Text>
           </View>
         ) : isInitialLoading ? (
           <View style={styles.center}>
             <ActivityIndicator />
-            <Text style={{ color: "#9ca3af", marginTop: 8 }}>{t("chat.loading_messages")}</Text>
+            <Text style={styles.centerMutedTextWithTop}>{t("chat.loading_messages")}</Text>
           </View>
         ) : (
           <>
@@ -2123,7 +2105,7 @@ export default function ChatScreen({ navigation, route }: Props) {
               data={invertedMessages}
               keyExtractor={keyExtractor}
               inverted
-              contentContainerStyle={{ padding: 12, paddingBottom: 6 }}
+              contentContainerStyle={styles.messagesContent}
               renderItem={renderMessageItem}
               onScroll={handleListScroll}
               scrollEventThrottle={16}
@@ -2134,7 +2116,7 @@ export default function ChatScreen({ navigation, route }: Props) {
               onEndReached={() => {
                 if (onEndReachedLockRef.current) return;
                 onEndReachedLockRef.current = true;
-                void loadOlder();
+                loadOlder();
               }}
               initialNumToRender={16}
               maxToRenderPerBatch={20}
@@ -2143,41 +2125,45 @@ export default function ChatScreen({ navigation, route }: Props) {
               maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
               ListFooterComponent={
                 isFetchingMore ? (
-                  <View style={{ paddingVertical: 10, alignItems: "center" }}>
+                  <View style={styles.listFooterCenter}>
                     <ActivityIndicator />
-                    <Text style={{ color: "#9ca3af", marginTop: 6, fontSize: 12 }}>
+                    <Text style={styles.listFooterMuted}>
                       {t("chat.loading_older")}
                     </Text>
                   </View>
                 ) : !hasNextPage && messages.length > 0 ? (
-                  <View style={{ paddingVertical: 10, alignItems: "center" }}>
-                    <Text style={{ color: "#6b7280", fontSize: 12 }}>No older messages</Text>
+                  <View style={styles.listFooterCenter}>
+                    <Text style={styles.listFooterDim}>No older messages</Text>
                   </View>
                 ) : null
               }
             />
 
             {showScrollToBottom && (
-              <Pressable
-                onPress={scrollToBottom}
-                style={({ pressed }) => [
-                  styles.scrollToBottomBtn,
-                  { bottom: scrollFabBottom },
-                  pressed && { opacity: 0.85 },
-                ]}
-                hitSlop={10}
-              >
-                <Ionicons name="arrow-down" size={20} color="#fff" />
-              </Pressable>
+              <Animated.View style={[styles.scrollToBottomWrap, { bottom: fabBottomAnim }]}>
+                <Pressable
+                  onPress={scrollToBottom}
+                  style={({ pressed }) => [
+                    styles.scrollToBottomBtn,
+                    pressed && { opacity: 0.85 },
+                  ]}
+                  hitSlop={10}
+                >
+                  <Ionicons name="arrow-down" size={20} color="#fff" />
+                </Pressable>
+              </Animated.View>
             )}
 
             <View
-              style={{ paddingBottom: composerBottomPad }}
+              style={[styles.composerWrap, { paddingBottom: composerBottomPad }]}
+              ref={composerWrapRef}
               onLayout={(e) => {
                 const h = e?.nativeEvent?.layout?.height;
                 if (!Number.isFinite(h)) return;
                 const next = Math.max(0, Math.round(h));
                 setComposerHeight((prev) => (prev === next ? prev : next));
+
+                measureComposerTop();
               }}
             >
               <SendMessageSection
@@ -2216,17 +2202,17 @@ export default function ChatScreen({ navigation, route }: Props) {
           {loadingChats ? (
             <View style={styles.center}>
               <ActivityIndicator />
-              <Text style={{ color: "#9ca3af", marginTop: 8 }}>{t("chat.loading_chats")}</Text>
+              <Text style={styles.centerMutedTextWithTop}>{t("chat.loading_chats")}</Text>
             </View>
           ) : (
             <FlatList
               data={chats}
               keyExtractor={(it) => it.id}
-              contentContainerStyle={{ padding: 12 }}
+              contentContainerStyle={styles.modalListContent}
               renderItem={renderChatItem}
               ListEmptyComponent={
                 <View style={styles.center}>
-                  <Text style={{ color: "#9ca3af" }}>{t("chat.no_chats")}</Text>
+                  <Text style={styles.centerMutedText}>{t("chat.no_chats")}</Text>
                 </View>
               }
             />
@@ -2356,7 +2342,7 @@ export default function ChatScreen({ navigation, route }: Props) {
               onPress={() =>
                 runMessageMenuAction((message) => {
                   if (message.sender?.id !== meId) return;
-                  void onDeleteMessage(message);
+                  onDeleteMessage(message);
                 })
               }
             >
@@ -2401,9 +2387,25 @@ export default function ChatScreen({ navigation, route }: Props) {
  * Styles
  * ========================= */
 const styles = StyleSheet.create({
+    flexMinWidth0: { flex: 1, minWidth: 0 },
+
+    headerTitlePressable: { flex: 1, minWidth: 0 },
+    headerRightRow: { flexDirection: "row", gap: 10, marginRight: 8 },
+
+    messagesContent: { padding: 12, paddingBottom: 6 },
+    listFooterCenter: { paddingVertical: 10, alignItems: "center" },
+    listFooterMuted: { color: "#9ca3af", marginTop: 6, fontSize: 12 },
+    listFooterDim: { color: "#6b7280", fontSize: 12 },
+
+    composerWrap: { width: "100%" },
+
+    audioTimeTextMine: { color: "rgba(255,255,255,0.92)" },
+    audioTimeTextOther: { color: "#d1d5db" },
   container: { flex: 1, backgroundColor: "#0b0b0f" },
   body: { flex: 1 },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
+  centerMutedText: { color: "#9ca3af" },
+  centerMutedTextWithTop: { color: "#9ca3af", marginTop: 8 },
 
   // header buttons
   headerBtn: {
@@ -2432,6 +2434,8 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   modalTitle: { color: "#fff", fontSize: 16, fontWeight: "900" },
+
+  modalListContent: { padding: 12 },
 
   actionSheetOverlay: {
     flex: 1,
@@ -2516,7 +2520,11 @@ const styles = StyleSheet.create({
 
   // messages
   msgRow: { flexDirection: "row", marginVertical: 6 },
+  msgRowMine: { justifyContent: "flex-end" },
+  msgRowOther: { justifyContent: "flex-start" },
   msgBubbleWrap: { maxWidth: "82%" },
+  msgBubbleWrapMine: { alignItems: "flex-end" },
+  msgBubbleWrapOther: { alignItems: "flex-start" },
 
   msgSender: { color: "#9ca3af", fontSize: 11, marginBottom: 2 },
 
@@ -2539,8 +2547,14 @@ const styles = StyleSheet.create({
   },
   replySender: { fontSize: 11, fontWeight: "800", marginBottom: 2 },
   replyText: { fontSize: 12 },
+  replySenderMine: { color: "#fff" },
+  replySenderOther: { color: "#93c5fd" },
+  replyTextMine: { color: "#f3f4f6" },
+  replyTextOther: { color: "#d1d5db" },
 
   imgGrid: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 6 },
+  imgGridMine: { justifyContent: "flex-end" },
+  imgGridOther: { justifyContent: "flex-start" },
   imgTile: {
     width: 90,
     height: 90,
@@ -2549,6 +2563,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#111",
     position: "relative",
   },
+  imgTileFaded: { opacity: 0.8 },
   imgTileImg: { width: "100%", height: "100%" },
   imgOverlay: {
     position: "absolute",
@@ -2655,12 +2670,11 @@ const styles = StyleSheet.create({
   textOther: { color: "#e5e7eb" },
 
   msgMetaRow: { flexDirection: "row", alignItems: "center", marginTop: 4 },
+  msgMetaRowMine: { justifyContent: "flex-end" },
+  msgMetaRowOther: { justifyContent: "flex-start" },
   msgMeta: { color: "#9ca3af", fontSize: 11 },
 
   scrollToBottomBtn: {
-    position: "absolute",
-    right: 16,
-    bottom: 88,
     width: 44,
     height: 44,
     borderRadius: 22,
@@ -2672,6 +2686,14 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 4 },
+  },
+
+  scrollToBottomWrap: {
+    position: "absolute",
+    right: 16,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
   },
 
   // preview
