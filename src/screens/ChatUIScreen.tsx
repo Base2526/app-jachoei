@@ -21,7 +21,9 @@ import {
   Image,
   Linking,
   Keyboard,
+  AppState,
   Platform,
+  PermissionsAndroid,
   ToastAndroid,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -36,6 +38,9 @@ import { ENV } from "../config/env";
 import { refreshUnreadChatBadge } from "../notifications/badge";
 import { useI18n } from "../i18n";
 
+import { AudioRecorder, AudioUtils } from "react-native-audio";
+import Sound from "react-native-sound";
+
 // ✅ Zustand global unread/currentChat sync (RN)
 import { useGlobalChatStore } from "../store/globalChatStore";
 
@@ -49,11 +54,23 @@ const MESSAGE_FIELDS = gql`
     id
     chat_id
     text
+    audio {
+      file_id
+      url
+      mime
+      duration_sec
+    }
     reply_to_id
 
     reply_to {
       id
       text
+      audio {
+        file_id
+        url
+        mime
+        duration_sec
+      }
       images {
         id
         url
@@ -128,6 +145,12 @@ const Q_CHATS = gql`
           name
           avatar
         }
+        audio {
+          file_id
+          url
+          mime
+          duration_sec
+        }
         images {
           id
           url
@@ -167,6 +190,8 @@ const MUT_SEND = gql`
     $text: String!
     $to_user_ids: [ID!]!
     $images: [Upload!]
+    $audio: Upload
+    $audio_duration_sec: Int
     $reply_to_id: ID
     $client_message_id: String
   ) {
@@ -175,6 +200,8 @@ const MUT_SEND = gql`
       text: $text
       to_user_ids: $to_user_ids
       images: $images
+      audio: $audio
+      audio_duration_sec: $audio_duration_sec
       reply_to_id: $reply_to_id
       client_message_id: $client_message_id
     ) {
@@ -265,6 +292,13 @@ type MsgImage = {
   mime?: string | null;
 };
 
+type MessageAudio = {
+  file_id?: string | null;
+  url?: string | null;
+  mime?: string | null;
+  duration_sec?: number | null;
+};
+
 type Message = {
   id: string;
   chat_id: string;
@@ -272,6 +306,7 @@ type Message = {
   created_at: string;
   sender?: { id: string; name?: string | null; avatar?: string | null } | null;
   images?: MsgImage[] | null;
+  audio?: MessageAudio | null;
   reply_to?: any | null;
   reply_to_id?: string | null;
   myReceipt?: any | null;
@@ -323,6 +358,33 @@ function formatTime(ts: any) {
 function getImgSrc(img: any) {
   if (img?.file_id) return `${ENV.apiBase}/api/files/${img.file_id}`;
   return img?.url || "";
+}
+
+function getAudioSrc(audio: any) {
+  if (!audio) return "";
+  if (audio?.file_id) return `${ENV.apiBase}/api/files/${audio.file_id}`;
+  return audio?.url || "";
+}
+
+function formatDurationMMSS(totalSeconds: number) {
+  const s = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+  const mm = String(Math.floor(s / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
+function clamp01(v: number) {
+  if (!Number.isFinite(v)) return 0;
+  return Math.max(0, Math.min(1, v));
+}
+
+function ensureFileUri(uriOrPath: string) {
+  const v = String(uriOrPath || "").trim();
+  if (!v) return "";
+  if (/^[a-z]+:\/\//i.test(v)) return v;
+  // RN uploads usually need file://
+  if (v.startsWith("/")) return `file://${v}`;
+  return v;
 }
 
 function normalizeExternalUrl(url?: string | null) {
@@ -403,6 +465,7 @@ export default function ChatScreen({ navigation, route }: Props) {
   const composerBottomPad = Platform.OS === "android" ? Math.max(insets.bottom, 8) : 0;
 
   const [me, setMe] = useState<Me | null>(null);
+  const meId = me?.id;
   const [chats, setChats] = useState<Chat[]>([]);
   const [sel, setSel] = useState<string | null>(null);
 
@@ -433,6 +496,385 @@ export default function ChatScreen({ navigation, route }: Props) {
   const [text, setText] = useState("");
   const [replyTarget, setReplyTarget] = useState<any | null>(null);
 
+  // ===== voice recording =====
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSec, setRecordingSec] = useState(0);
+  const recordingPathRef = useRef<string | null>(null);
+  const recordingStartedAtRef = useRef<number>(0);
+  const recordingBusyRef = useRef(false);
+  const recordingIntervalRef = useRef<any>(null);
+
+  // ===== audio playback =====
+  const [playingMessageId, setPlayingMessageId] = useState<string | null>(null);
+  const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+  const soundRef = useRef<Sound | null>(null);
+
+  const getActiveSoundCurrentTime = useCallback((cb: (sec: number) => void) => {
+    const s = soundRef.current;
+    if (!s) {
+      cb(0);
+      return;
+    }
+
+    try {
+      s.getCurrentTime((sec) => {
+        cb(Number.isFinite(sec) ? sec : 0);
+      });
+    } catch {
+      cb(0);
+    }
+  }, []);
+
+  const getActiveSoundDuration = useCallback(() => {
+    const s = soundRef.current;
+    if (!s) return 0;
+    try {
+      const d = Number(s.getDuration());
+      return Number.isFinite(d) && d > 0 ? d : 0;
+    } catch {
+      return 0;
+    }
+  }, []);
+
+  const stopAudioPlayback = useCallback(() => {
+    try {
+      soundRef.current?.stop(() => {
+        try {
+          soundRef.current?.release();
+        } catch {}
+        soundRef.current = null;
+      });
+    } catch {
+      try {
+        soundRef.current?.release();
+      } catch {}
+      soundRef.current = null;
+    }
+
+    setIsPlayingAudio(false);
+    setPlayingMessageId(null);
+  }, []);
+
+  useEffect(() => {
+    try {
+      Sound.setCategory("Playback");
+    } catch {}
+
+    return () => {
+      stopAudioPlayback();
+    };
+  }, [stopAudioPlayback]);
+
+  const toggleAudioPlayback = useCallback(
+    (messageId: string, uri: string) => {
+      const src = String(uri || "").trim();
+      if (!src) return;
+
+      // Same message: toggle pause/resume
+      if (playingMessageId === messageId && soundRef.current) {
+        if (isPlayingAudio) {
+          soundRef.current.pause(() => {
+            setIsPlayingAudio(false);
+          });
+        } else {
+          soundRef.current.play((success) => {
+            setIsPlayingAudio(false);
+            setPlayingMessageId(null);
+            try {
+              soundRef.current?.release();
+            } catch {}
+            soundRef.current = null;
+            if (!success) {
+              console.warn("[Audio] playback failed");
+            }
+          });
+          setIsPlayingAudio(true);
+        }
+        return;
+      }
+
+      // Different message: stop previous, then play new
+      stopAudioPlayback();
+
+      setPlayingMessageId(messageId);
+      setIsPlayingAudio(true);
+
+      const sound = new Sound(src, undefined, (error) => {
+        if (error) {
+          console.warn("[Audio] load failed", error);
+          setIsPlayingAudio(false);
+          setPlayingMessageId(null);
+          try {
+            sound.release();
+          } catch {}
+          soundRef.current = null;
+          return;
+        }
+
+        soundRef.current = sound;
+        sound.play((success) => {
+          setIsPlayingAudio(false);
+          setPlayingMessageId(null);
+          try {
+            sound.release();
+          } catch {}
+          soundRef.current = null;
+          if (!success) {
+            console.warn("[Audio] playback failed");
+          }
+        });
+      });
+    },
+    [isPlayingAudio, playingMessageId, stopAudioPlayback]
+  );
+
+  const clearRecordingTicker = useCallback(() => {
+    if (recordingIntervalRef.current) {
+      clearInterval(recordingIntervalRef.current);
+      recordingIntervalRef.current = null;
+    }
+  }, []);
+
+  const requestMicPermissionAndroid = useCallback(async () => {
+    if (Platform.OS !== "android") return true;
+
+    try {
+      const granted = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+        {
+          title: "Microphone permission",
+          message: "Allow microphone access to record voice messages.",
+          buttonPositive: "OK",
+          buttonNegative: "Cancel",
+        }
+      );
+      return granted === PermissionsAndroid.RESULTS.GRANTED;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const startRecording = useCallback(async () => {
+    if (!sel) return;
+    if (recordingBusyRef.current) return;
+    if (isRecording) return;
+
+    recordingBusyRef.current = true;
+    try {
+      const ok = await requestMicPermissionAndroid();
+      if (!ok) {
+        Alert.alert("Microphone permission", "Microphone access was denied.");
+        return;
+      }
+
+      // Stop any playing sound when recording starts.
+      stopAudioPlayback();
+
+      const fileName = `voice_${sel}_${Date.now()}.m4a`;
+      const path = `${AudioUtils.DocumentDirectoryPath}/${fileName}`;
+      recordingPathRef.current = path;
+      recordingStartedAtRef.current = Date.now();
+      setRecordingSec(0);
+
+      AudioRecorder.onProgress = (data: any) => {
+        const sec = Math.max(0, Math.floor(Number(data?.currentTime) || 0));
+        setRecordingSec((prev) => (prev === sec ? prev : sec));
+      };
+
+      AudioRecorder.prepareRecordingAtPath(path, {
+        SampleRate: 44100,
+        Channels: 1,
+        AudioQuality: "High",
+        AudioEncoding: "aac",
+        AudioEncodingBitRate: 128000,
+        OutputFormat: "mpeg_4",
+        MeteringEnabled: true,
+      });
+
+      await AudioRecorder.startRecording();
+      setIsRecording(true);
+
+      clearRecordingTicker();
+      recordingIntervalRef.current = setInterval(() => {
+        const startedAt = recordingStartedAtRef.current || Date.now();
+        const sec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+        setRecordingSec((prev) => (prev === sec ? prev : sec));
+      }, 250);
+    } finally {
+      recordingBusyRef.current = false;
+    }
+  }, [clearRecordingTicker, isRecording, requestMicPermissionAndroid, sel, stopAudioPlayback]);
+
+  const stopRecording = useCallback(async () => {
+    if (recordingBusyRef.current) return null;
+    if (!isRecording) return null;
+
+    recordingBusyRef.current = true;
+    try {
+      clearRecordingTicker();
+      let stoppedPath = "";
+      try {
+        stoppedPath = await AudioRecorder.stopRecording();
+      } catch (e) {
+        console.warn("[AudioRecorder] stop failed", e);
+      }
+
+      const path = String(stoppedPath || recordingPathRef.current || "").trim();
+      const startedAt = recordingStartedAtRef.current || Date.now();
+      const duration = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+
+      setIsRecording(false);
+      recordingPathRef.current = null;
+      recordingStartedAtRef.current = 0;
+
+      return { path, durationSec: duration };
+    } finally {
+      recordingBusyRef.current = false;
+    }
+  }, [clearRecordingTicker, isRecording]);
+
+  const cancelRecording = useCallback(async () => {
+    if (!isRecording) return;
+    const res = await stopRecording();
+    if (!res) return;
+    setRecordingSec(0);
+  }, [isRecording, stopRecording]);
+
+  // Stop & cancel if app backgrounds (prevents orphaned recordings)
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state !== "active" && isRecording) {
+        void cancelRecording();
+      }
+    });
+    return () => {
+      try {
+        sub.remove();
+      } catch {}
+    };
+  }, [cancelRecording, isRecording]);
+
+  const sendAudioMessage = useCallback(
+    async (args: { uri: string; durationSec: number }) => {
+      if (!sel) return;
+      if (!meId) return;
+
+      const selected = chats.find((c) => c.id === sel) ?? null;
+      const members = selected?.members ?? [];
+      const toUserIds = members.map((m: any) => m?.id).filter(Boolean).filter((id: string) => id !== meId);
+      if (!toUserIds.length) return;
+
+      const uri = ensureFileUri(args.uri);
+      if (!uri) return;
+
+      const durationSec = Math.max(0, Math.round(Number(args.durationSec) || 0));
+      if (durationSec < 1) {
+        Alert.alert(t("app.chat_title"), "Recording is too short.");
+        return;
+      }
+
+      const name = `voice-${Date.now()}.m4a`;
+      const uploadAudio = {
+        uri,
+        name,
+        type: "audio/mp4",
+      };
+
+      const res = await client.mutate<{ sendMessage: Message }>({
+        mutation: MUT_SEND,
+        variables: {
+          chat_id: sel,
+          text: "",
+          to_user_ids: toUserIds,
+          images: null,
+          audio: uploadAudio,
+          audio_duration_sec: durationSec,
+          reply_to_id: replyTarget?.id ?? null,
+          client_message_id: null,
+        },
+      });
+
+      const newMsg = res.data?.sendMessage;
+      if (!newMsg) return;
+
+      setMessages((prev) => {
+        if (prev.some((x) => x.id === newMsg.id)) return prev;
+        return [...prev, newMsg].sort(
+          (a, b) => safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime()
+        );
+      });
+
+      setChats((prev) =>
+        prev
+          .map((c) => {
+            if (c.id !== newMsg.chat_id) return c;
+            return {
+              ...c,
+              last_message: {
+                id: newMsg.id,
+                text: newMsg.text,
+                created_at: newMsg.created_at,
+                sender: newMsg.sender,
+                audio: (newMsg as any).audio ?? null,
+                images: newMsg.images ?? [],
+              },
+              last_message_at: newMsg.created_at,
+            };
+          })
+          .sort((a, b) => {
+            const at = a.last_message_at ? safeDate(a.last_message_at).getTime() : 0;
+            const bt = b.last_message_at ? safeDate(b.last_message_at).getTime() : 0;
+            return bt - at;
+          })
+      );
+
+      setReplyTarget(null);
+
+      // Ensure the freshly-sent message is visible immediately.
+      isNearBottomRef.current = true;
+      setShowScrollToBottom(false);
+      requestAnimationFrame(() => {
+        listRef.current?.scrollToOffset({ offset: 0, animated: true });
+      });
+
+      if (sel && newMsg.created_at) {
+        client
+          .mutate({
+            mutation: MUT_MARK_UPTO,
+            variables: { chat_id: sel, cursor: newMsg.created_at },
+          })
+          .catch(() => {});
+      }
+    },
+    [chats, meId, replyTarget?.id, sel, t]
+  );
+
+  const onPressMic = useCallback(async () => {
+    if (!sel) return;
+
+    // Toggle recording
+    if (!isRecording) {
+      await startRecording();
+      return;
+    }
+
+    const res = await stopRecording();
+    if (!res) return;
+    const { path, durationSec } = res;
+    if (!path) {
+      Alert.alert(t("app.chat_title"), "Unable to save recording.");
+      return;
+    }
+
+    try {
+      await sendAudioMessage({ uri: path, durationSec });
+    } catch (e: any) {
+      Alert.alert(t("chat.send_failed"), e?.message || t("common.unknown_error"));
+    } finally {
+      setRecordingSec(0);
+    }
+  }, [isRecording, sel, sendAudioMessage, startRecording, stopRecording, t]);
+
   const [chatsModalOpen, setChatsModalOpen] = useState(false);
   const [chatSettings, setChatSettings] = useState<ChatSettings>({
     is_muted: false,
@@ -460,8 +902,6 @@ export default function ChatScreen({ navigation, route }: Props) {
   const loadMoreLockRef = useRef(false);
   const onEndReachedLockRef = useRef(false);
   const activeChatIdRef = useRef<string | null>(null);
-
-  const meId = me?.id;
 
   useEffect(() => {
     activeChatIdRef.current = sel;
@@ -798,6 +1238,7 @@ export default function ChatScreen({ navigation, route }: Props) {
                     text: m.text,
                     created_at: m.created_at,
                     sender: m.sender,
+                    audio: (m as any).audio ?? null,
                     images: m.images ?? [],
                   },
                   last_message_at: m.created_at,
@@ -924,6 +1365,8 @@ export default function ChatScreen({ navigation, route }: Props) {
           text: args.text,
           to_user_ids: args.to_user_ids,
           images: uploadFiles.length ? uploadFiles : null,
+          audio: null,
+          audio_duration_sec: null,
           reply_to_id: args.reply_to_id ?? null,
           client_message_id: args.client_message_id ?? null,
         },
@@ -1258,11 +1701,14 @@ export default function ChatScreen({ navigation, route }: Props) {
 
       const last = item.last_message;
       const lastImages = Array.isArray(last?.images) ? last.images : [];
+      const hasLastAudio = !!last?.audio;
       const lastText =
         last?.text?.trim()
           ? String(last.text).trim().length > 44
             ? String(last.text).trim().slice(0, 41) + "…"
             : String(last.text).trim()
+          : hasLastAudio
+          ? "🎤 Voice message"
           : lastImages.length
           ? lastImages.length === 1
             ? `📷 ${t("chat.photo")}`
@@ -1311,6 +1757,9 @@ export default function ChatScreen({ navigation, route }: Props) {
       const timeLabel = formatTime(item.created_at);
       const hasText = !!item.text?.trim();
       const imgs = Array.isArray(item.images) ? item.images : [];
+      const audioSrc = getAudioSrc((item as any)?.audio);
+      const hasAudio = !!audioSrc;
+      const audioDurationSec = Math.max(0, Number((item as any)?.audio?.duration_sec) || 0);
 
       const markThisRead = () => {
         client
@@ -1369,6 +1818,16 @@ export default function ChatScreen({ navigation, route }: Props) {
                   >
                     {String(item.reply_to.text)}
                   </Text>
+                ) : item.reply_to?.audio ? (
+                  <Text
+                    style={[
+                      styles.replyText,
+                      { color: isMine ? "#f3f4f6" : "#d1d5db" },
+                    ]}
+                    numberOfLines={2}
+                  >
+                    🎤 Voice message
+                  </Text>
                 ) : null}
               </Pressable>
             ) : null}
@@ -1397,6 +1856,21 @@ export default function ChatScreen({ navigation, route }: Props) {
                   );
                 })}
               </View>
+            ) : null}
+
+            {hasAudio ? (
+              <AudioMessageBubble
+                messageId={item.id}
+                isMine={isMine}
+                isFocused={isFocused}
+                isActive={playingMessageId === item.id}
+                isPlaying={playingMessageId === item.id && isPlayingAudio}
+                durationSec={audioDurationSec}
+                onToggle={() => toggleAudioPlayback(item.id, audioSrc)}
+                onLongPress={() => openMenu(item)}
+                getActiveSoundCurrentTime={getActiveSoundCurrentTime}
+                getActiveSoundDuration={getActiveSoundDuration}
+              />
             ) : null}
 
             {hasText ? (
@@ -1445,11 +1919,173 @@ export default function ChatScreen({ navigation, route }: Props) {
       onDeleteMessage,
       t,
       handleOpenUrl,
+      toggleAudioPlayback,
+      getActiveSoundCurrentTime,
+      getActiveSoundDuration,
+      playingMessageId,
+      isPlayingAudio,
       openMenu,
       isMessageMenuVisible,
       selectedMessage?.id,
     ]
   );
+
+  const AudioMessageBubble = useMemo(() => {
+    type BubbleProps = {
+      messageId: string;
+      isMine: boolean;
+      isFocused: boolean;
+      isActive: boolean;
+      isPlaying: boolean;
+      durationSec: number;
+      onToggle: () => void;
+      onLongPress: () => void;
+      getActiveSoundCurrentTime: (cb: (sec: number) => void) => void;
+      getActiveSoundDuration: () => number;
+    };
+
+    const Cmp = React.memo(function AudioMessageBubbleInner(props: BubbleProps) {
+      const {
+        messageId,
+        isMine,
+        isFocused,
+        isActive,
+        isPlaying,
+        durationSec,
+        onToggle,
+        onLongPress,
+        getActiveSoundCurrentTime,
+        getActiveSoundDuration,
+      } = props;
+
+      const [posSec, setPosSec] = useState(0);
+      const [durSec, setDurSec] = useState(durationSec);
+      const tickRef = useRef<any>(null);
+
+      // Keep duration stable (prefer message duration, fallback to sound duration if available)
+      useEffect(() => {
+        if (!isActive) return;
+
+        // If we have a message duration, use it.
+        if (durationSec > 0) {
+          setDurSec(durationSec);
+          return;
+        }
+
+        // Otherwise, attempt to infer from current sound instance.
+        const d = getActiveSoundDuration();
+        if (d > 0) setDurSec(d);
+      }, [durationSec, getActiveSoundDuration, isActive]);
+
+      // Poll current time only while the active message is playing.
+      useEffect(() => {
+        if (tickRef.current) {
+          clearInterval(tickRef.current);
+          tickRef.current = null;
+        }
+
+        if (!isActive) {
+          setPosSec(0);
+          return;
+        }
+
+        // When switching active message, snap position once.
+        getActiveSoundCurrentTime((sec) => {
+          setPosSec(Math.max(0, sec));
+        });
+
+        if (!isPlaying) return;
+
+        tickRef.current = setInterval(() => {
+          getActiveSoundCurrentTime((sec) => {
+            setPosSec((prev) => {
+              const next = Math.max(0, sec);
+              // Avoid extra renders when the native value doesn't move.
+              if (Math.abs(next - prev) < 0.05) return prev;
+              return next;
+            });
+          });
+        }, 250);
+
+        return () => {
+          if (tickRef.current) {
+            clearInterval(tickRef.current);
+            tickRef.current = null;
+          }
+        };
+      }, [getActiveSoundCurrentTime, isActive, isPlaying, messageId]);
+
+      const total = durSec > 0 ? durSec : durationSec;
+      const safeTotal = total > 0 ? total : 0;
+      const safePos = safeTotal > 0 ? Math.min(posSec, safeTotal) : posSec;
+      const progress = safeTotal > 0 ? clamp01(safePos / safeTotal) : 0;
+
+      const leftLabel = formatDurationMMSS(safePos);
+      const rightLabel = safeTotal > 0 ? formatDurationMMSS(safeTotal) : "--:--";
+
+      return (
+        <Pressable onPress={onToggle} onLongPress={onLongPress} delayLongPress={250}>
+          <View
+            style={[
+              styles.audioBubble,
+              isMine ? styles.audioBubbleMine : styles.audioBubbleOther,
+              isFocused && styles.msgBubbleFocused,
+            ]}
+          >
+            <View style={styles.audioPlayBtn}>
+              <Ionicons
+                name={isPlaying ? "pause" : "play"}
+                size={18}
+                color="#0b0b0f"
+              />
+            </View>
+
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text
+                style={[
+                  styles.audioLabel,
+                  isMine ? styles.audioLabelMine : styles.audioLabelOther,
+                ]}
+                numberOfLines={1}
+              >
+                🎤 Voice message
+              </Text>
+
+              <View style={styles.audioProgressTrack}>
+                <View style={[styles.audioProgressFill, { width: `${progress * 100}%` }]} />
+              </View>
+
+              <View style={styles.audioTimeRow}>
+                <Text
+                  style={[
+                    styles.audioTimeText,
+                    isMine
+                      ? { color: "rgba(255,255,255,0.92)" }
+                      : { color: "#d1d5db" },
+                  ]}
+                >
+                  {leftLabel}
+                </Text>
+                <Text
+                  style={[
+                    styles.audioTimeText,
+                    isMine
+                      ? { color: "rgba(255,255,255,0.92)" }
+                      : { color: "#d1d5db" },
+                  ]}
+                >
+                  {rightLabel}
+                </Text>
+              </View>
+            </View>
+          </View>
+        </Pressable>
+      );
+    });
+
+    Cmp.displayName = "AudioMessageBubble";
+    return Cmp;
+  }, []);
 
   const invertedMessages = useMemo(() => [...messages].reverse(), [messages]);
   const keyExtractor = useCallback((it: Message) => it.id, []);
@@ -1550,6 +2186,10 @@ export default function ChatScreen({ navigation, route }: Props) {
                 text={text}
                 setText={setText}
                 onSend={onSend}
+                onPressMic={onPressMic}
+                isRecording={isRecording}
+                recordingSec={recordingSec}
+                onCancelRecording={cancelRecording}
                 me={me}
                 replyTarget={replyTarget}
                 setReplyTarget={setReplyTarget}
@@ -1944,6 +2584,58 @@ const styles = StyleSheet.create({
     backgroundColor: "#171a22", // ✅ dark (แทนสีขาว)
     borderWidth: 1,
     borderColor: "#2a2a35",
+  },
+
+  // ===== audio bubble =====
+  audioBubble: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    minWidth: 170,
+  },
+  audioBubbleMine: {
+    backgroundColor: "#1677ff",
+  },
+  audioBubbleOther: {
+    backgroundColor: "#171a22",
+    borderWidth: 1,
+    borderColor: "#2a2a35",
+  },
+  audioPlayBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "rgba(255,255,255,0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  audioLabel: { fontSize: 13, fontWeight: "900" },
+  audioLabelMine: { color: "#fff" },
+  audioLabelOther: { color: "#e5e7eb" },
+  audioDuration: { fontSize: 12, marginTop: 2 },
+  audioProgressTrack: {
+    width: "100%",
+    height: 4,
+    borderRadius: 999,
+    overflow: "hidden",
+    backgroundColor: "rgba(255,255,255,0.22)",
+    marginTop: 6,
+  },
+  audioProgressFill: {
+    height: "100%",
+    backgroundColor: "rgba(255,255,255,0.92)",
+  },
+  audioTimeRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 6,
+  },
+  audioTimeText: {
+    fontSize: 11,
+    fontWeight: "700",
   },
 
   msgText: { fontSize: 14, lineHeight: 18 },

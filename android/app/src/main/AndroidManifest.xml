@@ -3,6 +3,12 @@
     xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Camera (take photo in chat) -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- Voice messages (microphone recording) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
     <!--
       Google Play (SMS/Call Log) compliance intent (Jachoei):
       - Not a default SMS app, not a default phone app, not an assistant app.

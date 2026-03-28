@@ -13,9 +13,16 @@ import {
   Keyboard,
   Platform,
   ActivityIndicator,
+  PermissionsAndroid,
 } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
-import { launchImageLibrary, Asset, ImageLibraryOptions } from "react-native-image-picker";
+import {
+  launchCamera,
+  launchImageLibrary,
+  Asset,
+  CameraOptions,
+  ImageLibraryOptions,
+} from "react-native-image-picker";
 import { createClientMessageId } from "../utils/chat";
 import { useI18n } from "../i18n";
 
@@ -51,6 +58,12 @@ type Props = {
     client_message_id?: string | null;
   }) => Promise<void>;
 
+  onPressMic?: () => void;
+
+  isRecording?: boolean;
+  recordingSec?: number;
+  onCancelRecording?: () => void;
+
   me: Me;
 
   replyTarget: any | null; // message object
@@ -59,12 +72,23 @@ type Props = {
 
 const EMOJIS = ["😀", "😁", "😂", "🤣", "😊", "😍", "😎", "🤔", "😢", "🙏", "👍", "🔥", "💯", "🎉", "✨", "❤️", "😡"];
 
+function formatMMSS(totalSeconds: number) {
+  const s = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+  const mm = String(Math.floor(s / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
 export default function SendMessageSection({
   chats,
   sel,
   text,
   setText,
   onSend,
+  onPressMic,
+  isRecording,
+  recordingSec,
+  onCancelRecording,
   me,
   replyTarget,
   setReplyTarget,
@@ -77,6 +101,7 @@ export default function SendMessageSection({
   const [isSendingMedia, setIsSendingMedia] = useState(false);
 
   const inFlightPayloadsRef = useRef<Set<string>>(new Set());
+  const openingCameraRef = useRef(false);
 
   const inputRef = useRef<TextInput>(null);
 
@@ -102,6 +127,7 @@ export default function SendMessageSection({
   const isSending = isSendingText || isSendingMedia;
 
   const disabled = !me?.id || !chat || !sel;
+  const recording = !!isRecording;
 
   // ปิด emoji เมื่อคีย์บอร์ดเปิด / กดส่ง
   useEffect(() => {
@@ -163,6 +189,86 @@ export default function SendMessageSection({
       return next;
     });
   }, [disabled, images.length, isSending, t]);
+
+  const requestCameraPermissionAndroid = useCallback(async () => {
+    if (Platform.OS !== "android") return true;
+
+    try {
+      const granted = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.CAMERA,
+        {
+          title: "Camera permission",
+          message: "Allow camera access to take a photo.",
+          buttonPositive: "OK",
+          buttonNegative: "Cancel",
+        }
+      );
+
+      return granted === PermissionsAndroid.RESULTS.GRANTED;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const takePhoto = useCallback(async () => {
+    if (disabled || isSending) return;
+    if (openingCameraRef.current) return;
+    openingCameraRef.current = true;
+
+    try {
+      Keyboard.dismiss();
+
+      if (images.length >= MAX_IMAGES) {
+        Alert.alert(t("chat.image_limit_title"), t("chat.image_limit_text", { count: MAX_IMAGES }));
+        return;
+      }
+
+      const ok = await requestCameraPermissionAndroid();
+      if (!ok) {
+        Alert.alert("Camera permission", "Camera access was denied.");
+        return;
+      }
+
+      const options: CameraOptions = {
+        mediaType: "photo",
+        cameraType: "back",
+        saveToPhotos: false,
+        quality: 0.9,
+      };
+
+      const res = await launchCamera(options);
+
+      if (res.didCancel) return;
+      if (res.errorCode) {
+        Alert.alert(t("chat.pick_image_failed"), `${res.errorCode}: ${res.errorMessage ?? ""}`);
+        return;
+      }
+
+      const assets = (res.assets ?? []) as Asset[];
+      const mapped: UploadImage[] = assets
+        .filter((a) => !!a.uri)
+        .map((a, idx) => ({
+          uri: a.uri!,
+          name: a.fileName ?? `camera-${Date.now()}-${idx}.jpg`,
+          type: a.type ?? "image/jpeg",
+          width: a.width,
+          height: a.height,
+          fileSize: a.fileSize,
+        }));
+
+      if (!mapped.length) return;
+
+      setImages((prev) => {
+        const next = [...prev, ...mapped].slice(0, MAX_IMAGES);
+        if (next.length >= MAX_IMAGES) {
+          Alert.alert(t("chat.image_limit_title"), t("chat.image_limit_text", { count: MAX_IMAGES }));
+        }
+        return next;
+      });
+    } finally {
+      openingCameraRef.current = false;
+    }
+  }, [disabled, images.length, isSending, requestCameraPermissionAndroid, t]);
 
   const removeImage = useCallback((uri: string) => {
     if (isSending) return;
@@ -316,11 +422,23 @@ export default function SendMessageSection({
       {/* ===== Input Bar ===== */}
       <View style={styles.bar}>
         <Pressable
-          onPress={pickImages}
-          disabled={disabled || isSending || images.length >= MAX_IMAGES}
+          onPress={takePhoto}
+          disabled={disabled || isSending || recording || images.length >= MAX_IMAGES}
           style={({ pressed }) => [
             styles.iconBtn,
-            (disabled || isSending || images.length >= MAX_IMAGES) && { opacity: 0.35 },
+            (disabled || isSending || recording || images.length >= MAX_IMAGES) && { opacity: 0.35 },
+            pressed && { opacity: 0.8 },
+          ]}
+        >
+          <Ionicons name="camera-outline" size={20} color="#e5e7eb" />
+        </Pressable>
+
+        <Pressable
+          onPress={pickImages}
+          disabled={disabled || isSending || recording || images.length >= MAX_IMAGES}
+          style={({ pressed }) => [
+            styles.iconBtn,
+            (disabled || isSending || recording || images.length >= MAX_IMAGES) && { opacity: 0.35 },
             pressed && { opacity: 0.8 },
           ]}
         >
@@ -329,17 +447,31 @@ export default function SendMessageSection({
 
         <Pressable
           onPress={onToggleEmoji}
-          disabled={disabled || isSending}
-          style={({ pressed }) => [styles.iconBtn, (disabled || isSending) && { opacity: 0.35 }, pressed && { opacity: 0.8 }]}
+          disabled={disabled || isSending || recording}
+          style={({ pressed }) => [styles.iconBtn, (disabled || isSending || recording) && { opacity: 0.35 }, pressed && { opacity: 0.8 }]}
         >
           <Ionicons name="happy-outline" size={20} color="#e5e7eb" />
         </Pressable>
+
+        {onPressMic ? (
+          <Pressable
+            onPress={onPressMic}
+            disabled={disabled || isSending}
+            style={({ pressed }) => [
+              styles.iconBtn,
+              (disabled || isSending) && { opacity: 0.35 },
+              pressed && { opacity: 0.8 },
+            ]}
+          >
+            <Ionicons name="mic-outline" size={20} color="#e5e7eb" />
+          </Pressable>
+        ) : null}
 
         <TextInput
           ref={inputRef}
           value={text}
           onChangeText={setText}
-          editable={!disabled && !isSending}
+          editable={!disabled && !isSending && !recording}
           placeholder={t("chat.type_message")}
           placeholderTextColor="#6b7280"
           style={styles.input}
@@ -362,6 +494,40 @@ export default function SendMessageSection({
             <Ionicons name="send" size={18} color="#0b0b0f" />
           )}
         </Pressable>
+
+        {recording && (
+          <View style={styles.recordOverlay} pointerEvents="auto">
+            <Pressable
+              onPress={onCancelRecording}
+              disabled={!onCancelRecording}
+              style={({ pressed }) => [
+                styles.recordSideBtn,
+                !onCancelRecording && { opacity: 0.35 },
+                pressed && onCancelRecording && { opacity: 0.85 },
+              ]}
+              hitSlop={10}
+            >
+              <Ionicons name="trash-outline" size={18} color="#fff" />
+            </Pressable>
+
+            <View style={styles.recordCenter}>
+              <Text style={styles.recordTimer}>{formatMMSS(recordingSec ?? 0)}</Text>
+              <Text style={styles.recordHint}>{t("chat.recording") || "Recording"}</Text>
+            </View>
+
+            <Pressable
+              onPress={onPressMic}
+              disabled={!onPressMic}
+              style={({ pressed }) => [
+                styles.recordStopBtn,
+                pressed && onPressMic && { opacity: 0.9 },
+              ]}
+              hitSlop={10}
+            >
+              <Ionicons name="stop" size={20} color="#fff" />
+            </Pressable>
+          </View>
+        )}
       </View>
 
       {/* ===== Emoji Picker ===== */}
@@ -526,6 +692,40 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.10)",
   },
+
+  // ===== recording overlay =====
+  recordOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
+    borderRadius: 26,
+    backgroundColor: "rgba(11,11,15,0.92)",
+  },
+  recordSideBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    backgroundColor: "rgba(239,68,68,0.22)",
+    borderWidth: 1,
+    borderColor: "rgba(239,68,68,0.35)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  recordStopBtn: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: "#ef4444",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+  },
+  recordCenter: { flex: 1, alignItems: "center" },
+  recordTimer: { color: "#fff", fontWeight: "900", fontSize: 16 },
+  recordHint: { color: "#9ca3af", fontSize: 12, marginTop: 2 },
 
   // ✅ emoji box เป็น dark card
   emojiBox: {

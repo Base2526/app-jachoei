@@ -35,6 +35,10 @@
 	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string></string>
+	<key>NSCameraUsageDescription</key>
+	<string>Allow camera access to take photos for chat messages.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Allow microphone access to record voice messages.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>
