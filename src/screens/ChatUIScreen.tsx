@@ -12,12 +12,15 @@ import {
   Text,
   StyleSheet,
   FlatList,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   Pressable,
   Modal,
   ActivityIndicator,
   Alert,
   Image,
   Linking,
+  Keyboard,
   Platform,
   ToastAndroid,
 } from "react-native";
@@ -136,10 +139,14 @@ const Q_CHATS = gql`
   }
 `;
 
-const Q_MSGS = gql`
-  query ($chat_id: ID!, $limit: Int, $offset: Int) {
-    messages(chat_id: $chat_id, limit: $limit, offset: $offset) {
-      ...MessageFields
+const Q_MSGS_CONNECTION = gql`
+  query ($chat_id: ID!, $limit: Int, $cursor: String) {
+    messagesConnection(chat_id: $chat_id, limit: $limit, cursor: $cursor) {
+      items {
+        ...MessageFields
+      }
+      nextCursor
+      hasMore
     }
   }
   ${MESSAGE_FIELDS}
@@ -276,6 +283,12 @@ type ChatSettings = {
   notifications_enabled: boolean;
 };
 
+type MessageConnection = {
+  items: Message[];
+  nextCursor?: string | null;
+  hasMore: boolean;
+};
+
 type MessageTextPart =
   | { type: "text"; value: string }
   | { type: "link"; value: string; href: string };
@@ -283,7 +296,7 @@ type MessageTextPart =
 /** =========================
  * Helpers
  * ========================= */
-const PAGE_SIZE = 40;
+const PAGE_SIZE = 30;
 const URL_RE = /(?:https?:\/\/|www\.)[^\s]+/gi;
 const TRAILING_PUNCT_RE = /[),.!?;:\]\}]+$/;
 
@@ -413,8 +426,9 @@ export default function ChatScreen({ navigation, route }: Props) {
   const [loadingChats, setLoadingChats] = useState(false);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
 
-  const [hasMore, setHasMore] = useState(true);
+  const [hasNextPage, setHasNextPage] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
 
   const [text, setText] = useState("");
   const [replyTarget, setReplyTarget] = useState<any | null>(null);
@@ -426,11 +440,53 @@ export default function ChatScreen({ navigation, route }: Props) {
   });
   const [chatSettingsBusy, setChatSettingsBusy] = useState(false);
   const [isMenuVisible, setIsMenuVisible] = useState(false);
+  const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
+  const [isMessageMenuVisible, setIsMessageMenuVisible] = useState(false);
+  const [isDeleteConfirmVisible, setIsDeleteConfirmVisible] = useState(false);
+  const [pendingDeleteMessage, setPendingDeleteMessage] = useState<Message | null>(null);
+
+  const [composerHeight, setComposerHeight] = useState(0);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+  const listRef = useRef<FlatList<Message> | null>(null);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const isNearBottomRef = useRef(true);
+  const lastScrollTickRef = useRef(0);
+  const lastMsgCountRef = useRef(0);
+  const forceScrollOnNextAppendRef = useRef(false);
 
   const subAddedRef = useRef<any>(null);
   const subDeletedRef = useRef<any>(null);
+  const loadMoreLockRef = useRef(false);
+  const onEndReachedLockRef = useRef(false);
+  const activeChatIdRef = useRef<string | null>(null);
 
   const meId = me?.id;
+
+  useEffect(() => {
+    activeChatIdRef.current = sel;
+  }, [sel]);
+
+  // Keep FAB position correct when keyboard opens/closes.
+  useEffect(() => {
+    const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+
+    const showSub = Keyboard.addListener(showEvt as any, (e: any) => {
+      const h = e?.endCoordinates?.height;
+      setKeyboardHeight(Number.isFinite(h) ? Math.max(0, Number(h)) : 0);
+    });
+    const hideSub = Keyboard.addListener(hideEvt as any, () => setKeyboardHeight(0));
+
+    return () => {
+      try {
+        showSub.remove();
+      } catch {}
+      try {
+        hideSub.remove();
+      } catch {}
+    };
+  }, []);
 
   // ✅ Zustand sync (เหมือน web)
   const setCurrentChat = useGlobalChatStore((s: any) => s.setCurrentChat);
@@ -581,25 +637,33 @@ export default function ChatScreen({ navigation, route }: Props) {
 
   /** ===== load messages for chat ===== */
   const loadMessages = useCallback(
-    async (chatId: string, mode: "replace" | "append", offset: number) => {
+    async (chatId: string, mode: "replace" | "append", cursor?: string | null) => {
       if (!chatId) return;
+      if (mode === "append" && loadMoreLockRef.current) return;
 
       if (mode === "replace") setLoadingMsgs(true);
-      else setLoadingMore(true);
+      else {
+        loadMoreLockRef.current = true;
+        setLoadingMore(true);
+      }
 
       try {
-        const res = await client.query<{ messages: Message[] }>({
-          query: Q_MSGS,
-          variables: { chat_id: chatId, limit: PAGE_SIZE, offset },
+        const res = await client.query<{ messagesConnection: MessageConnection }>({
+          query: Q_MSGS_CONNECTION,
+          variables: { chat_id: chatId, limit: PAGE_SIZE, cursor: cursor ?? null },
           fetchPolicy: "network-only",
         });
 
-        const got = res.data?.messages ?? [];
+        if (activeChatIdRef.current !== chatId) return;
+
+        const page = res.data?.messagesConnection;
+        const got = page?.items ?? [];
         const sorted = [...got].sort(
           (a, b) =>
             safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime()
         );
-        setHasMore(got.length >= PAGE_SIZE);
+        setHasNextPage(!!page?.hasMore);
+        setNextCursor(page?.nextCursor ?? null);
 
         if (mode === "replace") {
           setMessages(sorted);
@@ -615,12 +679,12 @@ export default function ChatScreen({ navigation, route }: Props) {
           });
         }
 
-        const last = sorted[sorted.length - 1];
-        if (last?.created_at) {
+        const latest = sorted[sorted.length - 1];
+        if (mode === "replace" && latest?.created_at) {
           client
             .mutate({
               mutation: MUT_MARK_UPTO,
-              variables: { chat_id: chatId, cursor: last.created_at },
+              variables: { chat_id: chatId, cursor: latest.created_at },
             })
             .then(() => refreshUnreadChatBadge())
             .catch(() => {});
@@ -629,7 +693,10 @@ export default function ChatScreen({ navigation, route }: Props) {
         Alert.alert(t("chat.load_messages_error"), e?.message || t("common.unknown_error"));
       } finally {
         if (mode === "replace") setLoadingMsgs(false);
-        else setLoadingMore(false);
+        else {
+          setLoadingMore(false);
+          loadMoreLockRef.current = false;
+        }
       }
     },
     [t]
@@ -665,9 +732,11 @@ export default function ChatScreen({ navigation, route }: Props) {
 
       setReplyTarget(null);
       setText("");
-      setHasMore(true);
+      setHasNextPage(true);
+      setNextCursor(null);
+      activeChatIdRef.current = chatId;
 
-      await loadMessages(chatId, "replace", 0);
+      await loadMessages(chatId, "replace");
     },
     [loadMessages, setCurrentChat, clearUnread]
   );
@@ -678,13 +747,19 @@ export default function ChatScreen({ navigation, route }: Props) {
 
     setReplyTarget(null);
     setText("");
-    setHasMore(true);
+    setHasNextPage(true);
+    setNextCursor(null);
 
     setCurrentChat(sel);
     clearUnread(sel);
 
     loadChatSettings(sel);
-    loadMessages(sel, "replace", 0);
+    loadMessages(sel, "replace");
+
+    // Reset scroll state per chat
+    isNearBottomRef.current = true;
+    setShowScrollToBottom(false);
+    lastMsgCountRef.current = 0;
 
     try {
       subAddedRef.current?.unsubscribe?.();
@@ -771,15 +846,58 @@ export default function ChatScreen({ navigation, route }: Props) {
     };
   }, [sel, loadMessages, loadChatSettings, setCurrentChat, clearUnread]);
 
+  // Auto-scroll to bottom on new messages ONLY if user is already near bottom.
+  useEffect(() => {
+    const count = messages.length;
+    const prev = lastMsgCountRef.current;
+    lastMsgCountRef.current = count;
+
+    if (!sel) return;
+    if (count <= 0 || count <= prev) return;
+    if (!isNearBottomRef.current) return;
+
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToOffset({ offset: 0, animated: true });
+    });
+  }, [messages.length, sel]);
+
+  const scrollToBottom = useCallback(() => {
+    isNearBottomRef.current = true;
+    setShowScrollToBottom(false);
+    listRef.current?.scrollToOffset({ offset: 0, animated: true });
+  }, []);
+
+  const scrollToBottomSoon = useCallback((animated: boolean) => {
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToOffset({ offset: 0, animated });
+    });
+  }, []);
+
+  const handleListScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const now = Date.now();
+    if (now - lastScrollTickRef.current < 80) return;
+    lastScrollTickRef.current = now;
+
+    const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
+    // FlatList is inverted, so "bottom" (latest message) is near offset.y ~= 0
+    const bottomThreshold = 24;
+    const isAtBottom = contentOffset.y <= bottomThreshold;
+
+    const nearBottomForAuto = contentOffset.y <= 120;
+    isNearBottomRef.current = nearBottomForAuto;
+
+    setShowScrollToBottom(!isAtBottom);
+  }, []);
+
   /** ===== load older (pagination) ===== */
   const loadOlder = useCallback(async () => {
     if (!sel) return;
     if (loadingMore || loadingMsgs) return;
-    if (!hasMore) return;
+    if (!hasNextPage) return;
+    if (!nextCursor) return;
 
-    const offset = messages.length;
-    await loadMessages(sel, "append", offset);
-  }, [sel, loadingMore, loadingMsgs, hasMore, messages.length, loadMessages]);
+    await loadMessages(sel, "append", nextCursor);
+  }, [sel, loadingMore, loadingMsgs, hasNextPage, nextCursor, loadMessages]);
 
   /** ===== send message ===== */
   const onSend = useCallback(
@@ -791,6 +909,8 @@ export default function ChatScreen({ navigation, route }: Props) {
       reply_to_id?: string | null;
       client_message_id?: string | null;
     }) => {
+      // User explicitly sent a message — always bring them to the latest message.
+      forceScrollOnNextAppendRef.current = true;
       const uploadFiles = (args.images ?? []).map((f) => ({
         uri: f.uri,
         name: f.name || `img-${Date.now()}.jpg`,
@@ -821,6 +941,11 @@ export default function ChatScreen({ navigation, route }: Props) {
         );
       });
 
+      // Ensure the freshly-sent message is visible immediately.
+      isNearBottomRef.current = true;
+      setShowScrollToBottom(false);
+      scrollToBottomSoon(true);
+
       if (sel && newMsg.created_at) {
         client
           .mutate({
@@ -830,29 +955,23 @@ export default function ChatScreen({ navigation, route }: Props) {
           .catch(() => {});
       }
     },
-    [sel]
+    [sel, scrollToBottomSoon]
   );
 
   /** ===== delete message ===== */
   const onDeleteMessage = useCallback(async (m: Message) => {
-    Alert.alert(t("chat.delete_message_confirm_title"), t("chat.delete_message_confirm_text"), [
-      { text: t("common.cancel"), style: "cancel" },
-      {
-        text: t("common.delete"),
-        style: "destructive",
-        onPress: async () => {
-          try {
-            await client.mutate({
-              mutation: MUT_DELETE_MSG,
-              variables: { message_id: m.id },
-            });
-            setMessages((prev) => prev.filter((x) => x.id !== m.id));
-          } catch (e: any) {
-            Alert.alert(t("chat.delete_failed"), e?.message || t("common.unknown_error"));
-          }
-        },
-      },
-    ]);
+    try {
+      await client.mutate({
+        mutation: MUT_DELETE_MSG,
+        variables: { message_id: m.id },
+      });
+      setMessages((prev) => prev.filter((x) => x.id !== m.id));
+    } catch (e: any) {
+      console.warn("[Chat] delete failed", e?.message || e);
+      if (Platform.OS === "android") {
+        ToastAndroid.show(t("chat.delete_failed"), ToastAndroid.SHORT);
+      }
+    }
   }, [t]);
 
   /** ===== image preview ===== */
@@ -863,7 +982,7 @@ export default function ChatScreen({ navigation, route }: Props) {
       await loadMeAndChats();
       return;
     }
-    await Promise.all([loadMessages(sel, "replace", 0), loadMeAndChats()]);
+    await Promise.all([loadMessages(sel, "replace"), loadMeAndChats()]);
   }, [sel, loadMeAndChats, loadMessages]);
 
   const handleToggleMuteChat = useCallback(async () => {
@@ -935,6 +1054,90 @@ export default function ChatScreen({ navigation, route }: Props) {
     }, 10);
   }, []);
 
+  const openMenu = useCallback((message: Message) => {
+    setSelectedMessage(message);
+    setIsMessageMenuVisible(true);
+  }, []);
+
+  const closeMenu = useCallback(() => {
+    setIsMessageMenuVisible(false);
+    setSelectedMessage(null);
+  }, []);
+
+  // Backwards-compatible aliases (older JSX references)
+  const handleOpenMessageMenu = openMenu;
+  const handleCloseMessageMenu = closeMenu;
+
+  const runMessageMenuAction = useCallback(
+    (action: (message: Message) => Promise<void> | void) => {
+      const picked = selectedMessage;
+      closeMenu();
+
+      setTimeout(() => {
+        if (!picked) return;
+        void action(picked);
+      }, 10);
+    },
+    [closeMenu, selectedMessage]
+  );
+
+  const closeDeleteConfirm = useCallback(() => {
+    setIsDeleteConfirmVisible(false);
+    setPendingDeleteMessage(null);
+  }, []);
+
+  const handleReply = useCallback((message: Message) => {
+    closeMenu();
+    setReplyTarget(message);
+  }, [closeMenu]);
+
+  const handleCopy = useCallback((message: Message) => {
+    closeMenu();
+    const textValue = String(message.text ?? "").trim();
+    if (!textValue) return;
+
+    try {
+      Clipboard.setString(textValue);
+      if (Platform.OS === "android") {
+        ToastAndroid.show(t("chat.copied"), ToastAndroid.SHORT);
+      }
+    } catch (e) {
+      console.warn("[Chat] copy failed", e);
+    }
+  }, [closeMenu, t]);
+
+  const handleDelete = useCallback((message: Message) => {
+    closeMenu();
+    if (message.sender?.id !== meId) return;
+    setPendingDeleteMessage(message);
+    setIsDeleteConfirmVisible(true);
+  }, [closeMenu, meId]);
+
+  const handleDeleteConfirmed = useCallback(async () => {
+    const target = pendingDeleteMessage;
+    if (!target) return;
+
+    closeDeleteConfirm();
+    await onDeleteMessage(target);
+  }, [pendingDeleteMessage, onDeleteMessage, closeDeleteConfirm]);
+
+  const handleCopyText = useCallback(
+    (value: string) => {
+      const textValue = String(value ?? "").trim();
+      if (!textValue) return;
+
+      try {
+        Clipboard.setString(textValue);
+        if (Platform.OS === "android") {
+          ToastAndroid.show(t("chat.copied"), ToastAndroid.SHORT);
+        }
+      } catch (e) {
+        console.warn("[Chat] copy failed", e);
+      }
+    },
+    [t]
+  );
+
   const handleOpenUrl = useCallback(
     async (rawUrl: string) => {
       const url = normalizeExternalUrl(rawUrl);
@@ -981,6 +1184,12 @@ export default function ChatScreen({ navigation, route }: Props) {
     },
     [t]
   );
+
+  useEffect(() => {
+    setIsMessageMenuVisible(false);
+    setSelectedMessage(null);
+    closeDeleteConfirm();
+  }, [sel, closeDeleteConfirm]);
 
   /** ===== Header ===== */
   useLayoutEffect(() => {
@@ -1109,22 +1318,10 @@ export default function ChatScreen({ navigation, route }: Props) {
           .catch(() => {});
       };
 
-      const copyText = (text: string) => {
-        try {
-          Clipboard.setString(text);
-          if (Platform.OS === "android") {
-            ToastAndroid.show(t("chat.copied"), ToastAndroid.SHORT);
-          } else {
-            Alert.alert(t("chat.copied"));
-          }
-        } catch (e) {
-          console.warn("[Chat] copy failed", e);
-        }
-      };
-
       const bubbleStyle = isMine ? styles.bubbleMine : styles.bubbleOther;
       const bubbleTextStyle = isMine ? styles.textMine : styles.textOther;
       const textParts = parseMessageTextParts(item.text);
+      const isFocused = isMessageMenuVisible && selectedMessage?.id === item.id;
 
       return (
         <View style={[styles.msgRow, { justifyContent: isMine ? "flex-end" : "flex-start" }]}>
@@ -1144,7 +1341,7 @@ export default function ChatScreen({ navigation, route }: Props) {
 
             {item.reply_to ? (
               <Pressable
-                onPress={() => Alert.alert(t("chat.reply"), t("chat.reply_notice"))}
+                onPress={() => setReplyTarget(item.reply_to)}
                 style={[
                   styles.replyPreview,
                   isMine ? styles.replyMine : styles.replyOther,
@@ -1205,14 +1402,10 @@ export default function ChatScreen({ navigation, route }: Props) {
             {hasText ? (
               <Pressable
                 onPress={markThisRead}
-                onLongPress={() => {
-                  const t = String(item.text ?? "");
-                  if (!t.trim()) return;
-                  copyText(t);
-                }}
+                onLongPress={() => openMenu(item)}
                 delayLongPress={250}
               >
-                <View style={[styles.msgBubble, bubbleStyle]}>
+                <View style={[styles.msgBubble, bubbleStyle, isFocused && styles.msgBubbleFocused]}>
                   <Text style={[styles.msgText, bubbleTextStyle]}>
                     {textParts.map((part, idx) => {
                       if (part.type === "link") {
@@ -1241,25 +1434,37 @@ export default function ChatScreen({ navigation, route }: Props) {
 
             <View style={[styles.msgMetaRow, isMine ? { justifyContent: "flex-end" } : { justifyContent: "flex-start" }]}>
               <Text style={styles.msgMeta}>{timeLabel}</Text>
-
-              <Pressable onPress={() => setReplyTarget(item)} hitSlop={10} style={{ marginLeft: 10 }}>
-                <Ionicons name="return-up-back-outline" size={16} color="#9ca3af" />
-              </Pressable>
-
-              {isMine ? (
-                <Pressable onPress={() => onDeleteMessage(item)} hitSlop={10} style={{ marginLeft: 10 }}>
-                  <Ionicons name="trash-outline" size={16} color="#ef4444" />
-                </Pressable>
-              ) : null}
             </View>
           </View>
         </View>
       );
     },
-    [meId, navigation, onDeleteMessage, t, handleOpenUrl]
+    [
+      meId,
+      navigation,
+      onDeleteMessage,
+      t,
+      handleOpenUrl,
+      openMenu,
+      isMessageMenuVisible,
+      selectedMessage?.id,
+    ]
   );
 
   const invertedMessages = useMemo(() => [...messages].reverse(), [messages]);
+  const keyExtractor = useCallback((it: Message) => it.id, []);
+  const isInitialLoading = loadingMsgs;
+  const isFetchingMore = loadingMore;
+
+  const scrollFabBottom = useMemo(() => {
+    // Place FAB above composer + safe-area and above keyboard if open.
+    // Extra gap keeps it from visually colliding with bubbles/composer.
+    const gap = 12;
+    const safeBottom = Math.max(insets.bottom, 0);
+    const kb = Math.max(keyboardHeight, 0);
+    const composer = Math.max(composerHeight, 0);
+    return safeBottom + gap + (kb > 0 ? kb : composer);
+  }, [composerHeight, keyboardHeight, insets.bottom]);
 
   return (
     <View style={styles.container}>
@@ -1268,7 +1473,7 @@ export default function ChatScreen({ navigation, route }: Props) {
           <View style={styles.center}>
             <Text style={{ color: "#9ca3af" }}>{t("chat.select_chat")}</Text>
           </View>
-        ) : loadingMsgs ? (
+        ) : isInitialLoading ? (
           <View style={styles.center}>
             <ActivityIndicator />
             <Text style={{ color: "#9ca3af", marginTop: 8 }}>{t("chat.loading_messages")}</Text>
@@ -1276,26 +1481,69 @@ export default function ChatScreen({ navigation, route }: Props) {
         ) : (
           <>
             <FlatList
+              ref={(r) => {
+                listRef.current = r;
+              }}
               data={invertedMessages}
-              keyExtractor={(it) => it.id}
+              keyExtractor={keyExtractor}
               inverted
               contentContainerStyle={{ padding: 12, paddingBottom: 6 }}
               renderItem={renderMessageItem}
-              onEndReachedThreshold={0.2}
-              onEndReached={() => loadOlder()}
+              onScroll={handleListScroll}
+              scrollEventThrottle={16}
+              onEndReachedThreshold={0.12}
+              onMomentumScrollBegin={() => {
+                onEndReachedLockRef.current = false;
+              }}
+              onEndReached={() => {
+                if (onEndReachedLockRef.current) return;
+                onEndReachedLockRef.current = true;
+                void loadOlder();
+              }}
+              initialNumToRender={16}
+              maxToRenderPerBatch={20}
+              windowSize={11}
+              removeClippedSubviews
+              maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
               ListFooterComponent={
-                loadingMore ? (
+                isFetchingMore ? (
                   <View style={{ paddingVertical: 10, alignItems: "center" }}>
                     <ActivityIndicator />
                     <Text style={{ color: "#9ca3af", marginTop: 6, fontSize: 12 }}>
                       {t("chat.loading_older")}
                     </Text>
                   </View>
+                ) : !hasNextPage && messages.length > 0 ? (
+                  <View style={{ paddingVertical: 10, alignItems: "center" }}>
+                    <Text style={{ color: "#6b7280", fontSize: 12 }}>No older messages</Text>
+                  </View>
                 ) : null
               }
             />
 
-            <View style={{ paddingBottom: composerBottomPad }}>
+            {showScrollToBottom && (
+              <Pressable
+                onPress={scrollToBottom}
+                style={({ pressed }) => [
+                  styles.scrollToBottomBtn,
+                  { bottom: scrollFabBottom },
+                  pressed && { opacity: 0.85 },
+                ]}
+                hitSlop={10}
+              >
+                <Ionicons name="arrow-down" size={20} color="#fff" />
+              </Pressable>
+            )}
+
+            <View
+              style={{ paddingBottom: composerBottomPad }}
+              onLayout={(e) => {
+                const h = e?.nativeEvent?.layout?.height;
+                if (!Number.isFinite(h)) return;
+                const next = Math.max(0, Math.round(h));
+                setComposerHeight((prev) => (prev === next ? prev : next));
+              }}
+            >
               <SendMessageSection
                 chats={{ myChats: chats }}
                 sel={sel}
@@ -1410,6 +1658,75 @@ export default function ChatScreen({ navigation, route }: Props) {
         </Pressable>
       </Modal>
 
+      {/* ===== Message Action Sheet ===== */}
+      <Modal
+        visible={isMessageMenuVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={handleCloseMessageMenu}
+      >
+        <Pressable style={styles.actionSheetOverlay} onPress={handleCloseMessageMenu}>
+          <Pressable style={styles.actionSheetContainer} onPress={() => {}}>
+            <Text style={styles.actionSheetTitle}>{t("app.chat_title")}</Text>
+
+            <Pressable
+              android_ripple={{ color: "rgba(255,255,255,0.10)" }}
+              style={({ pressed }) => [
+                styles.actionItem,
+                pressed && styles.actionItemPressed,
+              ]}
+              onPress={() =>
+                runMessageMenuAction((message) => {
+                  setReplyTarget(message);
+                })
+              }
+            >
+              <Ionicons name="return-up-back-outline" size={18} color="#f3f4f6" />
+              <Text style={styles.actionItemText}>{t("chat.reply")}</Text>
+            </Pressable>
+
+            <Pressable
+              android_ripple={{ color: "rgba(255,255,255,0.10)" }}
+              style={({ pressed }) => [
+                styles.actionItem,
+                pressed && styles.actionItemPressed,
+                !(selectedMessage?.text?.trim()) && styles.actionItemDisabled,
+              ]}
+              disabled={!(selectedMessage?.text?.trim())}
+              onPress={() =>
+                runMessageMenuAction((message) => {
+                  if (!message.text?.trim()) return;
+                  handleCopyText(message.text);
+                })
+              }
+            >
+              <Ionicons name="copy-outline" size={18} color="#f3f4f6" />
+              <Text style={styles.actionItemText}>Copy</Text>
+            </Pressable>
+
+            <Pressable
+              android_ripple={{ color: "rgba(239,68,68,0.12)" }}
+              style={({ pressed }) => [
+                styles.actionItem,
+                styles.actionItemDanger,
+                pressed && styles.actionItemPressed,
+                (!selectedMessage || selectedMessage.sender?.id !== meId) && styles.actionItemDisabled,
+              ]}
+              disabled={!selectedMessage || selectedMessage.sender?.id !== meId}
+              onPress={() =>
+                runMessageMenuAction((message) => {
+                  if (message.sender?.id !== meId) return;
+                  void onDeleteMessage(message);
+                })
+              }
+            >
+              <Ionicons name="trash-outline" size={18} color="#f87171" />
+              <Text style={styles.actionItemDangerText}>{t("common.delete")}</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       {/* ===== Image Preview ===== */}
       <Modal
         visible={!!previewUri}
@@ -1519,6 +1836,20 @@ const styles = StyleSheet.create({
     textAlign: "left",
     flex: 1,
   },
+  actionItemDanger: {
+    borderWidth: 1,
+    borderColor: "rgba(239,68,68,0.35)",
+  },
+  actionItemDangerText: {
+    color: "#f87171",
+    fontSize: 15,
+    fontWeight: "800",
+    textAlign: "left",
+    flex: 1,
+  },
+  actionItemDisabled: {
+    opacity: 0.45,
+  },
 
   chatItem: {
     backgroundColor: "#111116",
@@ -1596,6 +1927,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 16,
   },
+  msgBubbleFocused: {
+    borderWidth: 1,
+    borderColor: "rgba(96,165,250,0.9)",
+    shadowColor: "#60a5fa",
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
+  },
 
   // ✅ bubble colors
   bubbleMine: {
@@ -1625,6 +1964,23 @@ const styles = StyleSheet.create({
 
   msgMetaRow: { flexDirection: "row", alignItems: "center", marginTop: 4 },
   msgMeta: { color: "#9ca3af", fontSize: 11 },
+
+  scrollToBottomBtn: {
+    position: "absolute",
+    right: 16,
+    bottom: 88,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#1f2937",
+    alignItems: "center",
+    justifyContent: "center",
+    elevation: 6,
+    shadowColor: "#000",
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+  },
 
   // preview
   previewBackdrop: {

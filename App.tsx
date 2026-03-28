@@ -9,8 +9,10 @@ import {
   StyleSheet,
   Platform,
   InteractionManager,
+  useColorScheme,
 } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
+import SystemNavigationBar from "react-native-system-navigation-bar";
 import {
   NavigationContainer,
   createNavigationContainerRef,
@@ -297,6 +299,8 @@ function AppShell() {
   const { ready: languageReady, t } = useI18n();
   const { booting } = useAuth();
   const { ready: initReady } = useInitScamSync();
+  const colorScheme = useColorScheme();
+  const isDarkTheme = colorScheme !== "light";
 
   const [navReady, setNavReady] = useState(false);
   const hasHiddenSplashRef = useRef(false);
@@ -316,6 +320,17 @@ function AppShell() {
       });
     });
   }, [appReady]);
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+
+    const navBarColor = isDarkTheme ? "#0B1220" : "#FFFFFF";
+    const iconStyle = isDarkTheme ? "light" : "dark";
+
+    SystemNavigationBar.setNavigationColor(navBarColor, iconStyle).catch(() => {
+      // no-op
+    });
+  }, [isDarkTheme]);
 
   if (!languageReady) {
     return (
