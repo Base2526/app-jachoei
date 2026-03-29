@@ -5,18 +5,18 @@ import {
   Text,
   StyleSheet,
   FlatList,
+  useWindowDimensions,
   TouchableOpacity,
   RefreshControl,
   ActivityIndicator,
   Alert,
   Pressable,
-  Dimensions,
   Platform,
   Share,
   Linking,
   Image,
   GestureResponderEvent,
-  Modal
+  Modal,
 } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 import { gql } from "@apollo/client";
@@ -244,6 +244,26 @@ type PostsPagedVars = {
 
 const PAGE_SIZE = 10;
 
+function clampNumber(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function getPostMediaSizing(imageCount: number) {
+  // Tuned for ThumbGrid layouts:
+  // - phone 3 images: hero-top + 2 below (needs extra height to avoid squashed bottoms)
+  // - tablet 3 images: hero-left + 2 stacked (height should stay balanced, not towering)
+  if (imageCount <= 1) {
+    return { phoneRatio: 0.64, tabletRatio: 0.46, phoneMinHeight: 180 };
+  }
+  if (imageCount === 2) {
+    return { phoneRatio: 0.54, tabletRatio: 0.42, phoneMinHeight: 180 };
+  }
+  if (imageCount === 3) {
+    return { phoneRatio: 0.74, tabletRatio: 0.54, phoneMinHeight: 210 };
+  }
+  return { phoneRatio: 0.62, tabletRatio: 0.5, phoneMinHeight: 190 };
+}
+
 function normalizeAvatarUri(uri?: string | null) {
   if (!uri) return "";
 
@@ -387,6 +407,13 @@ type HomeRoute = RouteProp<TabsParamList, "HomeScreen">;
 
 
 export const HomeScreen: React.FC = () => {
+  const { width: windowWidth } = useWindowDimensions();
+  const isTablet =
+    Platform.OS === "ios"
+      ? // Avoid iPhone landscape being treated as iPad.
+        !!(Platform as any).isPad
+      : windowWidth >= 768;
+
   const { isLoggedIn, user } = useAuth();
   const {
     isBlockedTel: isBlockedTelServer,
@@ -1183,6 +1210,20 @@ export const HomeScreen: React.FC = () => {
       const inlineBanks = bankList.slice(0, INLINE_MAX_BANKS);
       const moreBanksCount = Math.max(0, bankList.length - INLINE_MAX_BANKS);
 
+      const imageCount = Array.isArray(item.images) ? item.images.length : 0;
+
+      // ===== media sizing (tablet-friendly) =====
+      // FlatList paddingHorizontal=12 and card padding=10 => preserve existing base math.
+      const baseMediaWidth = Math.max(0, windowWidth - 24 - 20);
+      const mediaWidth = isTablet ? Math.min(baseMediaWidth, 760) : baseMediaWidth;
+
+      const { phoneRatio, tabletRatio, phoneMinHeight } = getPostMediaSizing(imageCount);
+      const mediaHeight = isTablet
+        ? clampNumber(Math.round(mediaWidth * tabletRatio), 260, 360)
+        : clampNumber(Math.round(mediaWidth * phoneRatio), phoneMinHeight, 320);
+      const mediaRadius = isTablet ? 14 : 12;
+      const mediaGap = isTablet ? 8 : 6;
+
       return (
         <Pressable
           onPress={onOpenPost}
@@ -1241,13 +1282,14 @@ export const HomeScreen: React.FC = () => {
           </View>
 
           {/* THUMB GRID */}
-          <View style={{ marginTop: 10 }}>
+          <View style={[styles.mediaWrap, isTablet && styles.mediaWrapTablet]}>
             <ThumbGrid
               images={(item.images || []) as any}
-              width={Dimensions.get("window").width - 24 - 20}
-              height={160}
-              radius={14}
-              gap={6}
+              width={mediaWidth}
+              height={mediaHeight}
+              radius={mediaRadius}
+              gap={mediaGap}
+              layout={isTablet ? "tablet" : "default"}
             />
           </View>
 
@@ -1259,14 +1301,14 @@ export const HomeScreen: React.FC = () => {
           ) : null}
 
           {/* TEL + BANK (premium info section) */}
-          <View style={styles.infoSection}>
+          <View style={[styles.infoSection, isTablet && styles.infoSectionTablet]}>
             {/* TEL */}
-            <View style={styles.infoRow}>
-              <View style={styles.infoRowLeft}>
-                <View style={styles.infoRowIcon}>
+            <View style={[styles.infoRow, isTablet && styles.infoRowTablet]}>
+              <View style={[styles.infoRowLeft, isTablet && styles.infoRowLeftTablet]}>
+                <View style={[styles.infoRowIcon, isTablet && styles.infoRowIconTablet]}>
                   <Ionicons name="call-outline" size={14} color="#9ca3af" />
                 </View>
-                <Text style={styles.infoLabel}>TEL</Text>
+                <Text style={[styles.infoLabel, isTablet && styles.infoLabelTablet]}>TEL</Text>
               </View>
 
               {telList.length === 0 ? (
@@ -1274,7 +1316,7 @@ export const HomeScreen: React.FC = () => {
                   -
                 </Text>
               ) : (
-                <View style={styles.chipsWrap}>
+                <View style={[styles.chipsWrap, isTablet && styles.chipsWrapTablet]}>
                   {inlineTels.map((tel) => {
                     const blocked = isTelBlocked(tel);
 
@@ -1296,15 +1338,23 @@ export const HomeScreen: React.FC = () => {
                         }
                         accessibilityHint="เปิดหน้าจัดการบล็อก/รายงานเบอร์โทร"
                         activeOpacity={0.9}
-                        style={[styles.valuePill, blocked && styles.valuePillBlocked]}
+                        style={[
+                          styles.valuePill,
+                          isTablet && styles.valuePillTablet,
+                          blocked && styles.valuePillBlocked,
+                        ]}
                       >
-                        <Text style={styles.valueText} numberOfLines={1}>
+                        <Text
+                          style={[styles.valueText, isTablet && styles.valueTextTablet]}
+                          numberOfLines={1}
+                        >
                           {tel}
                         </Text>
 
                         <View
                           style={[
                             styles.pillAction,
+                            isTablet && styles.pillActionTablet,
                             blocked ? styles.pillActionDanger : styles.pillActionNeutral,
                           ]}
                         >
@@ -1328,13 +1378,26 @@ export const HomeScreen: React.FC = () => {
                           item.id
                         );
                       }}
-                      style={[styles.valuePill, styles.morePill]}
+                      style={[
+                        styles.valuePill,
+                        isTablet && styles.valuePillTablet,
+                        styles.morePill,
+                      ]}
                       activeOpacity={0.9}
                     >
-                      <Text style={styles.valueText} numberOfLines={1}>
+                      <Text
+                        style={[styles.valueText, isTablet && styles.valueTextTablet]}
+                        numberOfLines={1}
+                      >
                         +{moreCount}
                       </Text>
-                      <View style={[styles.pillAction, styles.pillActionNeutral]}>
+                      <View
+                        style={[
+                          styles.pillAction,
+                          isTablet && styles.pillActionTablet,
+                          styles.pillActionNeutral,
+                        ]}
+                      >
                         <Ionicons name="chevron-forward" size={14} color="#e5e7eb" />
                       </View>
                     </TouchableOpacity>
@@ -1343,15 +1406,15 @@ export const HomeScreen: React.FC = () => {
               )}
             </View>
 
-            <View style={styles.infoDivider} />
+            <View style={[styles.infoDivider, isTablet && styles.infoDividerTablet]} />
 
             {/* BANK */}
-            <View style={styles.infoRow}>
-              <View style={styles.infoRowLeft}>
-                <View style={styles.infoRowIcon}>
+            <View style={[styles.infoRow, isTablet && styles.infoRowTablet]}>
+              <View style={[styles.infoRowLeft, isTablet && styles.infoRowLeftTablet]}>
+                <View style={[styles.infoRowIcon, isTablet && styles.infoRowIconTablet]}>
                   <Ionicons name="card-outline" size={14} color="#9ca3af" />
                 </View>
-                <Text style={styles.infoLabel}>BANK</Text>
+                <Text style={[styles.infoLabel, isTablet && styles.infoLabelTablet]}>BANK</Text>
               </View>
 
               {bankList.length === 0 ? (
@@ -1359,7 +1422,7 @@ export const HomeScreen: React.FC = () => {
                   -
                 </Text>
               ) : (
-                <View style={styles.chipsWrap}>
+                <View style={[styles.chipsWrap, isTablet && styles.chipsWrapTablet]}>
                   {inlineBanks.map((b, idx) => {
                     const acc = normalizeBankAccount(b.seller_account || "");
                     const bankName = b.bank_name || "Bank";
@@ -1384,9 +1447,16 @@ export const HomeScreen: React.FC = () => {
                         }
                         accessibilityHint="เปิดหน้ารายงาน/ยกเลิกรายงานบัญชีธนาคาร"
                         activeOpacity={0.9}
-                        style={[styles.valuePill, reported && styles.valuePillReported]}
+                        style={[
+                          styles.valuePill,
+                          isTablet && styles.valuePillTablet,
+                          reported && styles.valuePillReported,
+                        ]}
                       >
-                        <Text style={styles.valueText} numberOfLines={1}>
+                        <Text
+                          style={[styles.valueText, isTablet && styles.valueTextTablet]}
+                          numberOfLines={1}
+                        >
                           <Text style={styles.valueTextMuted}>{bankName}: </Text>
                           {acc}
                         </Text>
@@ -1394,6 +1464,7 @@ export const HomeScreen: React.FC = () => {
                         <View
                           style={[
                             styles.pillAction,
+                            isTablet && styles.pillActionTablet,
                             reported ? styles.pillActionDanger : styles.pillActionNeutral,
                           ]}
                         >
@@ -1417,13 +1488,26 @@ export const HomeScreen: React.FC = () => {
                           item.id
                         );
                       }}
-                      style={[styles.valuePill, styles.morePill]}
+                      style={[
+                        styles.valuePill,
+                        isTablet && styles.valuePillTablet,
+                        styles.morePill,
+                      ]}
                       activeOpacity={0.9}
                     >
-                      <Text style={styles.valueText} numberOfLines={1}>
+                      <Text
+                        style={[styles.valueText, isTablet && styles.valueTextTablet]}
+                        numberOfLines={1}
+                      >
                         +{moreBanksCount}
                       </Text>
-                      <View style={[styles.pillAction, styles.pillActionNeutral]}>
+                      <View
+                        style={[
+                          styles.pillAction,
+                          isTablet && styles.pillActionTablet,
+                          styles.pillActionNeutral,
+                        ]}
+                      >
                         <Ionicons name="chevron-forward" size={14} color="#e5e7eb" />
                       </View>
                     </TouchableOpacity>
@@ -1475,6 +1559,8 @@ export const HomeScreen: React.FC = () => {
     [
       navigation,
       user?.id,
+      windowWidth,
+      isTablet,
       bookmarkBusyMap,
       isTelBlocked,
       isBankReported,
@@ -1749,6 +1835,12 @@ const styles = StyleSheet.create({
   metaRow: { marginTop: 6, flexDirection: "row", alignItems: "center", gap: 8 },
   meta: { color: "#9ca3af", fontSize: 11, flex: 1 },
 
+  mediaWrap: { marginTop: 10 },
+  mediaWrapTablet: {
+    marginTop: 12,
+    alignSelf: "center",
+  },
+
   authorChip: {
     flexDirection: "row",
     alignItems: "center",
@@ -1817,6 +1909,10 @@ const styles = StyleSheet.create({
     gap: 8,
     alignItems: "center",
   },
+  chipsWrapTablet: {
+    maxWidth: 560,
+    gap: 10,
+  },
 
   valuePill: {
     maxWidth: "100%",
@@ -1829,6 +1925,12 @@ const styles = StyleSheet.create({
     borderColor: "#2a2a35",
     paddingLeft: 12,
     paddingRight: 4,
+  },
+  valuePillTablet: {
+    minHeight: 32,
+    paddingLeft: 10,
+    paddingRight: 3,
+    alignSelf: "flex-start",
   },
   valuePillBlocked: {
     borderColor: "rgba(239,68,68,0.45)",
@@ -1847,6 +1949,10 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "900",
   },
+  valueTextTablet: {
+    flex: 0,
+    flexShrink: 1,
+  },
   valueTextMuted: { color: "#9ca3af", fontWeight: "900" },
 
   pillAction: {
@@ -1856,6 +1962,11 @@ const styles = StyleSheet.create({
     marginLeft: 10,
     alignItems: "center",
     justifyContent: "center",
+  },
+  pillActionTablet: {
+    width: 28,
+    height: 28,
+    marginLeft: 8,
   },
   pillActionNeutral: { backgroundColor: "rgba(255,255,255,0.06)" },
   pillActionDanger: { backgroundColor: "rgba(239,68,68,0.22)" },

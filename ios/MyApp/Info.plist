@@ -34,7 +34,7 @@
 		<true/>
 	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string></string>
+	<string>Allow location access to share your current location in chat.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Allow camera access to take photos for chat messages.</string>
 	<key>NSMicrophoneUsageDescription</key>
