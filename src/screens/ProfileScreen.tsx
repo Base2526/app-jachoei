@@ -7,7 +7,6 @@ import {
   FlatList,
   Image,
   Pressable,
-  Alert,
 } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 import { gql } from "@apollo/client";
@@ -16,6 +15,7 @@ import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { client } from "../apollo/client";
 import type { RootStackParamList } from "../navigation/types";
 import { useI18n } from "../i18n";
+import { ENV } from "../config/env";
 
 import { useAuth } from "../auth/AuthProvider"
 
@@ -55,6 +55,38 @@ function statusColor(status?: string | null) {
   if (s === "PENDING") return { bg: "#3a2a00", fg: "#fbbf24" };
   if (s === "BLOCKED" || s === "BANNED") return { bg: "#3a0a0a", fg: "#ff453a" };
   return { bg: "#1f2937", fg: "#cbd5e1" };
+}
+
+function normalizeAvatarUri(uri?: string | null) {
+  if (!uri) return "";
+
+  const value = String(uri).trim();
+  if (!value) return "";
+
+  if (
+    value.startsWith("http://") ||
+    value.startsWith("https://") ||
+    value.startsWith("file://") ||
+    value.startsWith("content://") ||
+    value.startsWith("data:")
+  ) {
+    return value;
+  }
+
+  const base = ENV.apiBase.endsWith("/") ? ENV.apiBase.slice(0, -1) : ENV.apiBase;
+
+  // Common API: returns /path/to/file
+  if (value.startsWith("/")) {
+    return `${base}${value}`;
+  }
+
+  // Also support relative paths like uploads/avatar.jpg
+  if (value.includes("/")) {
+    return `${base}/${value}`;
+  }
+
+  // Last resort: some backends store file_id in avatar
+  return `${base}/api/files/${value}`;
 }
 
 // =======================
@@ -118,7 +150,7 @@ export const ProfileScreen: React.FC<Props> = ({ route, navigation }) => {
   const { t } = useI18n();
   const id = route.params?.id;
 
-  const { isLoggedIn, user, logout } = useAuth();
+  const { isLoggedIn, user } = useAuth();
 
   // ✅ ปรับให้ดึงจาก auth ของคุณเอง
   // const { user } = useSessionCtx();
@@ -128,6 +160,17 @@ export const ProfileScreen: React.FC<Props> = ({ route, navigation }) => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [u, setU] = useState<UserRecord | null>(null);
   const [posts, setPosts] = useState<PostItem[]>([]);
+
+  const [avatarLoadFailed, setAvatarLoadFailed] = useState(false);
+
+  const avatarUri = useMemo(() => {
+    return normalizeAvatarUri(u?.avatar);
+  }, [u?.avatar]);
+
+  useEffect(() => {
+    // Reset error state when avatar changes (e.g. navigating between profiles)
+    setAvatarLoadFailed(false);
+  }, [avatarUri]);
 
   const isMe = useMemo(() => !!user?.id && !!u?.id && user?.id === u.id, [user?.id, u?.id]);
 
@@ -156,7 +199,7 @@ export const ProfileScreen: React.FC<Props> = ({ route, navigation }) => {
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [id, t]);
 
   useEffect(() => {
     load();
@@ -193,7 +236,7 @@ export const ProfileScreen: React.FC<Props> = ({ route, navigation }) => {
       // ✅ ปรับ route ชื่อ "PostView" ให้ตรงของคุณ
       navigation.navigate("PostView", { id: String(p.id), currentUserId: user?.id });
     },
-    [navigation]
+    [navigation, user?.id]
   );
 
   const renderPostItem = useCallback(
@@ -270,8 +313,13 @@ export const ProfileScreen: React.FC<Props> = ({ route, navigation }) => {
       <View style={styles.profileCard}>
         <View style={styles.profileTop}>
           <View style={styles.avatarWrap}>
-            {u.avatar ? (
-              <Image source={{ uri: u.avatar }} style={styles.avatarImg} />
+            {avatarUri && !avatarLoadFailed ? (
+              <Image
+                source={{ uri: avatarUri }}
+                style={styles.avatarImg}
+                resizeMode="cover"
+                onError={() => setAvatarLoadFailed(true)}
+              />
             ) : (
               <View style={styles.avatarFallback}>
                 <Text style={styles.avatarFallbackText}>{initial}</Text>

@@ -4,16 +4,24 @@
         <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
         <!-- Prevent flashing the boot window background after startup -->
         <item name="android:windowBackground">@color/bootsplash_background</item>
-        <item name="android:navigationBarColor">#0B1220</item>
+        <item name="android:statusBarColor">@color/bootsplash_background</item>
+        <item name="android:navigationBarColor">@color/bootsplash_background</item>
         <!-- Prevent Android 10+ from forcing a light nav bar for contrast -->
         <item name="android:enforceNavigationBarContrast">false</item>
         <!-- Ensure nav bar icons are light on dark background -->
         <item name="android:windowLightNavigationBar">false</item>
+        <!-- Ensure status bar icons are light on dark background -->
+        <item name="android:windowLightStatusBar">false</item>
     </style>
 
     <style name="BootTheme" parent="Theme.BootSplash">
         <item name="bootSplashBackground">@color/bootsplash_background</item>
         <item name="bootSplashLogo">@drawable/bootsplash_logo</item>
+        <item name="android:statusBarColor">@color/bootsplash_background</item>
+        <item name="android:navigationBarColor">@color/bootsplash_background</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowLightStatusBar">false</item>
         <item name="postBootSplashTheme">@style/AppTheme</item>
     </style>
 </resources>

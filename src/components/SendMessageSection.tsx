@@ -13,9 +13,16 @@ import {
   Keyboard,
   Platform,
   ActivityIndicator,
+  PermissionsAndroid,
 } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
-import { launchImageLibrary, Asset, ImageLibraryOptions } from "react-native-image-picker";
+import {
+  launchCamera,
+  launchImageLibrary,
+  Asset,
+  CameraOptions,
+  ImageLibraryOptions,
+} from "react-native-image-picker";
 import { createClientMessageId } from "../utils/chat";
 import { useI18n } from "../i18n";
 
@@ -51,6 +58,12 @@ type Props = {
     client_message_id?: string | null;
   }) => Promise<void>;
 
+  onPressMic?: () => void;
+
+  isRecording?: boolean;
+  recordingSec?: number;
+  onCancelRecording?: () => void;
+
   me: Me;
 
   replyTarget: any | null; // message object
@@ -59,24 +72,37 @@ type Props = {
 
 const EMOJIS = ["😀", "😁", "😂", "🤣", "😊", "😍", "😎", "🤔", "😢", "🙏", "👍", "🔥", "💯", "🎉", "✨", "❤️", "😡"];
 
+function formatMMSS(totalSeconds: number) {
+  const s = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+  const mm = String(Math.floor(s / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
 export default function SendMessageSection({
   chats,
   sel,
   text,
   setText,
   onSend,
+  onPressMic,
+  isRecording,
+  recordingSec,
+  onCancelRecording,
   me,
   replyTarget,
   setReplyTarget,
 }: Props) {
   const { t } = useI18n();
   const [showEmoji, setShowEmoji] = useState(false);
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [images, setImages] = useState<UploadImage[]>([]);
   const [previewUri, setPreviewUri] = useState<string | null>(null);
   const [isSendingText, setIsSendingText] = useState(false);
   const [isSendingMedia, setIsSendingMedia] = useState(false);
 
   const inFlightPayloadsRef = useRef<Set<string>>(new Set());
+  const openingCameraRef = useRef(false);
 
   const inputRef = useRef<TextInput>(null);
 
@@ -102,6 +128,10 @@ export default function SendMessageSection({
   const isSending = isSendingText || isSendingMedia;
 
   const disabled = !me?.id || !chat || !sel;
+  const recording = !!isRecording;
+  const attachDisabled = disabled || isSending || recording;
+  const showSendPrimary = !onPressMic || canSend;
+  const showMicPrimary = !!onPressMic && !canSend;
 
   // ปิด emoji เมื่อคีย์บอร์ดเปิด / กดส่ง
   useEffect(() => {
@@ -163,6 +193,86 @@ export default function SendMessageSection({
       return next;
     });
   }, [disabled, images.length, isSending, t]);
+
+  const requestCameraPermissionAndroid = useCallback(async () => {
+    if (Platform.OS !== "android") return true;
+
+    try {
+      const granted = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.CAMERA,
+        {
+          title: "Camera permission",
+          message: "Allow camera access to take a photo.",
+          buttonPositive: "OK",
+          buttonNegative: "Cancel",
+        }
+      );
+
+      return granted === PermissionsAndroid.RESULTS.GRANTED;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const takePhoto = useCallback(async () => {
+    if (disabled || isSending) return;
+    if (openingCameraRef.current) return;
+    openingCameraRef.current = true;
+
+    try {
+      Keyboard.dismiss();
+
+      if (images.length >= MAX_IMAGES) {
+        Alert.alert(t("chat.image_limit_title"), t("chat.image_limit_text", { count: MAX_IMAGES }));
+        return;
+      }
+
+      const ok = await requestCameraPermissionAndroid();
+      if (!ok) {
+        Alert.alert("Camera permission", "Camera access was denied.");
+        return;
+      }
+
+      const options: CameraOptions = {
+        mediaType: "photo",
+        cameraType: "back",
+        saveToPhotos: false,
+        quality: 0.9,
+      };
+
+      const res = await launchCamera(options);
+
+      if (res.didCancel) return;
+      if (res.errorCode) {
+        Alert.alert(t("chat.pick_image_failed"), `${res.errorCode}: ${res.errorMessage ?? ""}`);
+        return;
+      }
+
+      const assets = (res.assets ?? []) as Asset[];
+      const mapped: UploadImage[] = assets
+        .filter((a) => !!a.uri)
+        .map((a, idx) => ({
+          uri: a.uri!,
+          name: a.fileName ?? `camera-${Date.now()}-${idx}.jpg`,
+          type: a.type ?? "image/jpeg",
+          width: a.width,
+          height: a.height,
+          fileSize: a.fileSize,
+        }));
+
+      if (!mapped.length) return;
+
+      setImages((prev) => {
+        const next = [...prev, ...mapped].slice(0, MAX_IMAGES);
+        if (next.length >= MAX_IMAGES) {
+          Alert.alert(t("chat.image_limit_title"), t("chat.image_limit_text", { count: MAX_IMAGES }));
+        }
+        return next;
+      });
+    } finally {
+      openingCameraRef.current = false;
+    }
+  }, [disabled, images.length, isSending, requestCameraPermissionAndroid, t]);
 
   const removeImage = useCallback((uri: string) => {
     if (isSending) return;
@@ -245,12 +355,37 @@ export default function SendMessageSection({
     setShowEmoji((s) => !s);
   }, [disabled, isSending]);
 
+  const closeAttachMenu = useCallback(() => {
+    setAttachMenuOpen(false);
+  }, []);
+
+  const openAttachMenu = useCallback(() => {
+    if (attachDisabled) return;
+    if (images.length >= MAX_IMAGES) {
+      Alert.alert(t("chat.image_limit_title"), t("chat.image_limit_text", { count: MAX_IMAGES }));
+      return;
+    }
+    Keyboard.dismiss();
+    setShowEmoji(false);
+    setAttachMenuOpen(true);
+  }, [attachDisabled, images.length, t]);
+
+  const runAttachAction = useCallback(
+    (action: () => Promise<void> | void) => {
+      setAttachMenuOpen(false);
+      setTimeout(() => {
+        action();
+      }, 10);
+    },
+    []
+  );
+
   return (
     <View style={styles.wrap}>
       {/* ===== Reply Preview ===== */}
       {!!replyTarget && (
         <View style={styles.replyBox}>
-          <View style={{ flex: 1, minWidth: 0 }}>
+          <View style={styles.flexMinWidth0}>
             <Text style={styles.replyTitle}>{t("chat.replying_to")} {replySenderLabel}</Text>
 
             {!!replyText && (
@@ -267,7 +402,7 @@ export default function SendMessageSection({
 
                   return (
                     <Pressable key={`${uri}-${i}`} onPress={() => setPreviewUri(uri)} style={styles.replyThumbWrap}>
-                      <Image source={{ uri }} style={[styles.replyThumb, isLast && { opacity: 0.75 }]} />
+                      <Image source={{ uri }} style={[styles.replyThumb, isLast && styles.replyThumbFaded]} />
                       {isLast && (
                         <View style={styles.replyThumbOverlay}>
                           <Text style={styles.replyThumbOverlayText}>+{extra}</Text>
@@ -288,13 +423,13 @@ export default function SendMessageSection({
 
       {/* ===== Selected Image Preview (horizontal) ===== */}
       {!!images.length && (
-        <View style={{ marginBottom: 10 }}>
+        <View style={styles.imagesPreviewWrap}>
           <FlatList
             horizontal
             showsHorizontalScrollIndicator={false}
             data={images}
             keyExtractor={(it) => it.uri}
-            contentContainerStyle={{ gap: 10 }}
+            contentContainerStyle={styles.imagesListContainer}
             renderItem={({ item }) => (
               <View style={styles.imgChip}>
                 <Pressable onPress={() => setPreviewUri(item.uri)}>
@@ -316,21 +451,25 @@ export default function SendMessageSection({
       {/* ===== Input Bar ===== */}
       <View style={styles.bar}>
         <Pressable
-          onPress={pickImages}
-          disabled={disabled || isSending || images.length >= MAX_IMAGES}
+          onPress={openAttachMenu}
+          disabled={attachDisabled}
           style={({ pressed }) => [
             styles.iconBtn,
-            (disabled || isSending || images.length >= MAX_IMAGES) && { opacity: 0.35 },
-            pressed && { opacity: 0.8 },
+            attachDisabled && { opacity: 0.35 },
+            pressed && !attachDisabled && { opacity: 0.8 },
           ]}
         >
-          <Ionicons name="image-outline" size={20} color="#e5e7eb" />
+          <Ionicons name="add" size={22} color="#e5e7eb" />
         </Pressable>
 
         <Pressable
           onPress={onToggleEmoji}
-          disabled={disabled || isSending}
-          style={({ pressed }) => [styles.iconBtn, (disabled || isSending) && { opacity: 0.35 }, pressed && { opacity: 0.8 }]}
+          disabled={disabled || isSending || recording}
+          style={({ pressed }) => [
+            styles.iconBtn,
+            (disabled || isSending || recording) && { opacity: 0.35 },
+            pressed && !(disabled || isSending || recording) && { opacity: 0.8 },
+          ]}
         >
           <Ionicons name="happy-outline" size={20} color="#e5e7eb" />
         </Pressable>
@@ -339,7 +478,7 @@ export default function SendMessageSection({
           ref={inputRef}
           value={text}
           onChangeText={setText}
-          editable={!disabled && !isSending}
+          editable={!disabled && !isSending && !recording}
           placeholder={t("chat.type_message")}
           placeholderTextColor="#6b7280"
           style={styles.input}
@@ -347,21 +486,71 @@ export default function SendMessageSection({
           blurOnSubmit={false}
         />
 
-        <Pressable
-          onPress={onPressSend}
-          disabled={!canSend || isSending}
-          style={({ pressed }) => [
-            styles.sendBtn,
-            (!canSend || isSending) && { opacity: 0.45 },
-            pressed && canSend && !isSending && { opacity: 0.88 },
-          ]}
-        >
-          {isSending ? (
-            <ActivityIndicator size="small" color="#0b0b0f" />
-          ) : (
-            <Ionicons name="send" size={18} color="#0b0b0f" />
-          )}
-        </Pressable>
+        {showMicPrimary ? (
+          <Pressable
+            onPress={onPressMic}
+            disabled={disabled || isSending || recording}
+            style={({ pressed }) => [
+              styles.iconBtn,
+              (disabled || isSending || recording) && { opacity: 0.35 },
+              pressed && !(disabled || isSending || recording) && { opacity: 0.8 },
+            ]}
+          >
+            <Ionicons name="mic-outline" size={20} color="#e5e7eb" />
+          </Pressable>
+        ) : null}
+
+        {showSendPrimary ? (
+          <Pressable
+            onPress={onPressSend}
+            disabled={!canSend || isSending || recording}
+            style={({ pressed }) => [
+              styles.sendBtn,
+              (!canSend || isSending || recording) && { opacity: 0.45 },
+              pressed && canSend && !isSending && !recording && { opacity: 0.88 },
+            ]}
+          >
+            {isSending ? (
+              <ActivityIndicator size="small" color="#0b0b0f" />
+            ) : (
+              <Ionicons name="send" size={18} color="#0b0b0f" />
+            )}
+          </Pressable>
+        ) : null}
+
+        {recording && (
+          <View style={styles.recordOverlay} pointerEvents="auto">
+            <Pressable
+              onPress={onCancelRecording}
+              disabled={!onCancelRecording}
+              style={({ pressed }) => [
+                styles.recordSideBtn,
+                !onCancelRecording && { opacity: 0.35 },
+                pressed && onCancelRecording && { opacity: 0.85 },
+              ]}
+              hitSlop={10}
+            >
+              <Ionicons name="trash-outline" size={18} color="#fff" />
+            </Pressable>
+
+            <View style={styles.recordCenter}>
+              <Text style={styles.recordTimer}>{formatMMSS(recordingSec ?? 0)}</Text>
+              <Text style={styles.recordHint}>{t("chat.recording") || "Recording"}</Text>
+            </View>
+
+            <Pressable
+              onPress={onPressMic}
+              disabled={!onPressMic}
+              style={({ pressed }) => [
+                styles.recordStopBtn,
+                pressed && onPressMic && { opacity: 0.9 },
+              ]}
+              hitSlop={10}
+            >
+              <Ionicons name="stop" size={20} color="#fff" />
+            </Pressable>
+          </View>
+        )}
       </View>
 
       {/* ===== Emoji Picker ===== */}
@@ -387,11 +576,58 @@ export default function SendMessageSection({
           </View>
         </Pressable>
       </Modal>
+
+      {/* ===== Attach Menu (compact +) ===== */}
+      <Modal
+        visible={attachMenuOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={closeAttachMenu}
+      >
+        <Pressable style={styles.attachOverlay} onPress={closeAttachMenu}>
+          <Pressable style={styles.attachSheet} onPress={() => {}}>
+            <Text style={styles.attachTitle}>Attach</Text>
+
+            <Pressable
+              android_ripple={{ color: "rgba(255,255,255,0.10)" }}
+              style={({ pressed }) => [styles.attachItem, pressed && styles.attachItemPressed]}
+              onPress={() => runAttachAction(takePhoto)}
+              disabled={attachDisabled}
+            >
+              <Ionicons name="camera-outline" size={18} color="#e5e7eb" />
+              <Text style={styles.attachItemText}>Camera</Text>
+            </Pressable>
+
+            <Pressable
+              android_ripple={{ color: "rgba(255,255,255,0.10)" }}
+              style={({ pressed }) => [styles.attachItem, pressed && styles.attachItemPressed]}
+              onPress={() => runAttachAction(pickImages)}
+              disabled={attachDisabled}
+            >
+              <Ionicons name="image-outline" size={18} color="#e5e7eb" />
+              <Text style={styles.attachItemText}>Photos</Text>
+            </Pressable>
+
+            {!!onPressMic && showSendPrimary && (
+              <Pressable
+                android_ripple={{ color: "rgba(255,255,255,0.10)" }}
+                style={({ pressed }) => [styles.attachItem, pressed && styles.attachItemPressed]}
+                onPress={() => runAttachAction(onPressMic)}
+                disabled={attachDisabled}
+              >
+                <Ionicons name="mic-outline" size={18} color="#e5e7eb" />
+                <Text style={styles.attachItemText}>Voice message</Text>
+              </Pressable>
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  flexMinWidth0: { flex: 1, minWidth: 0 },
   // ✅ ดำทั้งแถบ (แทนสีขาวเดิม)
   wrap: {
     width: "100%",
@@ -434,6 +670,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#0b0b0f",
   },
   replyThumb: { width: "100%", height: "100%" },
+  replyThumbFaded: { opacity: 0.75 },
   replyThumbOverlay: {
     position: "absolute",
     top: 0,
@@ -447,6 +684,8 @@ const styles = StyleSheet.create({
   replyThumbOverlayText: { color: "#fff", fontWeight: "900", fontSize: 12 },
 
   // ✅ image chips เป็น dark
+  imagesPreviewWrap: { marginBottom: 10 },
+  imagesListContainer: { gap: 10 },
   imgChip: {
     width: 78,
     height: 78,
@@ -476,10 +715,10 @@ const styles = StyleSheet.create({
   bar: {
     flexDirection: "row",
     alignItems: "flex-end",
-    gap: 8,
+    gap: 6,
     borderRadius: 26,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
     borderWidth: 1,
     borderColor: "#1f1f26",
     backgroundColor: "#0f1117",
@@ -494,8 +733,8 @@ const styles = StyleSheet.create({
     }),
   },
   iconBtn: {
-    width: 36,
-    height: 36,
+    width: 34,
+    height: 34,
     borderRadius: 12,
     backgroundColor: "#111116",
     borderWidth: 1,
@@ -507,8 +746,8 @@ const styles = StyleSheet.create({
     flex: 1,
     maxHeight: 110,
     minHeight: 38,
-    paddingTop: 8,
-    paddingBottom: 6,
+    paddingTop: 6,
+    paddingBottom: 4,
     color: "#e5e7eb",
     fontSize: 15,
     lineHeight: 20,
@@ -516,9 +755,9 @@ const styles = StyleSheet.create({
 
   // ✅ send button โทนฟ้าอ่อนแบบ iOS ในรูป
   sendBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: "#93c5fd",
     alignItems: "center",
     justifyContent: "center",
@@ -526,6 +765,89 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.10)",
   },
+
+  // ===== attach menu =====
+  attachOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "flex-end",
+  },
+  attachSheet: {
+    backgroundColor: "#111116",
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 18,
+    borderWidth: 1,
+    borderColor: "#1f1f26",
+  },
+  attachTitle: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "900",
+    textAlign: "left",
+    marginBottom: 10,
+    paddingHorizontal: 4,
+  },
+  attachItem: {
+    width: "100%",
+    minHeight: 52,
+    backgroundColor: "#0f1117",
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    marginBottom: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderWidth: 1,
+    borderColor: "#1f1f26",
+  },
+  attachItemPressed: {
+    opacity: 0.85,
+  },
+  attachItemText: {
+    color: "#f3f4f6",
+    fontSize: 15,
+    fontWeight: "800",
+    textAlign: "left",
+    flex: 1,
+  },
+
+  // ===== recording overlay =====
+  recordOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
+    borderRadius: 26,
+    backgroundColor: "rgba(11,11,15,0.92)",
+  },
+  recordSideBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    backgroundColor: "rgba(239,68,68,0.22)",
+    borderWidth: 1,
+    borderColor: "rgba(239,68,68,0.35)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  recordStopBtn: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: "#ef4444",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+  },
+  recordCenter: { flex: 1, alignItems: "center" },
+  recordTimer: { color: "#fff", fontWeight: "900", fontSize: 16 },
+  recordHint: { color: "#9ca3af", fontSize: 12, marginTop: 2 },
 
   // ✅ emoji box เป็น dark card
   emojiBox: {

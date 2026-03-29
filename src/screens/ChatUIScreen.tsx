@@ -21,8 +21,13 @@ import {
   Image,
   Linking,
   Keyboard,
+  AppState,
   Platform,
+  PermissionsAndroid,
   ToastAndroid,
+  useWindowDimensions,
+  Animated,
+  Easing,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Clipboard from "@react-native-clipboard/clipboard";
@@ -35,6 +40,9 @@ import SendMessageSection, { UploadImage } from "../components/SendMessageSectio
 import { ENV } from "../config/env";
 import { refreshUnreadChatBadge } from "../notifications/badge";
 import { useI18n } from "../i18n";
+
+import { AudioRecorder, AudioUtils } from "react-native-audio";
+import Sound from "react-native-sound";
 
 // ✅ Zustand global unread/currentChat sync (RN)
 import { useGlobalChatStore } from "../store/globalChatStore";
@@ -49,11 +57,23 @@ const MESSAGE_FIELDS = gql`
     id
     chat_id
     text
+    audio {
+      file_id
+      url
+      mime
+      duration_sec
+    }
     reply_to_id
 
     reply_to {
       id
       text
+      audio {
+        file_id
+        url
+        mime
+        duration_sec
+      }
       images {
         id
         url
@@ -128,6 +148,12 @@ const Q_CHATS = gql`
           name
           avatar
         }
+        audio {
+          file_id
+          url
+          mime
+          duration_sec
+        }
         images {
           id
           url
@@ -167,6 +193,8 @@ const MUT_SEND = gql`
     $text: String!
     $to_user_ids: [ID!]!
     $images: [Upload!]
+    $audio: Upload
+    $audio_duration_sec: Int
     $reply_to_id: ID
     $client_message_id: String
   ) {
@@ -175,6 +203,8 @@ const MUT_SEND = gql`
       text: $text
       to_user_ids: $to_user_ids
       images: $images
+      audio: $audio
+      audio_duration_sec: $audio_duration_sec
       reply_to_id: $reply_to_id
       client_message_id: $client_message_id
     ) {
@@ -265,6 +295,13 @@ type MsgImage = {
   mime?: string | null;
 };
 
+type MessageAudio = {
+  file_id?: string | null;
+  url?: string | null;
+  mime?: string | null;
+  duration_sec?: number | null;
+};
+
 type Message = {
   id: string;
   chat_id: string;
@@ -272,6 +309,7 @@ type Message = {
   created_at: string;
   sender?: { id: string; name?: string | null; avatar?: string | null } | null;
   images?: MsgImage[] | null;
+  audio?: MessageAudio | null;
   reply_to?: any | null;
   reply_to_id?: string | null;
   myReceipt?: any | null;
@@ -293,12 +331,29 @@ type MessageTextPart =
   | { type: "text"; value: string }
   | { type: "link"; value: string; href: string };
 
+type AudioMessageBubbleProps = {
+  messageId: string;
+  isMine: boolean;
+  isFocused: boolean;
+  isActive: boolean;
+  isPlaying: boolean;
+  durationSec: number;
+  onToggle: () => void;
+  onLongPress: () => void;
+  getActiveSoundCurrentTime: (cb: (sec: number) => void) => void;
+  getActiveSoundDuration: () => number;
+};
+
+type MessageListRow =
+  | { kind: "msg"; item: Message }
+  | { kind: "day"; id: string; dayStartMs: number; label: string };
+
 /** =========================
  * Helpers
  * ========================= */
 const PAGE_SIZE = 30;
 const URL_RE = /(?:https?:\/\/|www\.)[^\s]+/gi;
-const TRAILING_PUNCT_RE = /[),.!?;:\]\}]+$/;
+const TRAILING_PUNCT_RE = /[),.!?;:\]}]+$/;
 
 function getInitial(name?: string | null) {
   if (!name) return "?";
@@ -325,6 +380,57 @@ function getImgSrc(img: any) {
   return img?.url || "";
 }
 
+function normalizeAvatarUri(uri?: string | null) {
+  if (!uri) return "";
+
+  const value = String(uri).trim();
+  if (!value) return "";
+
+  if (
+    value.startsWith("http://") ||
+    value.startsWith("https://") ||
+    value.startsWith("file://") ||
+    value.startsWith("content://") ||
+    value.startsWith("data:")
+  ) {
+    return value;
+  }
+
+  if (value.startsWith("/")) {
+    const base = ENV.apiBase.endsWith("/") ? ENV.apiBase.slice(0, -1) : ENV.apiBase;
+    return `${base}${value}`;
+  }
+
+  return value;
+}
+
+function getAudioSrc(audio: any) {
+  if (!audio) return "";
+  if (audio?.file_id) return `${ENV.apiBase}/api/files/${audio.file_id}`;
+  return audio?.url || "";
+}
+
+function formatDurationMMSS(totalSeconds: number) {
+  const s = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+  const mm = String(Math.floor(s / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
+function clamp01(v: number) {
+  if (!Number.isFinite(v)) return 0;
+  return Math.max(0, Math.min(1, v));
+}
+
+function ensureFileUri(uriOrPath: string) {
+  const v = String(uriOrPath || "").trim();
+  if (!v) return "";
+  if (/^[a-z]+:\/\//i.test(v)) return v;
+  // RN uploads usually need file://
+  if (v.startsWith("/")) return `file://${v}`;
+  return v;
+}
+
 function normalizeExternalUrl(url?: string | null) {
   if (!url) return "";
   const trimmed = String(url)
@@ -333,8 +439,8 @@ function normalizeExternalUrl(url?: string | null) {
   if (!trimmed) return "";
 
   const unwrapped = trimmed
-    .replace(/^[\(<\[\{"'`]+/, "")
-    .replace(/[\)>\]\}"'`]+$/, "");
+    .replace(/^[[(<{"'`]+/, "")
+    .replace(/[)>\]}'"`]+$/, "");
 
   const clean = unwrapped.replace(TRAILING_PUNCT_RE, "");
   if (!clean) return "";
@@ -394,15 +500,155 @@ function parseMessageTextParts(text?: string | null): MessageTextPart[] {
   return parts;
 }
 
+function getLocalDayStartMs(ts: any): number | null {
+  const d = safeDate(ts);
+  const t = d?.getTime?.();
+  if (!Number.isFinite(t)) return null;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+function formatChatDayLabel(args: { dayStartMs: number; language?: string | null }) {
+  const { dayStartMs, language } = args;
+  const day = new Date(dayStartMs);
+  if (Number.isNaN(day.getTime())) return "";
+
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const diffDays = Math.round((todayStart - dayStartMs) / (24 * 60 * 60 * 1000));
+
+  const isThai = String(language || "").toLowerCase().startsWith("th");
+  if (diffDays === 0) return isThai ? "วันนี้" : "Today";
+  if (diffDays === 1) return isThai ? "เมื่อวาน" : "Yesterday";
+
+  const locale = isThai ? "th-TH" : undefined;
+  try {
+    return new Intl.DateTimeFormat(locale, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    }).format(day);
+  } catch {
+    return day.toLocaleDateString();
+  }
+}
+
+const AudioMessageBubble = React.memo(function AudioMessageBubbleInner(props: AudioMessageBubbleProps) {
+  const {
+    isMine,
+    isFocused,
+    isActive,
+    isPlaying,
+    durationSec,
+    onToggle,
+    onLongPress,
+    getActiveSoundCurrentTime: getSoundCurrentTime,
+    getActiveSoundDuration: getSoundDuration,
+  } = props;
+
+  const [posSec, setPosSec] = useState(0);
+  const [durSec, setDurSec] = useState(durationSec);
+  const tickRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (!isActive) return;
+
+    if (durationSec > 0) {
+      setDurSec(durationSec);
+      return;
+    }
+
+    const d = getSoundDuration();
+    if (d > 0) setDurSec(d);
+  }, [durationSec, getSoundDuration, isActive]);
+
+  useEffect(() => {
+    if (tickRef.current) {
+      clearInterval(tickRef.current);
+      tickRef.current = null;
+    }
+
+    if (!isActive) {
+      setPosSec(0);
+      return;
+    }
+
+    getSoundCurrentTime((sec) => {
+      setPosSec(Math.max(0, sec));
+    });
+
+    if (!isPlaying) return;
+
+    tickRef.current = setInterval(() => {
+      getSoundCurrentTime((sec) => {
+        setPosSec((prev) => {
+          const next = Math.max(0, sec);
+          if (Math.abs(next - prev) < 0.05) return prev;
+          return next;
+        });
+      });
+    }, 250);
+
+    return () => {
+      if (tickRef.current) {
+        clearInterval(tickRef.current);
+        tickRef.current = null;
+      }
+    };
+  }, [getSoundCurrentTime, isActive, isPlaying]);
+
+  const total = durSec > 0 ? durSec : durationSec;
+  const safeTotal = total > 0 ? total : 0;
+  const safePos = safeTotal > 0 ? Math.min(posSec, safeTotal) : posSec;
+  const progress = safeTotal > 0 ? clamp01(safePos / safeTotal) : 0;
+
+  const leftLabel = formatDurationMMSS(safePos);
+  const rightLabel = safeTotal > 0 ? formatDurationMMSS(safeTotal) : "--:--";
+
+  return (
+    <Pressable onPress={onToggle} onLongPress={onLongPress} delayLongPress={250}>
+      <View
+        style={[
+          styles.audioBubble,
+          isMine ? styles.audioBubbleMine : styles.audioBubbleOther,
+          isFocused && styles.msgBubbleFocused,
+        ]}
+      >
+        <View style={styles.audioPlayBtn}>
+          <Ionicons name={isPlaying ? "pause" : "play"} size={18} color="#0b0b0f" />
+        </View>
+
+        <View style={styles.flexMinWidth0}>
+          <View style={styles.audioProgressTrack}>
+            <View style={[styles.audioProgressFill, { width: `${progress * 100}%` }]} />
+          </View>
+
+          <View style={styles.audioTimeRow}>
+            <Text style={[styles.audioTimeText, isMine ? styles.audioTimeTextMine : styles.audioTimeTextOther]}>
+              {leftLabel}
+            </Text>
+            <Text style={[styles.audioTimeText, isMine ? styles.audioTimeTextMine : styles.audioTimeTextOther]}>
+              {rightLabel}
+            </Text>
+          </View>
+        </View>
+      </View>
+    </Pressable>
+  );
+});
+
+AudioMessageBubble.displayName = "AudioMessageBubble";
+
 /** =========================
  * Screen
  * ========================= */
 export default function ChatScreen({ navigation, route }: Props) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const composerBottomPad = Platform.OS === "android" ? Math.max(insets.bottom, 8) : 0;
 
   const [me, setMe] = useState<Me | null>(null);
+  const meId = me?.id;
   const [chats, setChats] = useState<Chat[]>([]);
   const [sel, setSel] = useState<string | null>(null);
 
@@ -433,6 +679,385 @@ export default function ChatScreen({ navigation, route }: Props) {
   const [text, setText] = useState("");
   const [replyTarget, setReplyTarget] = useState<any | null>(null);
 
+  // ===== voice recording =====
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSec, setRecordingSec] = useState(0);
+  const recordingPathRef = useRef<string | null>(null);
+  const recordingStartedAtRef = useRef<number>(0);
+  const recordingBusyRef = useRef(false);
+  const recordingIntervalRef = useRef<any>(null);
+
+  // ===== audio playback =====
+  const [playingMessageId, setPlayingMessageId] = useState<string | null>(null);
+  const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+  const soundRef = useRef<Sound | null>(null);
+
+  const getActiveSoundCurrentTime = useCallback((cb: (sec: number) => void) => {
+    const s = soundRef.current;
+    if (!s) {
+      cb(0);
+      return;
+    }
+
+    try {
+      s.getCurrentTime((sec) => {
+        cb(Number.isFinite(sec) ? sec : 0);
+      });
+    } catch {
+      cb(0);
+    }
+  }, []);
+
+  const getActiveSoundDuration = useCallback(() => {
+    const s = soundRef.current;
+    if (!s) return 0;
+    try {
+      const d = Number(s.getDuration());
+      return Number.isFinite(d) && d > 0 ? d : 0;
+    } catch {
+      return 0;
+    }
+  }, []);
+
+  const stopAudioPlayback = useCallback(() => {
+    try {
+      soundRef.current?.stop(() => {
+        try {
+          soundRef.current?.release();
+        } catch {}
+        soundRef.current = null;
+      });
+    } catch {
+      try {
+        soundRef.current?.release();
+      } catch {}
+      soundRef.current = null;
+    }
+
+    setIsPlayingAudio(false);
+    setPlayingMessageId(null);
+  }, []);
+
+  useEffect(() => {
+    try {
+      Sound.setCategory("Playback");
+    } catch {}
+
+    return () => {
+      stopAudioPlayback();
+    };
+  }, [stopAudioPlayback]);
+
+  const toggleAudioPlayback = useCallback(
+    (messageId: string, uri: string) => {
+      const src = String(uri || "").trim();
+      if (!src) return;
+
+      // Same message: toggle pause/resume
+      if (playingMessageId === messageId && soundRef.current) {
+        if (isPlayingAudio) {
+          soundRef.current.pause(() => {
+            setIsPlayingAudio(false);
+          });
+        } else {
+          soundRef.current.play((success) => {
+            setIsPlayingAudio(false);
+            setPlayingMessageId(null);
+            try {
+              soundRef.current?.release();
+            } catch {}
+            soundRef.current = null;
+            if (!success) {
+              console.warn("[Audio] playback failed");
+            }
+          });
+          setIsPlayingAudio(true);
+        }
+        return;
+      }
+
+      // Different message: stop previous, then play new
+      stopAudioPlayback();
+
+      setPlayingMessageId(messageId);
+      setIsPlayingAudio(true);
+
+      const sound = new Sound(src, undefined, (error) => {
+        if (error) {
+          console.warn("[Audio] load failed", error);
+          setIsPlayingAudio(false);
+          setPlayingMessageId(null);
+          try {
+            sound.release();
+          } catch {}
+          soundRef.current = null;
+          return;
+        }
+
+        soundRef.current = sound;
+        sound.play((success) => {
+          setIsPlayingAudio(false);
+          setPlayingMessageId(null);
+          try {
+            sound.release();
+          } catch {}
+          soundRef.current = null;
+          if (!success) {
+            console.warn("[Audio] playback failed");
+          }
+        });
+      });
+    },
+    [isPlayingAudio, playingMessageId, stopAudioPlayback]
+  );
+
+  const clearRecordingTicker = useCallback(() => {
+    if (recordingIntervalRef.current) {
+      clearInterval(recordingIntervalRef.current);
+      recordingIntervalRef.current = null;
+    }
+  }, []);
+
+  const requestMicPermissionAndroid = useCallback(async () => {
+    if (Platform.OS !== "android") return true;
+
+    try {
+      const granted = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+        {
+          title: "Microphone permission",
+          message: "Allow microphone access to record voice messages.",
+          buttonPositive: "OK",
+          buttonNegative: "Cancel",
+        }
+      );
+      return granted === PermissionsAndroid.RESULTS.GRANTED;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const startRecording = useCallback(async () => {
+    if (!sel) return;
+    if (recordingBusyRef.current) return;
+    if (isRecording) return;
+
+    recordingBusyRef.current = true;
+    try {
+      const ok = await requestMicPermissionAndroid();
+      if (!ok) {
+        Alert.alert("Microphone permission", "Microphone access was denied.");
+        return;
+      }
+
+      // Stop any playing sound when recording starts.
+      stopAudioPlayback();
+
+      const fileName = `voice_${sel}_${Date.now()}.m4a`;
+      const path = `${AudioUtils.DocumentDirectoryPath}/${fileName}`;
+      recordingPathRef.current = path;
+      recordingStartedAtRef.current = Date.now();
+      setRecordingSec(0);
+
+      AudioRecorder.onProgress = (data: any) => {
+        const sec = Math.max(0, Math.floor(Number(data?.currentTime) || 0));
+        setRecordingSec((prev) => (prev === sec ? prev : sec));
+      };
+
+      AudioRecorder.prepareRecordingAtPath(path, {
+        SampleRate: 44100,
+        Channels: 1,
+        AudioQuality: "High",
+        AudioEncoding: "aac",
+        AudioEncodingBitRate: 128000,
+        OutputFormat: "mpeg_4",
+        MeteringEnabled: true,
+      });
+
+      await AudioRecorder.startRecording();
+      setIsRecording(true);
+
+      clearRecordingTicker();
+      recordingIntervalRef.current = setInterval(() => {
+        const startedAt = recordingStartedAtRef.current || Date.now();
+        const sec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+        setRecordingSec((prev) => (prev === sec ? prev : sec));
+      }, 250);
+    } finally {
+      recordingBusyRef.current = false;
+    }
+  }, [clearRecordingTicker, isRecording, requestMicPermissionAndroid, sel, stopAudioPlayback]);
+
+  const stopRecording = useCallback(async () => {
+    if (recordingBusyRef.current) return null;
+    if (!isRecording) return null;
+
+    recordingBusyRef.current = true;
+    try {
+      clearRecordingTicker();
+      let stoppedPath = "";
+      try {
+        stoppedPath = await AudioRecorder.stopRecording();
+      } catch (e) {
+        console.warn("[AudioRecorder] stop failed", e);
+      }
+
+      const path = String(stoppedPath || recordingPathRef.current || "").trim();
+      const startedAt = recordingStartedAtRef.current || Date.now();
+      const duration = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+
+      setIsRecording(false);
+      recordingPathRef.current = null;
+      recordingStartedAtRef.current = 0;
+
+      return { path, durationSec: duration };
+    } finally {
+      recordingBusyRef.current = false;
+    }
+  }, [clearRecordingTicker, isRecording]);
+
+  const cancelRecording = useCallback(async () => {
+    if (!isRecording) return;
+    const res = await stopRecording();
+    if (!res) return;
+    setRecordingSec(0);
+  }, [isRecording, stopRecording]);
+
+  // Stop & cancel if app backgrounds (prevents orphaned recordings)
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state !== "active" && isRecording) {
+        cancelRecording();
+      }
+    });
+    return () => {
+      try {
+        sub.remove();
+      } catch {}
+    };
+  }, [cancelRecording, isRecording]);
+
+  const sendAudioMessage = useCallback(
+    async (args: { uri: string; durationSec: number }) => {
+      if (!sel) return;
+      if (!meId) return;
+
+      const selected = chats.find((c) => c.id === sel) ?? null;
+      const members = selected?.members ?? [];
+      const toUserIds = members.map((m: any) => m?.id).filter(Boolean).filter((id: string) => id !== meId);
+      if (!toUserIds.length) return;
+
+      const uri = ensureFileUri(args.uri);
+      if (!uri) return;
+
+      const durationSec = Math.max(0, Math.round(Number(args.durationSec) || 0));
+      if (durationSec < 1) {
+        Alert.alert(t("app.chat_title"), "Recording is too short.");
+        return;
+      }
+
+      const name = `voice-${Date.now()}.m4a`;
+      const uploadAudio = {
+        uri,
+        name,
+        type: "audio/mp4",
+      };
+
+      const res = await client.mutate<{ sendMessage: Message }>({
+        mutation: MUT_SEND,
+        variables: {
+          chat_id: sel,
+          text: "",
+          to_user_ids: toUserIds,
+          images: null,
+          audio: uploadAudio,
+          audio_duration_sec: durationSec,
+          reply_to_id: replyTarget?.id ?? null,
+          client_message_id: null,
+        },
+      });
+
+      const newMsg = res.data?.sendMessage;
+      if (!newMsg) return;
+
+      setMessages((prev) => {
+        if (prev.some((x) => x.id === newMsg.id)) return prev;
+        return [...prev, newMsg].sort(
+          (a, b) => safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime()
+        );
+      });
+
+      setChats((prev) =>
+        prev
+          .map((c) => {
+            if (c.id !== newMsg.chat_id) return c;
+            return {
+              ...c,
+              last_message: {
+                id: newMsg.id,
+                text: newMsg.text,
+                created_at: newMsg.created_at,
+                sender: newMsg.sender,
+                audio: (newMsg as any).audio ?? null,
+                images: newMsg.images ?? [],
+              },
+              last_message_at: newMsg.created_at,
+            };
+          })
+          .sort((a, b) => {
+            const at = a.last_message_at ? safeDate(a.last_message_at).getTime() : 0;
+            const bt = b.last_message_at ? safeDate(b.last_message_at).getTime() : 0;
+            return bt - at;
+          })
+      );
+
+      setReplyTarget(null);
+
+      // Ensure the freshly-sent message is visible immediately.
+      isNearBottomRef.current = true;
+      setShowScrollToBottom(false);
+      requestAnimationFrame(() => {
+        listRef.current?.scrollToOffset({ offset: 0, animated: true });
+      });
+
+      if (sel && newMsg.created_at) {
+        client
+          .mutate({
+            mutation: MUT_MARK_UPTO,
+            variables: { chat_id: sel, cursor: newMsg.created_at },
+          })
+          .catch(() => {});
+      }
+    },
+    [chats, meId, replyTarget?.id, sel, t]
+  );
+
+  const onPressMic = useCallback(async () => {
+    if (!sel) return;
+
+    // Toggle recording
+    if (!isRecording) {
+      await startRecording();
+      return;
+    }
+
+    const res = await stopRecording();
+    if (!res) return;
+    const { path, durationSec } = res;
+    if (!path) {
+      Alert.alert(t("app.chat_title"), "Unable to save recording.");
+      return;
+    }
+
+    try {
+      await sendAudioMessage({ uri: path, durationSec });
+    } catch (e: any) {
+      Alert.alert(t("chat.send_failed"), e?.message || t("common.unknown_error"));
+    } finally {
+      setRecordingSec(0);
+    }
+  }, [isRecording, sel, sendAudioMessage, startRecording, stopRecording, t]);
+
   const [chatsModalOpen, setChatsModalOpen] = useState(false);
   const [chatSettings, setChatSettings] = useState<ChatSettings>({
     is_muted: false,
@@ -442,15 +1067,29 @@ export default function ChatScreen({ navigation, route }: Props) {
   const [isMenuVisible, setIsMenuVisible] = useState(false);
   const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
   const [isMessageMenuVisible, setIsMessageMenuVisible] = useState(false);
-  const [isDeleteConfirmVisible, setIsDeleteConfirmVisible] = useState(false);
-  const [pendingDeleteMessage, setPendingDeleteMessage] = useState<Message | null>(null);
 
   const [composerHeight, setComposerHeight] = useState(0);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [composerTopInWindow, setComposerTopInWindow] = useState<number | null>(null);
+  const composerWrapRef = useRef<any>(null);
 
-  const listRef = useRef<FlatList<Message> | null>(null);
+  const measureComposerTop = useCallback(() => {
+    requestAnimationFrame(() => {
+      try {
+        composerWrapRef.current?.measureInWindow?.((_x: number, y: number) => {
+          if (!Number.isFinite(y)) return;
+          const next = Math.max(0, Math.round(y));
+          setComposerTopInWindow((prev) => (prev === next ? prev : next));
+        });
+      } catch {}
+    });
+  }, []);
+
+  const listRef = useRef<FlatList<MessageListRow> | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const isNearBottomRef = useRef(true);
+  const fabBottomAnim = useRef(new Animated.Value(0)).current;
+  const fabBottomInitedRef = useRef(false);
   const lastScrollTickRef = useRef(0);
   const lastMsgCountRef = useRef(0);
   const forceScrollOnNextAppendRef = useRef(false);
@@ -460,8 +1099,6 @@ export default function ChatScreen({ navigation, route }: Props) {
   const loadMoreLockRef = useRef(false);
   const onEndReachedLockRef = useRef(false);
   const activeChatIdRef = useRef<string | null>(null);
-
-  const meId = me?.id;
 
   useEffect(() => {
     activeChatIdRef.current = sel;
@@ -475,8 +1112,12 @@ export default function ChatScreen({ navigation, route }: Props) {
     const showSub = Keyboard.addListener(showEvt as any, (e: any) => {
       const h = e?.endCoordinates?.height;
       setKeyboardHeight(Number.isFinite(h) ? Math.max(0, Number(h)) : 0);
+      measureComposerTop();
     });
-    const hideSub = Keyboard.addListener(hideEvt as any, () => setKeyboardHeight(0));
+    const hideSub = Keyboard.addListener(hideEvt as any, () => {
+      setKeyboardHeight(0);
+      measureComposerTop();
+    });
 
     return () => {
       try {
@@ -486,7 +1127,12 @@ export default function ChatScreen({ navigation, route }: Props) {
         hideSub.remove();
       } catch {}
     };
-  }, []);
+  }, [measureComposerTop]);
+
+  // Re-measure on orientation/size changes and when composer height changes.
+  useEffect(() => {
+    measureComposerTop();
+  }, [measureComposerTop, windowHeight, composerHeight, sel]);
 
   // ✅ Zustand sync (เหมือน web)
   const setCurrentChat = useGlobalChatStore((s: any) => s.setCurrentChat);
@@ -798,6 +1444,7 @@ export default function ChatScreen({ navigation, route }: Props) {
                     text: m.text,
                     created_at: m.created_at,
                     sender: m.sender,
+                    audio: (m as any).audio ?? null,
                     images: m.images ?? [],
                   },
                   last_message_at: m.created_at,
@@ -878,7 +1525,7 @@ export default function ChatScreen({ navigation, route }: Props) {
     if (now - lastScrollTickRef.current < 80) return;
     lastScrollTickRef.current = now;
 
-    const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
+    const { contentOffset } = e.nativeEvent;
     // FlatList is inverted, so "bottom" (latest message) is near offset.y ~= 0
     const bottomThreshold = 24;
     const isAtBottom = contentOffset.y <= bottomThreshold;
@@ -924,6 +1571,8 @@ export default function ChatScreen({ navigation, route }: Props) {
           text: args.text,
           to_user_ids: args.to_user_ids,
           images: uploadFiles.length ? uploadFiles : null,
+          audio: null,
+          audio_duration_sec: null,
           reply_to_id: args.reply_to_id ?? null,
           client_message_id: args.client_message_id ?? null,
         },
@@ -1050,7 +1699,7 @@ export default function ChatScreen({ navigation, route }: Props) {
   const runMenuAction = useCallback((action: () => Promise<void> | void) => {
     setIsMenuVisible(false);
     setTimeout(() => {
-      void action();
+      action();
     }, 10);
   }, []);
 
@@ -1064,8 +1713,7 @@ export default function ChatScreen({ navigation, route }: Props) {
     setSelectedMessage(null);
   }, []);
 
-  // Backwards-compatible aliases (older JSX references)
-  const handleOpenMessageMenu = openMenu;
+  // Backwards-compatible alias (older JSX references)
   const handleCloseMessageMenu = closeMenu;
 
   const runMessageMenuAction = useCallback(
@@ -1075,51 +1723,12 @@ export default function ChatScreen({ navigation, route }: Props) {
 
       setTimeout(() => {
         if (!picked) return;
-        void action(picked);
+        action(picked);
       }, 10);
     },
     [closeMenu, selectedMessage]
   );
 
-  const closeDeleteConfirm = useCallback(() => {
-    setIsDeleteConfirmVisible(false);
-    setPendingDeleteMessage(null);
-  }, []);
-
-  const handleReply = useCallback((message: Message) => {
-    closeMenu();
-    setReplyTarget(message);
-  }, [closeMenu]);
-
-  const handleCopy = useCallback((message: Message) => {
-    closeMenu();
-    const textValue = String(message.text ?? "").trim();
-    if (!textValue) return;
-
-    try {
-      Clipboard.setString(textValue);
-      if (Platform.OS === "android") {
-        ToastAndroid.show(t("chat.copied"), ToastAndroid.SHORT);
-      }
-    } catch (e) {
-      console.warn("[Chat] copy failed", e);
-    }
-  }, [closeMenu, t]);
-
-  const handleDelete = useCallback((message: Message) => {
-    closeMenu();
-    if (message.sender?.id !== meId) return;
-    setPendingDeleteMessage(message);
-    setIsDeleteConfirmVisible(true);
-  }, [closeMenu, meId]);
-
-  const handleDeleteConfirmed = useCallback(async () => {
-    const target = pendingDeleteMessage;
-    if (!target) return;
-
-    closeDeleteConfirm();
-    await onDeleteMessage(target);
-  }, [pendingDeleteMessage, onDeleteMessage, closeDeleteConfirm]);
 
   const handleCopyText = useCallback(
     (value: string) => {
@@ -1188,8 +1797,48 @@ export default function ChatScreen({ navigation, route }: Props) {
   useEffect(() => {
     setIsMessageMenuVisible(false);
     setSelectedMessage(null);
-    closeDeleteConfirm();
-  }, [sel, closeDeleteConfirm]);
+  }, [sel]);
+
+  const renderHeaderTitle = useCallback(() => {
+    return (
+      <Pressable
+        style={styles.headerTitlePressable}
+        onPress={() => {
+          if (!selectedChat) return;
+          if (!selectedChat.is_group && partner?.id) {
+            navigation.navigate("Profile", { id: partner.id });
+          }
+        }}
+      >
+        <Text style={styles.navTitle} numberOfLines={1}>
+          {title}
+        </Text>
+        {!!subtitle && (
+          <Text style={styles.navSub} numberOfLines={1}>
+            {subtitle}
+          </Text>
+        )}
+      </Pressable>
+    );
+  }, [navigation, partner?.id, selectedChat, subtitle, title]);
+
+  const renderHeaderRight = useCallback(() => {
+    return (
+      <View style={styles.headerRightRow}>
+        <Pressable onPress={() => setChatsModalOpen(true)} style={styles.headerBtn}>
+          <Ionicons name="chatbubbles-outline" size={20} color="#fff" />
+        </Pressable>
+
+        <Pressable onPress={handleOpenChatMenu} style={styles.headerBtn}>
+          {loadingChats || chatSettingsBusy ? (
+            <ActivityIndicator />
+          ) : (
+            <Ionicons name="ellipsis-vertical" size={18} color="#fff" />
+          )}
+        </Pressable>
+      </View>
+    );
+  }, [chatSettingsBusy, handleOpenChatMenu, loadingChats]);
 
   /** ===== Header ===== */
   useLayoutEffect(() => {
@@ -1197,51 +1846,13 @@ export default function ChatScreen({ navigation, route }: Props) {
       headerShown: true,
       headerStyle: { backgroundColor: "#111" },
       headerTintColor: "#fff",
-      headerTitle: () => (
-        <Pressable
-          style={{ flex: 1, minWidth: 0 }}
-          onPress={() => {
-            if (!selectedChat) return;
-            if (!selectedChat.is_group && partner?.id) {
-              navigation.navigate("Profile", { id: partner.id });
-            }
-          }}
-        >
-          <Text style={styles.navTitle} numberOfLines={1}>
-            {title}
-          </Text>
-          {!!subtitle && (
-            <Text style={styles.navSub} numberOfLines={1}>
-              {subtitle}
-            </Text>
-          )}
-        </Pressable>
-      ),
-      headerRight: () => (
-        <View style={{ flexDirection: "row", gap: 10, marginRight: 8 }}>
-          <Pressable onPress={() => setChatsModalOpen(true)} style={styles.headerBtn}>
-            <Ionicons name="chatbubbles-outline" size={20} color="#fff" />
-          </Pressable>
-
-          <Pressable onPress={handleOpenChatMenu} style={styles.headerBtn}>
-            {loadingChats || chatSettingsBusy ? (
-              <ActivityIndicator />
-            ) : (
-              <Ionicons name="ellipsis-vertical" size={18} color="#fff" />
-            )}
-          </Pressable>
-        </View>
-      ),
+      headerTitle: renderHeaderTitle,
+      headerRight: renderHeaderRight,
     });
   }, [
     navigation,
-    title,
-    subtitle,
-    selectedChat,
-    partner?.id,
-    loadingChats,
-    chatSettingsBusy,
-    handleOpenChatMenu,
+    renderHeaderTitle,
+    renderHeaderRight,
   ]);
 
   /** ===== render chat item ===== */
@@ -1258,11 +1869,14 @@ export default function ChatScreen({ navigation, route }: Props) {
 
       const last = item.last_message;
       const lastImages = Array.isArray(last?.images) ? last.images : [];
+      const hasLastAudio = !!last?.audio;
       const lastText =
         last?.text?.trim()
           ? String(last.text).trim().length > 44
             ? String(last.text).trim().slice(0, 41) + "…"
             : String(last.text).trim()
+          : hasLastAudio
+          ? "🎤 Voice message"
           : lastImages.length
           ? lastImages.length === 1
             ? `📷 ${t("chat.photo")}`
@@ -1285,7 +1899,7 @@ export default function ChatScreen({ navigation, route }: Props) {
             <Text style={styles.avatarText}>{initial}</Text>
           </View>
 
-          <View style={{ flex: 1, minWidth: 0 }}>
+          <View style={styles.flexMinWidth0}>
             <Text style={styles.chatTitle} numberOfLines={1}>
               {name}
             </Text>
@@ -1311,6 +1925,9 @@ export default function ChatScreen({ navigation, route }: Props) {
       const timeLabel = formatTime(item.created_at);
       const hasText = !!item.text?.trim();
       const imgs = Array.isArray(item.images) ? item.images : [];
+      const audioSrc = getAudioSrc((item as any)?.audio);
+      const hasAudio = !!audioSrc;
+      const audioDurationSec = Math.max(0, Number((item as any)?.audio?.duration_sec) || 0);
 
       const markThisRead = () => {
         client
@@ -1324,21 +1941,33 @@ export default function ChatScreen({ navigation, route }: Props) {
       const isFocused = isMessageMenuVisible && selectedMessage?.id === item.id;
 
       return (
-        <View style={[styles.msgRow, { justifyContent: isMine ? "flex-end" : "flex-start" }]}>
-          <View style={[styles.msgBubbleWrap, { alignItems: isMine ? "flex-end" : "flex-start" }]}>
-            {!isMine ? (
-              <Pressable
-                onPress={() => {
-                  const uid = item.sender?.id;
-                  if (uid) navigation.navigate("Profile", { id: uid });
-                }}
-              >
-                <Text style={styles.msgSender} numberOfLines={1}>
-                  {item.sender?.name || "—"}
-                </Text>
-              </Pressable>
-            ) : null}
+        <View style={[styles.msgRow, isMine ? styles.msgRowMine : styles.msgRowOther]}>
+          {!isMine ? (
+            <Pressable
+              onPress={() => {
+                const uid = item.sender?.id;
+                if (uid) navigation.navigate("Profile", { id: uid });
+              }}
+              disabled={!item.sender?.id}
+              style={styles.msgAvatarWrap}
+              hitSlop={8}
+            >
+              {normalizeAvatarUri(item.sender?.avatar) ? (
+                <Image
+                  source={{ uri: normalizeAvatarUri(item.sender?.avatar) }}
+                  style={styles.msgAvatarImg}
+                />
+              ) : (
+                <View style={styles.msgAvatarFallback}>
+                  <Text style={styles.msgAvatarText}>
+                    {getInitial(item.sender?.name || t("chat.user"))}
+                  </Text>
+                </View>
+              )}
+            </Pressable>
+          ) : null}
 
+          <View style={[styles.msgBubbleWrap, isMine ? styles.msgBubbleWrapMine : styles.msgBubbleWrapOther]}>
             {item.reply_to ? (
               <Pressable
                 onPress={() => setReplyTarget(item.reply_to)}
@@ -1348,10 +1977,7 @@ export default function ChatScreen({ navigation, route }: Props) {
                 ]}
               >
                 <Text
-                  style={[
-                    styles.replySender,
-                    { color: isMine ? "#fff" : "#93c5fd" },
-                  ]}
+                  style={[styles.replySender, isMine ? styles.replySenderMine : styles.replySenderOther]}
                   numberOfLines={1}
                 >
                   {item.reply_to?.sender?.id === meId
@@ -1361,20 +1987,24 @@ export default function ChatScreen({ navigation, route }: Props) {
 
                 {item.reply_to?.text ? (
                   <Text
-                    style={[
-                      styles.replyText,
-                      { color: isMine ? "#f3f4f6" : "#d1d5db" },
-                    ]}
+                    style={[styles.replyText, isMine ? styles.replyTextMine : styles.replyTextOther]}
                     numberOfLines={2}
                   >
                     {String(item.reply_to.text)}
+                  </Text>
+                ) : item.reply_to?.audio ? (
+                  <Text
+                    style={[styles.replyText, isMine ? styles.replyTextMine : styles.replyTextOther]}
+                    numberOfLines={2}
+                  >
+                    🎤 Voice message
                   </Text>
                 ) : null}
               </Pressable>
             ) : null}
 
             {imgs.length > 0 ? (
-              <View style={[styles.imgGrid, { justifyContent: isMine ? "flex-end" : "flex-start" }]}>
+              <View style={[styles.imgGrid, isMine ? styles.imgGridMine : styles.imgGridOther]}>
                 {imgs.slice(0, 4).map((img, idx) => {
                   const uri = getImgSrc(img);
                   if (!uri) return null;
@@ -1385,7 +2015,7 @@ export default function ChatScreen({ navigation, route }: Props) {
                     <Pressable
                       key={img.id ?? `${item.id}-img-${idx}`}
                       onPress={() => setPreviewUri(uri)}
-                      style={[styles.imgTile, isLast && { opacity: 0.8 }]}
+                      style={[styles.imgTile, isLast && styles.imgTileFaded]}
                     >
                       <Image source={{ uri }} style={styles.imgTileImg} />
                       {isLast ? (
@@ -1397,6 +2027,21 @@ export default function ChatScreen({ navigation, route }: Props) {
                   );
                 })}
               </View>
+            ) : null}
+
+            {hasAudio ? (
+              <AudioMessageBubble
+                messageId={item.id}
+                isMine={isMine}
+                isFocused={isFocused}
+                isActive={playingMessageId === item.id}
+                isPlaying={playingMessageId === item.id && isPlayingAudio}
+                durationSec={audioDurationSec}
+                onToggle={() => toggleAudioPlayback(item.id, audioSrc)}
+                onLongPress={() => openMenu(item)}
+                getActiveSoundCurrentTime={getActiveSoundCurrentTime}
+                getActiveSoundDuration={getActiveSoundDuration}
+              />
             ) : null}
 
             {hasText ? (
@@ -1414,7 +2059,7 @@ export default function ChatScreen({ navigation, route }: Props) {
                             key={`${item.id}-link-${idx}`}
                             style={[styles.msgLink, isMine ? styles.msgLinkMine : styles.msgLinkOther]}
                             onPress={() => {
-                              void handleOpenUrl(part.href);
+                              handleOpenUrl(part.href);
                             }}
                             suppressHighlighting
                           >
@@ -1432,7 +2077,7 @@ export default function ChatScreen({ navigation, route }: Props) {
               </Pressable>
             ) : null}
 
-            <View style={[styles.msgMetaRow, isMine ? { justifyContent: "flex-end" } : { justifyContent: "flex-start" }]}>
+            <View style={[styles.msgMetaRow, isMine ? styles.msgMetaRowMine : styles.msgMetaRowOther]}>
               <Text style={styles.msgMeta}>{timeLabel}</Text>
             </View>
           </View>
@@ -1442,9 +2087,13 @@ export default function ChatScreen({ navigation, route }: Props) {
     [
       meId,
       navigation,
-      onDeleteMessage,
       t,
       handleOpenUrl,
+      toggleAudioPlayback,
+      getActiveSoundCurrentTime,
+      getActiveSoundDuration,
+      playingMessageId,
+      isPlayingAudio,
       openMenu,
       isMessageMenuVisible,
       selectedMessage?.id,
@@ -1452,31 +2101,113 @@ export default function ChatScreen({ navigation, route }: Props) {
   );
 
   const invertedMessages = useMemo(() => [...messages].reverse(), [messages]);
-  const keyExtractor = useCallback((it: Message) => it.id, []);
+
+  const listRows = useMemo<MessageListRow[]>(() => {
+    // FlatList is inverted and data is newest-first.
+    // Insert a separator row ONLY at day-boundaries (local time), to avoid duplicates.
+    const rows: MessageListRow[] = [];
+
+    for (let i = 0; i < invertedMessages.length; i += 1) {
+      const msg = invertedMessages[i];
+      rows.push({ kind: "msg", item: msg });
+
+      const curDay = getLocalDayStartMs(msg?.created_at);
+      const nextMsg = invertedMessages[i + 1];
+      const nextDay = nextMsg ? getLocalDayStartMs(nextMsg?.created_at) : null;
+
+      if (curDay != null && nextDay != null && curDay !== nextDay) {
+        rows.push({
+          kind: "day",
+          id: `day-sep-${curDay}-${msg.id}`,
+          dayStartMs: curDay,
+          label: formatChatDayLabel({ dayStartMs: curDay, language }),
+        });
+      }
+    }
+
+    return rows;
+  }, [invertedMessages, language]);
+
+  const keyExtractor = useCallback((row: MessageListRow) => {
+    return row.kind === "msg" ? row.item.id : row.id;
+  }, []);
+
+  const renderListItem = useCallback(
+    ({ item }: { item: MessageListRow }) => {
+      if (item.kind === "day") {
+        if (!item.label) return null;
+        return (
+          <View style={styles.daySepWrap}>
+            <View style={styles.daySepPill}>
+              <Text style={styles.daySepText}>{item.label}</Text>
+            </View>
+          </View>
+        );
+      }
+
+      return renderMessageItem({ item: item.item });
+    },
+    [renderMessageItem]
+  );
+
   const isInitialLoading = loadingMsgs;
   const isFetchingMore = loadingMore;
 
   const scrollFabBottom = useMemo(() => {
-    // Place FAB above composer + safe-area and above keyboard if open.
-    // Extra gap keeps it from visually colliding with bubbles/composer.
+    // Place FAB above the highest blocking UI at the bottom:
+    // - If keyboard overlays UI, lift above keyboard.
+    // - If composer is lifted above keyboard (e.g., iOS keyboard avoidance), lift above composer.
+    // Uses measured on-screen composer position to avoid fragile constants.
     const gap = 12;
     const safeBottom = Math.max(insets.bottom, 0);
-    const kb = Math.max(keyboardHeight, 0);
-    const composer = Math.max(composerHeight, 0);
-    return safeBottom + gap + (kb > 0 ? kb : composer);
-  }, [composerHeight, keyboardHeight, insets.bottom]);
+
+    const kb = Math.max(0, keyboardHeight);
+    const composerH = Math.max(0, composerHeight);
+
+    const composerTopFromBottom =
+      typeof composerTopInWindow === "number" &&
+      Number.isFinite(composerTopInWindow) &&
+      windowHeight > 0
+        ? Math.max(0, windowHeight - composerTopInWindow)
+        : composerH;
+
+    // When keyboard is closed, keep iOS bottom safe-area *only if* it isn't already included
+    // by the measured composer position (some layouts already pad the composer).
+    // On Android, the composer wrapper already pads by safe inset (`composerBottomPad`), so don't double count.
+    const alreadyAccountsSafe = Math.max(0, composerTopFromBottom - composerH);
+    const safeWhenClosed =
+      Platform.OS === "ios" ? Math.max(0, safeBottom - alreadyAccountsSafe) : 0;
+
+    const base = kb > 0 ? Math.max(kb, composerTopFromBottom) : composerTopFromBottom + safeWhenClosed;
+    return base + gap;
+  }, [composerHeight, composerTopInWindow, insets.bottom, keyboardHeight, windowHeight]);
+
+  useEffect(() => {
+    if (!fabBottomInitedRef.current) {
+      fabBottomAnim.setValue(scrollFabBottom);
+      fabBottomInitedRef.current = true;
+      return;
+    }
+
+    Animated.timing(fabBottomAnim, {
+      toValue: scrollFabBottom,
+      duration: 180,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [fabBottomAnim, scrollFabBottom]);
 
   return (
     <View style={styles.container}>
       <View style={styles.body}>
         {!sel ? (
           <View style={styles.center}>
-            <Text style={{ color: "#9ca3af" }}>{t("chat.select_chat")}</Text>
+            <Text style={styles.centerMutedText}>{t("chat.select_chat")}</Text>
           </View>
         ) : isInitialLoading ? (
           <View style={styles.center}>
             <ActivityIndicator />
-            <Text style={{ color: "#9ca3af", marginTop: 8 }}>{t("chat.loading_messages")}</Text>
+            <Text style={styles.centerMutedTextWithTop}>{t("chat.loading_messages")}</Text>
           </View>
         ) : (
           <>
@@ -1484,11 +2215,11 @@ export default function ChatScreen({ navigation, route }: Props) {
               ref={(r) => {
                 listRef.current = r;
               }}
-              data={invertedMessages}
+              data={listRows}
               keyExtractor={keyExtractor}
               inverted
-              contentContainerStyle={{ padding: 12, paddingBottom: 6 }}
-              renderItem={renderMessageItem}
+              contentContainerStyle={styles.messagesContent}
+              renderItem={renderListItem}
               onScroll={handleListScroll}
               scrollEventThrottle={16}
               onEndReachedThreshold={0.12}
@@ -1498,7 +2229,7 @@ export default function ChatScreen({ navigation, route }: Props) {
               onEndReached={() => {
                 if (onEndReachedLockRef.current) return;
                 onEndReachedLockRef.current = true;
-                void loadOlder();
+                loadOlder();
               }}
               initialNumToRender={16}
               maxToRenderPerBatch={20}
@@ -1507,41 +2238,45 @@ export default function ChatScreen({ navigation, route }: Props) {
               maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
               ListFooterComponent={
                 isFetchingMore ? (
-                  <View style={{ paddingVertical: 10, alignItems: "center" }}>
+                  <View style={styles.listFooterCenter}>
                     <ActivityIndicator />
-                    <Text style={{ color: "#9ca3af", marginTop: 6, fontSize: 12 }}>
+                    <Text style={styles.listFooterMuted}>
                       {t("chat.loading_older")}
                     </Text>
                   </View>
                 ) : !hasNextPage && messages.length > 0 ? (
-                  <View style={{ paddingVertical: 10, alignItems: "center" }}>
-                    <Text style={{ color: "#6b7280", fontSize: 12 }}>No older messages</Text>
+                  <View style={styles.listFooterCenter}>
+                    <Text style={styles.listFooterDim}>No older messages</Text>
                   </View>
                 ) : null
               }
             />
 
             {showScrollToBottom && (
-              <Pressable
-                onPress={scrollToBottom}
-                style={({ pressed }) => [
-                  styles.scrollToBottomBtn,
-                  { bottom: scrollFabBottom },
-                  pressed && { opacity: 0.85 },
-                ]}
-                hitSlop={10}
-              >
-                <Ionicons name="arrow-down" size={20} color="#fff" />
-              </Pressable>
+              <Animated.View style={[styles.scrollToBottomWrap, { bottom: fabBottomAnim }]}>
+                <Pressable
+                  onPress={scrollToBottom}
+                  style={({ pressed }) => [
+                    styles.scrollToBottomBtn,
+                    pressed && { opacity: 0.85 },
+                  ]}
+                  hitSlop={10}
+                >
+                  <Ionicons name="arrow-down" size={20} color="#fff" />
+                </Pressable>
+              </Animated.View>
             )}
 
             <View
-              style={{ paddingBottom: composerBottomPad }}
+              style={[styles.composerWrap, { paddingBottom: composerBottomPad }]}
+              ref={composerWrapRef}
               onLayout={(e) => {
                 const h = e?.nativeEvent?.layout?.height;
                 if (!Number.isFinite(h)) return;
                 const next = Math.max(0, Math.round(h));
                 setComposerHeight((prev) => (prev === next ? prev : next));
+
+                measureComposerTop();
               }}
             >
               <SendMessageSection
@@ -1550,6 +2285,10 @@ export default function ChatScreen({ navigation, route }: Props) {
                 text={text}
                 setText={setText}
                 onSend={onSend}
+                onPressMic={onPressMic}
+                isRecording={isRecording}
+                recordingSec={recordingSec}
+                onCancelRecording={cancelRecording}
                 me={me}
                 replyTarget={replyTarget}
                 setReplyTarget={setReplyTarget}
@@ -1576,17 +2315,17 @@ export default function ChatScreen({ navigation, route }: Props) {
           {loadingChats ? (
             <View style={styles.center}>
               <ActivityIndicator />
-              <Text style={{ color: "#9ca3af", marginTop: 8 }}>{t("chat.loading_chats")}</Text>
+              <Text style={styles.centerMutedTextWithTop}>{t("chat.loading_chats")}</Text>
             </View>
           ) : (
             <FlatList
               data={chats}
               keyExtractor={(it) => it.id}
-              contentContainerStyle={{ padding: 12 }}
+              contentContainerStyle={styles.modalListContent}
               renderItem={renderChatItem}
               ListEmptyComponent={
                 <View style={styles.center}>
-                  <Text style={{ color: "#9ca3af" }}>{t("chat.no_chats")}</Text>
+                  <Text style={styles.centerMutedText}>{t("chat.no_chats")}</Text>
                 </View>
               }
             />
@@ -1716,7 +2455,7 @@ export default function ChatScreen({ navigation, route }: Props) {
               onPress={() =>
                 runMessageMenuAction((message) => {
                   if (message.sender?.id !== meId) return;
-                  void onDeleteMessage(message);
+                  onDeleteMessage(message);
                 })
               }
             >
@@ -1761,9 +2500,34 @@ export default function ChatScreen({ navigation, route }: Props) {
  * Styles
  * ========================= */
 const styles = StyleSheet.create({
+    flexMinWidth0: { flex: 1, minWidth: 0 },
+
+    daySepWrap: { width: "100%", alignItems: "center", marginVertical: 10 },
+    daySepPill: {
+      backgroundColor: "rgba(255,255,255,0.10)",
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      borderRadius: 999,
+    },
+    daySepText: { color: "#d1d5db", fontSize: 12, fontWeight: "800" },
+
+    headerTitlePressable: { flex: 1, minWidth: 0 },
+    headerRightRow: { flexDirection: "row", gap: 10, marginRight: 8 },
+
+    messagesContent: { padding: 12, paddingBottom: 6 },
+    listFooterCenter: { paddingVertical: 10, alignItems: "center" },
+    listFooterMuted: { color: "#9ca3af", marginTop: 6, fontSize: 12 },
+    listFooterDim: { color: "#6b7280", fontSize: 12 },
+
+    composerWrap: { width: "100%" },
+
+    audioTimeTextMine: { color: "rgba(255,255,255,0.92)" },
+    audioTimeTextOther: { color: "#d1d5db" },
   container: { flex: 1, backgroundColor: "#0b0b0f" },
   body: { flex: 1 },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
+  centerMutedText: { color: "#9ca3af" },
+  centerMutedTextWithTop: { color: "#9ca3af", marginTop: 8 },
 
   // header buttons
   headerBtn: {
@@ -1792,6 +2556,8 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   modalTitle: { color: "#fff", fontSize: 16, fontWeight: "900" },
+
+  modalListContent: { padding: 12 },
 
   actionSheetOverlay: {
     flex: 1,
@@ -1876,9 +2642,26 @@ const styles = StyleSheet.create({
 
   // messages
   msgRow: { flexDirection: "row", marginVertical: 6 },
-  msgBubbleWrap: { maxWidth: "82%" },
+  msgRowMine: { justifyContent: "flex-end" },
+  msgRowOther: { justifyContent: "flex-start" },
+  msgAvatarWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    overflow: "hidden",
+    backgroundColor: "#1d1d25",
+    borderWidth: 1,
+    borderColor: "#2a2a35",
+    marginRight: 10,
+    alignSelf: "flex-end",
+  },
+  msgAvatarImg: { width: "100%", height: "100%" },
+  msgAvatarFallback: { flex: 1, alignItems: "center", justifyContent: "center" },
+  msgAvatarText: { color: "#fff", fontWeight: "900", fontSize: 13 },
 
-  msgSender: { color: "#9ca3af", fontSize: 11, marginBottom: 2 },
+  msgBubbleWrap: { maxWidth: "82%" },
+  msgBubbleWrapMine: { alignItems: "flex-end" },
+  msgBubbleWrapOther: { alignItems: "flex-start", maxWidth: "76%" },
 
   replyPreview: {
     borderLeftWidth: 3,
@@ -1899,8 +2682,14 @@ const styles = StyleSheet.create({
   },
   replySender: { fontSize: 11, fontWeight: "800", marginBottom: 2 },
   replyText: { fontSize: 12 },
+  replySenderMine: { color: "#fff" },
+  replySenderOther: { color: "#93c5fd" },
+  replyTextMine: { color: "#f3f4f6" },
+  replyTextOther: { color: "#d1d5db" },
 
   imgGrid: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 6 },
+  imgGridMine: { justifyContent: "flex-end" },
+  imgGridOther: { justifyContent: "flex-start" },
   imgTile: {
     width: 90,
     height: 90,
@@ -1909,6 +2698,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#111",
     position: "relative",
   },
+  imgTileFaded: { opacity: 0.8 },
   imgTileImg: { width: "100%", height: "100%" },
   imgOverlay: {
     position: "absolute",
@@ -1946,6 +2736,53 @@ const styles = StyleSheet.create({
     borderColor: "#2a2a35",
   },
 
+  // ===== audio bubble =====
+  audioBubble: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    minWidth: 170,
+  },
+  audioBubbleMine: {
+    backgroundColor: "#1677ff",
+  },
+  audioBubbleOther: {
+    backgroundColor: "#171a22",
+    borderWidth: 1,
+    borderColor: "#2a2a35",
+  },
+  audioPlayBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "rgba(255,255,255,0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  audioProgressTrack: {
+    width: "100%",
+    height: 4,
+    borderRadius: 999,
+    overflow: "hidden",
+    backgroundColor: "rgba(255,255,255,0.22)",
+  },
+  audioProgressFill: {
+    height: "100%",
+    backgroundColor: "rgba(255,255,255,0.92)",
+  },
+  audioTimeRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 6,
+  },
+  audioTimeText: {
+    fontSize: 11,
+    fontWeight: "700",
+  },
+
   msgText: { fontSize: 14, lineHeight: 18 },
   msgLink: {
     textDecorationLine: "underline",
@@ -1963,12 +2800,11 @@ const styles = StyleSheet.create({
   textOther: { color: "#e5e7eb" },
 
   msgMetaRow: { flexDirection: "row", alignItems: "center", marginTop: 4 },
+  msgMetaRowMine: { justifyContent: "flex-end" },
+  msgMetaRowOther: { justifyContent: "flex-start" },
   msgMeta: { color: "#9ca3af", fontSize: 11 },
 
   scrollToBottomBtn: {
-    position: "absolute",
-    right: 16,
-    bottom: 88,
     width: 44,
     height: 44,
     borderRadius: 22,
@@ -1980,6 +2816,14 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 4 },
+  },
+
+  scrollToBottomWrap: {
+    position: "absolute",
+    right: 16,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
   },
 
   // preview

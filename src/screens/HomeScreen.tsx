@@ -20,7 +20,6 @@ import {
 } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 import { gql } from "@apollo/client";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import {
   loadBlockedTelMap,
@@ -245,17 +244,25 @@ type PostsPagedVars = {
 
 const PAGE_SIZE = 10;
 
-// ====== Local storage ======
-const BLOCKED_STORE_KEY = "jachoei.blocked_tel_v1";
-const REPORTED_BANK_STORE_KEY = "jachoei.reported_bank_v1";
+function normalizeAvatarUri(uri?: string | null) {
+  if (!uri) return "";
 
-function genClientId() {
-  // RN-safe UUID-ish (ไม่ใช้ uuidv4 เพื่อเลี่ยง crypto.getRandomValues)
-  const s4 = () =>
-    Math.floor((1 + Math.random()) * 0x10000)
-      .toString(16)
-      .substring(1);
-  return `${s4()}${s4()}-${s4()}-${s4()}-${s4()}-${s4()}${s4()}${s4()}`;
+  const value = String(uri).trim();
+  if (!value) return "";
+
+  if (
+    value.startsWith("http://") ||
+    value.startsWith("https://") ||
+    value.startsWith("file://") ||
+    value.startsWith("content://") ||
+    value.startsWith("data:")
+  ) {
+    return value;
+  }
+
+  const base = ENV.apiBase.endsWith("/") ? ENV.apiBase.slice(0, -1) : ENV.apiBase;
+  if (value.startsWith("/")) return `${base}${value}`;
+  return `${base}/${value}`;
 }
 
 function normalizeTel(raw: string) {
@@ -713,7 +720,7 @@ export const HomeScreen: React.FC = () => {
         applyBookmarkToList(postId, ok);
 
         toastBookmarkResult(ok);
-      } catch (err: any) {
+        } catch {
         applyBookmarkToList(postId, prevVal);
         toastGenericError();
       } finally {
@@ -998,7 +1005,7 @@ export const HomeScreen: React.FC = () => {
       try {
         await unblockTelOnServer(tel);
         toastTelReportRemoved();
-      } catch (e: any) {
+      } catch {
         setBlockedMap((prev) => {
           const next: StoredBlockedTelMap = { ...prev, [tel]: prevEntry };
           persistBlocked(next);
@@ -1024,7 +1031,6 @@ export const HomeScreen: React.FC = () => {
       }
 
       const prevEntry = reportedBankMap[acc] as StoredReportedBankEntry | undefined;
-      const wasReported = !!prevEntry;
 
       const optimisticEntry: StoredReportedBankEntry = {
         bank_name: value.bankName ?? prevEntry?.bank_name ?? null,
@@ -1069,7 +1075,7 @@ export const HomeScreen: React.FC = () => {
         }
 
         toastBankReportedSuccessfully();
-      } catch (err: any) {
+      } catch {
         setReportedBankMap((prev) => {
           const next: StoredReportedBankMap = { ...prev };
           if (prevEntry) next[acc] = prevEntry;
@@ -1113,7 +1119,7 @@ export const HomeScreen: React.FC = () => {
         });
 
         toastBankReportRemoved();
-      } catch (err: any) {
+      } catch {
         setReportedBankMap((prev) => {
           const next: StoredReportedBankMap = { ...prev, [acc]: prevEntry };
           persistReportedBank(next);
@@ -1157,9 +1163,9 @@ export const HomeScreen: React.FC = () => {
 
       const authorName = item.author?.name?.trim() || "Unknown";
       const authorInitial = authorName?.[0]?.toUpperCase?.() || "?";
-      const authorAvatar = item.author?.avatar
-        ? String(item.author.avatar)
-        : null;
+      const authorAvatarUri = normalizeAvatarUri(item.author?.avatar ?? null);
+      const hasAuthor = !!item.author?.id;
+      const isPublicStatus = String(status || "").toUpperCase() === "PUBLIC";
 
       const isBookmarked = !!item.is_bookmarked;
       const bookmarkBusy = !!bookmarkBusyMap[item.id];
@@ -1189,7 +1195,30 @@ export const HomeScreen: React.FC = () => {
               {item.title || "-"}
             </Text>
 
-            {status ? (
+            {hasAuthor ? (
+              <Pressable
+                onPress={(e) => onOpenProfile(e, item.author?.id)}
+                style={({ pressed }) => [styles.authorChip, pressed && { opacity: 0.8 }]}
+                hitSlop={10}
+              >
+                <View style={styles.authorAvatarWrap}>
+                  <View style={styles.authorAvatarFallback}>
+                    <Text style={styles.authorAvatarText}>{authorInitial}</Text>
+                  </View>
+                  {authorAvatarUri ? (
+                    <Image
+                      source={{ uri: authorAvatarUri }}
+                      style={styles.authorAvatarImg}
+                      resizeMode="cover"
+                    />
+                  ) : null}
+                </View>
+                <Text style={styles.authorName} numberOfLines={1}>
+                  {authorName}
+                </Text>
+                <Ionicons name="chevron-forward" size={14} color="#9ca3af" />
+              </Pressable>
+            ) : status && !isPublicStatus ? (
               <View style={[styles.tag, { backgroundColor: sc.bg }]}>
                 <Text style={[styles.tagText, { color: sc.fg }]}>
                   {String(status).toUpperCase()}
@@ -1204,37 +1233,11 @@ export const HomeScreen: React.FC = () => {
               {ts}
             </Text>
 
-            {item.author?.id ? (
-              <Pressable
-                onPress={(e) => onOpenProfile(e, item.author?.id)}
-                style={({ pressed }) => [
-                  styles.authorChip,
-                  pressed && { opacity: 0.8 },
-                ]}
-                hitSlop={10}
-              >
-                {authorAvatar ? (
-                  <Image
-                    source={{ uri: authorAvatar }}
-                    style={styles.authorAvatar}
-                  />
-                ) : (
-                  <View style={styles.authorAvatarFallback}>
-                    <Text style={styles.authorAvatarText}>
-                      {authorInitial}
-                    </Text>
-                  </View>
-                )}
-                <Text style={styles.authorName} numberOfLines={1}>
-                  {authorName}
-                </Text>
-                <Ionicons name="chevron-forward" size={14} color="#9ca3af" />
-              </Pressable>
-            ) : (
+            {!hasAuthor ? (
               <Text style={[styles.meta, { marginLeft: 8 }]} numberOfLines={1}>
                 • by {authorName}
               </Text>
-            )}
+            ) : null}
           </View>
 
           {/* THUMB GRID */}
@@ -1255,137 +1258,179 @@ export const HomeScreen: React.FC = () => {
             </Text>
           ) : null}
 
-          {/* TEL chips */}
-          <View style={styles.infoRow}>
-            <Ionicons name="call-outline" size={14} color="#9ca3af" />
-            <Text style={styles.infoLabel}>Tel:</Text>
+          {/* TEL + BANK (premium info section) */}
+          <View style={styles.infoSection}>
+            {/* TEL */}
+            <View style={styles.infoRow}>
+              <View style={styles.infoRowLeft}>
+                <View style={styles.infoRowIcon}>
+                  <Ionicons name="call-outline" size={14} color="#9ca3af" />
+                </View>
+                <Text style={styles.infoLabel}>TEL</Text>
+              </View>
 
-            {telList.length === 0 ? (
-              <Text style={styles.infoValue} numberOfLines={1}>
-                -
-              </Text>
-            ) : (
-              <View style={styles.chipsWrap}>
-                {inlineTels.map((tel) => {
-                  const blocked = isTelBlocked(tel);
-                  return (
-                    <TouchableOpacity
-                      key={tel}
-                      onPress={(e: any) =>
-                        openBlockSheet(e, tel, {
-                          postId: item.id,
-                          title: item.title ?? undefined,
-                          source: "HOME",
-                        })
-                      }
-                      activeOpacity={0.85}
-                      style={[styles.telChip, blocked && styles.telChipBlocked]}
-                    >
-                      <Text style={styles.chipMainText} numberOfLines={1}>
-                        {tel}
-                      </Text>
-                      <View style={styles.chipRight}>
-                        <Ionicons
-                          name={blocked ? "lock-closed" : "lock-open-outline"}
-                          size={12}
-                          color={blocked ? "#fff" : "#e5e7eb"}
-                        />
-                        <Text style={styles.chipRightText}>
-                          {blocked ? "บล็อกแล้ว" : "บล็อก"}
+              {telList.length === 0 ? (
+                <Text style={styles.infoEmptyText} numberOfLines={1}>
+                  -
+                </Text>
+              ) : (
+                <View style={styles.chipsWrap}>
+                  {inlineTels.map((tel) => {
+                    const blocked = isTelBlocked(tel);
+
+                    return (
+                      <TouchableOpacity
+                        key={tel}
+                        onPress={(e: any) =>
+                          openBlockSheet(e, tel, {
+                            postId: item.id,
+                            title: item.title ?? undefined,
+                            source: "HOME",
+                          })
+                        }
+                        accessibilityRole="button"
+                        accessibilityLabel={
+                          blocked
+                            ? `เบอร์ ${tel} (บล็อกแล้ว)`
+                            : `เบอร์ ${tel} (แตะเพื่อบล็อก)`
+                        }
+                        accessibilityHint="เปิดหน้าจัดการบล็อก/รายงานเบอร์โทร"
+                        activeOpacity={0.9}
+                        style={[styles.valuePill, blocked && styles.valuePillBlocked]}
+                      >
+                        <Text style={styles.valueText} numberOfLines={1}>
+                          {tel}
                         </Text>
+
+                        <View
+                          style={[
+                            styles.pillAction,
+                            blocked ? styles.pillActionDanger : styles.pillActionNeutral,
+                          ]}
+                        >
+                          <Ionicons
+                            name={blocked ? "lock-closed" : "lock-open-outline"}
+                            size={14}
+                            color={blocked ? "#fff" : "#e5e7eb"}
+                          />
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+
+                  {moreCount > 0 ? (
+                    <TouchableOpacity
+                      onPress={(e: any) => {
+                        e?.stopPropagation?.();
+                        openAllTelsModal(
+                          item.title || "เบอร์โทรทั้งหมด",
+                          telList,
+                          item.id
+                        );
+                      }}
+                      style={[styles.valuePill, styles.morePill]}
+                      activeOpacity={0.9}
+                    >
+                      <Text style={styles.valueText} numberOfLines={1}>
+                        +{moreCount}
+                      </Text>
+                      <View style={[styles.pillAction, styles.pillActionNeutral]}>
+                        <Ionicons name="chevron-forward" size={14} color="#e5e7eb" />
                       </View>
                     </TouchableOpacity>
-                  );
-                })}
+                  ) : null}
+                </View>
+              )}
+            </View>
 
-                {moreCount > 0 ? (
-                  <TouchableOpacity
-                    onPress={(e: any) => {
-                      e?.stopPropagation?.();
-                      openAllTelsModal(
-                        item.title || "เบอร์โทรทั้งหมด",
-                        telList,
-                        item.id
-                      );
-                    }}
-                    style={styles.moreChip}
-                    activeOpacity={0.85}
-                  >
-                    <Text style={styles.moreChipText}>+{moreCount}</Text>
-                  </TouchableOpacity>
-                ) : null}
+            <View style={styles.infoDivider} />
+
+            {/* BANK */}
+            <View style={styles.infoRow}>
+              <View style={styles.infoRowLeft}>
+                <View style={styles.infoRowIcon}>
+                  <Ionicons name="card-outline" size={14} color="#9ca3af" />
+                </View>
+                <Text style={styles.infoLabel}>BANK</Text>
               </View>
-            )}
-          </View>
 
-          {/* BANK chips (REPORT/UNREPORT) */}
-          <View style={styles.infoRow}>
-            <Ionicons name="card-outline" size={14} color="#9ca3af" />
-            <Text style={styles.infoLabel}>Bank:</Text>
+              {bankList.length === 0 ? (
+                <Text style={styles.infoEmptyText} numberOfLines={1}>
+                  -
+                </Text>
+              ) : (
+                <View style={styles.chipsWrap}>
+                  {inlineBanks.map((b, idx) => {
+                    const acc = normalizeBankAccount(b.seller_account || "");
+                    const bankName = b.bank_name || "Bank";
+                    const reported = isBankReported(acc);
+                    const label = `${bankName}: ${acc}`;
 
-            {bankList.length === 0 ? (
-              <Text style={styles.infoValue} numberOfLines={1}>
-                -
-              </Text>
-            ) : (
-              <View style={styles.chipsWrap}>
-                {inlineBanks.map((b, idx) => {
-                  const acc = normalizeBankAccount(b.seller_account || "");
-                  const reported = isBankReported(acc);
-                  const label = `${b.bank_name || "Bank"}: ${acc}`;
-
-                  return (
-                    <TouchableOpacity
-                      key={`${acc}-${idx}`}
-                      onPress={(e: any) =>
-                        openReportBankSheet(e, b.bank_name, acc, {
-                          postId: item.id,
-                          title: item.title ?? undefined,
-                          source: "HOME",
-                        })
-                      }
-                      activeOpacity={0.85}
-                      style={[
-                        styles.bankChip,
-                        reported && styles.bankChipReported,
-                      ]}
-                    >
-                      <Text style={styles.chipMainText} numberOfLines={1}>
-                        {label}
-                      </Text>
-
-                      <View style={styles.chipRight}>
-                        <Ionicons
-                          name={reported ? "close-circle" : "megaphone-outline"}
-                          size={12}
-                          color={reported ? "#ef4444" : "#e5e7eb"}
-                        />
-                        <Text style={[styles.chipRightText, reported && { color: "#ef4444" }]}>
-                          {reported ? "ยกเลิกรายงาน" : "รายงาน"}
+                    return (
+                      <TouchableOpacity
+                        key={`${acc}-${idx}`}
+                        onPress={(e: any) =>
+                          openReportBankSheet(e, b.bank_name, acc, {
+                            postId: item.id,
+                            title: item.title ?? undefined,
+                            source: "HOME",
+                          })
+                        }
+                        accessibilityRole="button"
+                        accessibilityLabel={
+                          reported
+                            ? `${label} (รายงานแล้ว)`
+                            : `${label} (แตะเพื่อรายงาน)`
+                        }
+                        accessibilityHint="เปิดหน้ารายงาน/ยกเลิกรายงานบัญชีธนาคาร"
+                        activeOpacity={0.9}
+                        style={[styles.valuePill, reported && styles.valuePillReported]}
+                      >
+                        <Text style={styles.valueText} numberOfLines={1}>
+                          <Text style={styles.valueTextMuted}>{bankName}: </Text>
+                          {acc}
                         </Text>
+
+                        <View
+                          style={[
+                            styles.pillAction,
+                            reported ? styles.pillActionDanger : styles.pillActionNeutral,
+                          ]}
+                        >
+                          <Ionicons
+                            name={reported ? "close-circle" : "megaphone-outline"}
+                            size={14}
+                            color={reported ? "#fff" : "#e5e7eb"}
+                          />
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+
+                  {moreBanksCount > 0 ? (
+                    <TouchableOpacity
+                      onPress={(e: any) => {
+                        e?.stopPropagation?.();
+                        openAllBanksModal(
+                          item.title || "บัญชีธนาคารทั้งหมด",
+                          bankList,
+                          item.id
+                        );
+                      }}
+                      style={[styles.valuePill, styles.morePill]}
+                      activeOpacity={0.9}
+                    >
+                      <Text style={styles.valueText} numberOfLines={1}>
+                        +{moreBanksCount}
+                      </Text>
+                      <View style={[styles.pillAction, styles.pillActionNeutral]}>
+                        <Ionicons name="chevron-forward" size={14} color="#e5e7eb" />
                       </View>
                     </TouchableOpacity>
-                  );
-                })}
-
-                {moreBanksCount > 0 ? (
-                  <TouchableOpacity
-                    onPress={(e: any) => {
-                      e?.stopPropagation?.();
-                      openAllBanksModal(
-                        item.title || "บัญชีธนาคารทั้งหมด",
-                        bankList,
-                        item.id
-                      );
-                    }}
-                    style={styles.moreChip}
-                    activeOpacity={0.85}
-                  >
-                    <Text style={styles.moreChipText}>+{moreBanksCount}</Text>
-                  </TouchableOpacity>
-                ) : null}
-              </View>
-            )}
+                  ) : null}
+                </View>
+              )}
+            </View>
           </View>
 
           {/* ACTIONS */}
@@ -1433,6 +1478,7 @@ export const HomeScreen: React.FC = () => {
       bookmarkBusyMap,
       isTelBlocked,
       isBankReported,
+      onOpenProfile,
       openUrl,
       handleShare,
       openChatWithAuthor,
@@ -1689,7 +1735,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#1f1f26",
   },
-  cardTop: { flexDirection: "row", alignItems: "flex-start", gap: 8 },
+  cardTop: { flexDirection: "row", alignItems: "center", gap: 8 },
   title: { flex: 1, color: "#fff", fontSize: 14, fontWeight: "900" },
 
   tag: {
@@ -1715,11 +1761,16 @@ const styles = StyleSheet.create({
     borderColor: "#2a2a35",
     maxWidth: 180,
   },
-  authorAvatar: { width: 18, height: 18, borderRadius: 9, backgroundColor: "#111" },
-  authorAvatarFallback: {
+  authorAvatarWrap: {
     width: 18,
     height: 18,
     borderRadius: 9,
+    overflow: "hidden",
+    backgroundColor: "#111",
+  },
+  authorAvatarImg: { width: "100%", height: "100%" },
+  authorAvatarFallback: {
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: "#2a2a35",
     alignItems: "center",
     justifyContent: "center",
@@ -1729,62 +1780,85 @@ const styles = StyleSheet.create({
 
   detail: { marginTop: 10, color: "#e5e7eb", fontSize: 12, lineHeight: 16 },
 
-  infoRow: { flexDirection: "row", alignItems: "flex-start", gap: 6, marginTop: 8 },
-  infoLabel: { color: "#9ca3af", fontSize: 12, fontWeight: "800", marginTop: 2 },
-  infoValue: { flex: 1, color: "#fff", fontSize: 12 },
-
-  chipsWrap: { flex: 1, flexDirection: "row", flexWrap: "wrap", gap: 8 },
-
-  telChip: {
-    maxWidth: "100%",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: "#1d1d25",
-    borderWidth: 1,
-    borderColor: "#2a2a35",
-  },
-  telChipBlocked: { borderColor: "#ef4444", backgroundColor: "rgba(239,68,68,0.18)" },
-
-  bankChip: {
-    maxWidth: "100%",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: "#1d1d25",
-    borderWidth: 1,
-    borderColor: "#2a2a35",
-  },
-  bankChipReported: { borderColor: "#34c759", backgroundColor: "rgba(52,199,89,0.14)" },
-
-  chipMainText: { color: "#fff", fontSize: 12, fontWeight: "800", maxWidth: 220 },
-  chipRight: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingLeft: 8,
-    borderLeftWidth: 1,
-    borderLeftColor: "#2a2a35",
-  },
-  chipRightText: { color: "#e5e7eb", fontSize: 11, fontWeight: "900" },
-
-  moreChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
+  infoSection: {
+    marginTop: 10,
+    padding: 10,
+    borderRadius: 14,
     backgroundColor: "#15151c",
     borderWidth: 1,
-    borderColor: "#2a2a35",
+    borderColor: "#1f1f26",
+  },
+  infoRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  infoRowLeft: { width: 62, flexDirection: "row", alignItems: "center", gap: 8 },
+  infoRowIcon: {
+    width: 22,
+    height: 22,
+    borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: 1,
+    borderColor: "#1f1f26",
     alignItems: "center",
     justifyContent: "center",
   },
-  moreChipText: { color: "#9ca3af", fontSize: 12, fontWeight: "900" },
+  infoLabel: {
+    color: "#9ca3af",
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 0.8,
+  },
+  infoEmptyText: { flex: 1, color: "#6b7280", fontSize: 12, fontWeight: "800" },
+  infoDivider: { height: 1, backgroundColor: "#1f1f26", opacity: 0.65, marginVertical: 10 },
+
+  chipsWrap: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    alignItems: "center",
+  },
+
+  valuePill: {
+    maxWidth: "100%",
+    minHeight: 34,
+    flexDirection: "row",
+    alignItems: "center",
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: 1,
+    borderColor: "#2a2a35",
+    paddingLeft: 12,
+    paddingRight: 4,
+  },
+  valuePillBlocked: {
+    borderColor: "rgba(239,68,68,0.45)",
+    backgroundColor: "rgba(239,68,68,0.10)",
+  },
+  valuePillReported: {
+    borderColor: "rgba(52,199,89,0.45)",
+    backgroundColor: "rgba(52,199,89,0.08)",
+  },
+  morePill: { borderColor: "#2a2a35", backgroundColor: "rgba(255,255,255,0.02)" },
+
+  valueText: {
+    flex: 1,
+    minWidth: 0,
+    color: "#e5e7eb",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  valueTextMuted: { color: "#9ca3af", fontWeight: "900" },
+
+  pillAction: {
+    width: 30,
+    height: 30,
+    borderRadius: 999,
+    marginLeft: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pillActionNeutral: { backgroundColor: "rgba(255,255,255,0.06)" },
+  pillActionDanger: { backgroundColor: "rgba(239,68,68,0.22)" },
 
   actionsRow: { marginTop: 12, flexDirection: "row", alignItems: "center", gap: 10 },
   iconBtn: {

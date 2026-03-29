@@ -1,0 +1,46 @@
+diff --git a/node_modules/react-native-audio/android/build.gradle b/node_modules/react-native-audio/android/build.gradle
+index e43f8bd..f561a56 100644
+--- a/node_modules/react-native-audio/android/build.gradle
++++ b/node_modules/react-native-audio/android/build.gradle
+@@ -9,6 +9,9 @@ android {
+     compileSdkVersion rootProject.hasProperty('compileSdkVersion') ? rootProject.compileSdkVersion : DEFAULT_COMPILE_SDK_VERSION
+     buildToolsVersion rootProject.hasProperty('buildToolsVersion') ? rootProject.buildToolsVersion : DEFAULT_BUILD_TOOLS_VERSION
+ 
++    // AGP 7/8+ requires an explicit namespace
++    namespace "com.rnim.rn.audio"
++
+     defaultConfig {
+         minSdkVersion 16
+         targetSdkVersion rootProject.hasProperty('targetSdkVersion') ? rootProject.targetSdkVersion : DEFAULT_TARGET_SDK_VERSION
+@@ -21,11 +24,10 @@ android {
+         }
+     }
+ }
+-
+-def supportVersion = rootProject.hasProperty('supportLibVersion') ? rootProject.supportLibVersion : DEFAULT_SUPPORT_LIB_VERSION
+-
+ dependencies {
+-    compile fileTree(include: ['*.jar'], dir: 'libs')
+-    compile 'com.android.support:appcompat-v7:${supportVersion}'
+-    compile 'com.facebook.react:react-native:+'
++    implementation fileTree(include: ['*.jar'], dir: 'libs')
++    // AndroidX replacement for legacy support-v4 used by this module
++    implementation "androidx.core:core:1.13.1"
++    // React Native 0.71+ uses react-android
++    implementation("com.facebook.react:react-android")
+ }
+diff --git a/node_modules/react-native-audio/android/src/main/java/com/rnim/rn/audio/AudioRecorderManager.java b/node_modules/react-native-audio/android/src/main/java/com/rnim/rn/audio/AudioRecorderManager.java
+index f6cecf6..e9070b5 100644
+--- a/node_modules/react-native-audio/android/src/main/java/com/rnim/rn/audio/AudioRecorderManager.java
++++ b/node_modules/react-native-audio/android/src/main/java/com/rnim/rn/audio/AudioRecorderManager.java
+@@ -27,8 +27,8 @@ import android.os.Build;
+ import android.os.Environment;
+ import android.media.MediaRecorder;
+ import android.media.AudioManager;
+-import android.support.v4.app.ActivityCompat;
+-import android.support.v4.content.ContextCompat;
++import androidx.core.app.ActivityCompat;
++import androidx.core.content.ContextCompat;
+ import android.util.Base64;
+ import android.util.Log;
+ import com.facebook.react.modules.core.DeviceEventManagerModule;
