@@ -344,6 +344,10 @@ type AudioMessageBubbleProps = {
   getActiveSoundDuration: () => number;
 };
 
+type MessageListRow =
+  | { kind: "msg"; item: Message }
+  | { kind: "day"; id: string; dayStartMs: number; label: string };
+
 /** =========================
  * Helpers
  * ========================= */
@@ -374,6 +378,30 @@ function formatTime(ts: any) {
 function getImgSrc(img: any) {
   if (img?.file_id) return `${ENV.apiBase}/api/files/${img.file_id}`;
   return img?.url || "";
+}
+
+function normalizeAvatarUri(uri?: string | null) {
+  if (!uri) return "";
+
+  const value = String(uri).trim();
+  if (!value) return "";
+
+  if (
+    value.startsWith("http://") ||
+    value.startsWith("https://") ||
+    value.startsWith("file://") ||
+    value.startsWith("content://") ||
+    value.startsWith("data:")
+  ) {
+    return value;
+  }
+
+  if (value.startsWith("/")) {
+    const base = ENV.apiBase.endsWith("/") ? ENV.apiBase.slice(0, -1) : ENV.apiBase;
+    return `${base}${value}`;
+  }
+
+  return value;
 }
 
 function getAudioSrc(audio: any) {
@@ -472,6 +500,38 @@ function parseMessageTextParts(text?: string | null): MessageTextPart[] {
   return parts;
 }
 
+function getLocalDayStartMs(ts: any): number | null {
+  const d = safeDate(ts);
+  const t = d?.getTime?.();
+  if (!Number.isFinite(t)) return null;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+function formatChatDayLabel(args: { dayStartMs: number; language?: string | null }) {
+  const { dayStartMs, language } = args;
+  const day = new Date(dayStartMs);
+  if (Number.isNaN(day.getTime())) return "";
+
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const diffDays = Math.round((todayStart - dayStartMs) / (24 * 60 * 60 * 1000));
+
+  const isThai = String(language || "").toLowerCase().startsWith("th");
+  if (diffDays === 0) return isThai ? "วันนี้" : "Today";
+  if (diffDays === 1) return isThai ? "เมื่อวาน" : "Yesterday";
+
+  const locale = isThai ? "th-TH" : undefined;
+  try {
+    return new Intl.DateTimeFormat(locale, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    }).format(day);
+  } catch {
+    return day.toLocaleDateString();
+  }
+}
+
 const AudioMessageBubble = React.memo(function AudioMessageBubbleInner(props: AudioMessageBubbleProps) {
   const {
     isMine,
@@ -558,13 +618,6 @@ const AudioMessageBubble = React.memo(function AudioMessageBubbleInner(props: Au
         </View>
 
         <View style={styles.flexMinWidth0}>
-          <Text
-            style={[styles.audioLabel, isMine ? styles.audioLabelMine : styles.audioLabelOther]}
-            numberOfLines={1}
-          >
-            🎤 Voice message
-          </Text>
-
           <View style={styles.audioProgressTrack}>
             <View style={[styles.audioProgressFill, { width: `${progress * 100}%` }]} />
           </View>
@@ -589,7 +642,7 @@ AudioMessageBubble.displayName = "AudioMessageBubble";
  * Screen
  * ========================= */
 export default function ChatScreen({ navigation, route }: Props) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
   const composerBottomPad = Platform.OS === "android" ? Math.max(insets.bottom, 8) : 0;
@@ -1032,7 +1085,7 @@ export default function ChatScreen({ navigation, route }: Props) {
     });
   }, []);
 
-  const listRef = useRef<FlatList<Message> | null>(null);
+  const listRef = useRef<FlatList<MessageListRow> | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const isNearBottomRef = useRef(true);
   const fabBottomAnim = useRef(new Animated.Value(0)).current;
@@ -1889,20 +1942,32 @@ export default function ChatScreen({ navigation, route }: Props) {
 
       return (
         <View style={[styles.msgRow, isMine ? styles.msgRowMine : styles.msgRowOther]}>
-          <View style={[styles.msgBubbleWrap, isMine ? styles.msgBubbleWrapMine : styles.msgBubbleWrapOther]}>
-            {!isMine ? (
-              <Pressable
-                onPress={() => {
-                  const uid = item.sender?.id;
-                  if (uid) navigation.navigate("Profile", { id: uid });
-                }}
-              >
-                <Text style={styles.msgSender} numberOfLines={1}>
-                  {item.sender?.name || "—"}
-                </Text>
-              </Pressable>
-            ) : null}
+          {!isMine ? (
+            <Pressable
+              onPress={() => {
+                const uid = item.sender?.id;
+                if (uid) navigation.navigate("Profile", { id: uid });
+              }}
+              disabled={!item.sender?.id}
+              style={styles.msgAvatarWrap}
+              hitSlop={8}
+            >
+              {normalizeAvatarUri(item.sender?.avatar) ? (
+                <Image
+                  source={{ uri: normalizeAvatarUri(item.sender?.avatar) }}
+                  style={styles.msgAvatarImg}
+                />
+              ) : (
+                <View style={styles.msgAvatarFallback}>
+                  <Text style={styles.msgAvatarText}>
+                    {getInitial(item.sender?.name || t("chat.user"))}
+                  </Text>
+                </View>
+              )}
+            </Pressable>
+          ) : null}
 
+          <View style={[styles.msgBubbleWrap, isMine ? styles.msgBubbleWrapMine : styles.msgBubbleWrapOther]}>
             {item.reply_to ? (
               <Pressable
                 onPress={() => setReplyTarget(item.reply_to)}
@@ -2036,7 +2101,55 @@ export default function ChatScreen({ navigation, route }: Props) {
   );
 
   const invertedMessages = useMemo(() => [...messages].reverse(), [messages]);
-  const keyExtractor = useCallback((it: Message) => it.id, []);
+
+  const listRows = useMemo<MessageListRow[]>(() => {
+    // FlatList is inverted and data is newest-first.
+    // Insert a separator row ONLY at day-boundaries (local time), to avoid duplicates.
+    const rows: MessageListRow[] = [];
+
+    for (let i = 0; i < invertedMessages.length; i += 1) {
+      const msg = invertedMessages[i];
+      rows.push({ kind: "msg", item: msg });
+
+      const curDay = getLocalDayStartMs(msg?.created_at);
+      const nextMsg = invertedMessages[i + 1];
+      const nextDay = nextMsg ? getLocalDayStartMs(nextMsg?.created_at) : null;
+
+      if (curDay != null && nextDay != null && curDay !== nextDay) {
+        rows.push({
+          kind: "day",
+          id: `day-sep-${curDay}-${msg.id}`,
+          dayStartMs: curDay,
+          label: formatChatDayLabel({ dayStartMs: curDay, language }),
+        });
+      }
+    }
+
+    return rows;
+  }, [invertedMessages, language]);
+
+  const keyExtractor = useCallback((row: MessageListRow) => {
+    return row.kind === "msg" ? row.item.id : row.id;
+  }, []);
+
+  const renderListItem = useCallback(
+    ({ item }: { item: MessageListRow }) => {
+      if (item.kind === "day") {
+        if (!item.label) return null;
+        return (
+          <View style={styles.daySepWrap}>
+            <View style={styles.daySepPill}>
+              <Text style={styles.daySepText}>{item.label}</Text>
+            </View>
+          </View>
+        );
+      }
+
+      return renderMessageItem({ item: item.item });
+    },
+    [renderMessageItem]
+  );
+
   const isInitialLoading = loadingMsgs;
   const isFetchingMore = loadingMore;
 
@@ -2102,11 +2215,11 @@ export default function ChatScreen({ navigation, route }: Props) {
               ref={(r) => {
                 listRef.current = r;
               }}
-              data={invertedMessages}
+              data={listRows}
               keyExtractor={keyExtractor}
               inverted
               contentContainerStyle={styles.messagesContent}
-              renderItem={renderMessageItem}
+              renderItem={renderListItem}
               onScroll={handleListScroll}
               scrollEventThrottle={16}
               onEndReachedThreshold={0.12}
@@ -2389,6 +2502,15 @@ export default function ChatScreen({ navigation, route }: Props) {
 const styles = StyleSheet.create({
     flexMinWidth0: { flex: 1, minWidth: 0 },
 
+    daySepWrap: { width: "100%", alignItems: "center", marginVertical: 10 },
+    daySepPill: {
+      backgroundColor: "rgba(255,255,255,0.10)",
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      borderRadius: 999,
+    },
+    daySepText: { color: "#d1d5db", fontSize: 12, fontWeight: "800" },
+
     headerTitlePressable: { flex: 1, minWidth: 0 },
     headerRightRow: { flexDirection: "row", gap: 10, marginRight: 8 },
 
@@ -2522,11 +2644,24 @@ const styles = StyleSheet.create({
   msgRow: { flexDirection: "row", marginVertical: 6 },
   msgRowMine: { justifyContent: "flex-end" },
   msgRowOther: { justifyContent: "flex-start" },
+  msgAvatarWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    overflow: "hidden",
+    backgroundColor: "#1d1d25",
+    borderWidth: 1,
+    borderColor: "#2a2a35",
+    marginRight: 10,
+    alignSelf: "flex-end",
+  },
+  msgAvatarImg: { width: "100%", height: "100%" },
+  msgAvatarFallback: { flex: 1, alignItems: "center", justifyContent: "center" },
+  msgAvatarText: { color: "#fff", fontWeight: "900", fontSize: 13 },
+
   msgBubbleWrap: { maxWidth: "82%" },
   msgBubbleWrapMine: { alignItems: "flex-end" },
-  msgBubbleWrapOther: { alignItems: "flex-start" },
-
-  msgSender: { color: "#9ca3af", fontSize: 11, marginBottom: 2 },
+  msgBubbleWrapOther: { alignItems: "flex-start", maxWidth: "76%" },
 
   replyPreview: {
     borderLeftWidth: 3,
@@ -2627,17 +2762,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  audioLabel: { fontSize: 13, fontWeight: "900" },
-  audioLabelMine: { color: "#fff" },
-  audioLabelOther: { color: "#e5e7eb" },
-  audioDuration: { fontSize: 12, marginTop: 2 },
   audioProgressTrack: {
     width: "100%",
     height: 4,
     borderRadius: 999,
     overflow: "hidden",
     backgroundColor: "rgba(255,255,255,0.22)",
-    marginTop: 6,
   },
   audioProgressFill: {
     height: "100%",

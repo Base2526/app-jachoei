@@ -15,6 +15,27 @@ export type ThumbImage = {
   url: string;
 };
 
+function resolveImageUri(url?: string | null) {
+  if (!url) return "";
+
+  const value = String(url).trim();
+  if (!value) return "";
+
+  if (
+    value.startsWith("http://") ||
+    value.startsWith("https://") ||
+    value.startsWith("file://") ||
+    value.startsWith("content://") ||
+    value.startsWith("data:")
+  ) {
+    return value;
+  }
+
+  const base = ENV.apiBase.endsWith("/") ? ENV.apiBase.slice(0, -1) : ENV.apiBase;
+  if (value.startsWith("/")) return `${base}${value}`;
+  return `${base}/${value}`;
+}
+
 type Props = {
   images: ThumbImage[];
   width: number;
@@ -30,7 +51,7 @@ export const ThumbGrid: React.FC<Props> = ({
   radius = 12,
   gap = 6,
 }) => {
-  const list = (images || []).filter(Boolean);
+  const list = (images || []).filter((img) => !!img && !!String((img as any).url || "").trim());
   const count = list.length;
   const thumbCount = Math.min(count, 5);
 
@@ -43,7 +64,7 @@ export const ThumbGrid: React.FC<Props> = ({
   const previewImages = useMemo(
     () =>
       list.map((img) => ({
-        uri: `${ENV.apiBase}/${img.url}`,
+        uri: resolveImageUri(img.url),
       })),
     [list]
   );
@@ -74,7 +95,7 @@ export const ThumbGrid: React.FC<Props> = ({
         ]}
       >
         <Image
-          source={{ uri: `${ENV.apiBase}/${img.url}` }}
+          source={{ uri: resolveImageUri(img.url) }}
           resizeMode="cover"
           style={{ width: "100%", height: "100%" }}
         />
