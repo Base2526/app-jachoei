@@ -42,6 +42,7 @@ type Props = {
   height: number;
   radius?: number;
   gap?: number;
+  layout?: "default" | "tablet";
 };
 
 export const ThumbGrid: React.FC<Props> = ({
@@ -50,6 +51,7 @@ export const ThumbGrid: React.FC<Props> = ({
   height,
   radius = 12,
   gap = 6,
+  layout = "default",
 }) => {
   const list = (images || []).filter((img) => !!img && !!String((img as any).url || "").trim());
   const count = list.length;
@@ -139,7 +141,21 @@ export const ThumbGrid: React.FC<Props> = ({
 
     // 3 รูป
     if (thumbCount === 3) {
-      const topH = Math.round(height * 0.6);
+      if (layout === "tablet") {
+        return (
+          <View style={[boxStyle, { flexDirection: "row", gap }]}>
+            <View style={{ flex: 1.28 }}>
+              {cell(list[0], 0, { height: "100%" })}
+            </View>
+            <View style={{ flex: 1, gap }}>
+              <View style={{ flex: 1 }}>{cell(list[1], 1, { flex: 1 })}</View>
+              <View style={{ flex: 1 }}>{cell(list[2], 2, { flex: 1 })}</View>
+            </View>
+          </View>
+        );
+      }
+
+      const topH = Math.round(height * 0.56);
       const bottomH = height - topH - gap;
 
       return (
@@ -202,7 +218,7 @@ export const ThumbGrid: React.FC<Props> = ({
         </View>
       </View>
     );
-  }, [count, thumbCount, boxStyle, cell, list, gap, height]);
+  }, [count, thumbCount, boxStyle, cell, list, gap, height, layout]);
 
   return (
     <>

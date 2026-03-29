@@ -9,6 +9,10 @@
     <!-- Voice messages (microphone recording) -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- Share location (Phase 1: current location + search) -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
     <!--
       Google Play (SMS/Call Log) compliance intent (Jachoei):
       - Not a default SMS app, not a default phone app, not an assistant app.

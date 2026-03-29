@@ -36,7 +36,10 @@ import { gql } from "@apollo/client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { RootStackParamList } from "../navigation/types";
 import { client } from "../apollo/client";
-import SendMessageSection, { UploadImage } from "../components/SendMessageSection";
+import SendMessageSection, {
+  UploadImage,
+  SendLocationPayload,
+} from "../components/SendMessageSection";
 import { ENV } from "../config/env";
 import { refreshUnreadChatBadge } from "../notifications/badge";
 import { useI18n } from "../i18n";
@@ -56,7 +59,14 @@ const MESSAGE_FIELDS = gql`
   fragment MessageFields on Message {
     id
     chat_id
+    type
     text
+    location {
+      latitude
+      longitude
+      placeName
+      googleMapsUrl
+    }
     audio {
       file_id
       url
@@ -67,7 +77,14 @@ const MESSAGE_FIELDS = gql`
 
     reply_to {
       id
+      type
       text
+      location {
+        latitude
+        longitude
+        placeName
+        googleMapsUrl
+      }
       audio {
         file_id
         url
@@ -195,6 +212,7 @@ const MUT_SEND = gql`
     $images: [Upload!]
     $audio: Upload
     $audio_duration_sec: Int
+    $location: MessageLocationInput
     $reply_to_id: ID
     $client_message_id: String
   ) {
@@ -205,6 +223,7 @@ const MUT_SEND = gql`
       images: $images
       audio: $audio
       audio_duration_sec: $audio_duration_sec
+      location: $location
       reply_to_id: $reply_to_id
       client_message_id: $client_message_id
     ) {
@@ -295,10 +314,19 @@ type MsgImage = {
   mime?: string | null;
 };
 
+type MessageLocation = {
+  latitude: number;
+  longitude: number;
+  placeName?: string | null;
+  googleMapsUrl: string;
+};
+
 type MessageAudio = {
   file_id?: string | null;
   url?: string | null;
+  type?: string | null;
   mime?: string | null;
+  location?: MessageLocation | null;
   duration_sec?: number | null;
 };
 
@@ -972,6 +1000,7 @@ export default function ChatScreen({ navigation, route }: Props) {
           images: null,
           audio: uploadAudio,
           audio_duration_sec: durationSec,
+          location: null,
           reply_to_id: replyTarget?.id ?? null,
           client_message_id: null,
         },
@@ -1553,6 +1582,7 @@ export default function ChatScreen({ navigation, route }: Props) {
       text: string;
       to_user_ids: string[];
       images?: UploadImage[];
+      location?: SendLocationPayload | null;
       reply_to_id?: string | null;
       client_message_id?: string | null;
     }) => {
@@ -1573,6 +1603,7 @@ export default function ChatScreen({ navigation, route }: Props) {
           images: uploadFiles.length ? uploadFiles : null,
           audio: null,
           audio_duration_sec: null,
+          location: args.location ?? null,
           reply_to_id: args.reply_to_id ?? null,
           client_message_id: args.client_message_id ?? null,
         },
@@ -1929,6 +1960,13 @@ export default function ChatScreen({ navigation, route }: Props) {
       const hasAudio = !!audioSrc;
       const audioDurationSec = Math.max(0, Number((item as any)?.audio?.duration_sec) || 0);
 
+      const loc = (item as any)?.location as MessageLocation | null | undefined;
+      const hasLocation =
+        !!loc &&
+        Number.isFinite(Number(loc.latitude)) &&
+        Number.isFinite(Number(loc.longitude)) &&
+        !!String(loc.googleMapsUrl || "").trim();
+
       const markThisRead = () => {
         client
           .mutate({ mutation: MUT_MARK_READ, variables: { message_id: item.id } })
@@ -2042,6 +2080,71 @@ export default function ChatScreen({ navigation, route }: Props) {
                 getActiveSoundCurrentTime={getActiveSoundCurrentTime}
                 getActiveSoundDuration={getActiveSoundDuration}
               />
+            ) : null}
+
+            {hasLocation ? (
+              <Pressable
+                onPress={() => {
+                  handleOpenUrl(String(loc?.googleMapsUrl || ""));
+                }}
+                onLongPress={() => openMenu(item)}
+                delayLongPress={250}
+              >
+                <View
+                  style={[
+                    styles.locBubble,
+                    isMine ? styles.locBubbleMine : styles.locBubbleOther,
+                    isFocused && styles.msgBubbleFocused,
+                  ]}
+                >
+                  <View style={styles.locTopRow}>
+                    <View style={styles.locIconBox}>
+                      <Ionicons
+                        name="location"
+                        size={16}
+                        color={isMine ? "#0b0b0f" : "#93c5fd"}
+                      />
+                    </View>
+
+                    <View style={styles.flexMinWidth0}>
+                      <Text
+                        style={[
+                          styles.locTitle,
+                          isMine ? styles.locTitleMine : styles.locTitleOther,
+                        ]}
+                        numberOfLines={2}
+                      >
+                        {String(loc?.placeName || "").trim() || "Shared location"}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.locSub,
+                          isMine ? styles.locSubMine : styles.locSubOther,
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {Number(loc.latitude).toFixed(5)}, {Number(loc.longitude).toFixed(5)}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.locCtaRow}>
+                    <Text
+                      style={[
+                        styles.locCtaText,
+                        isMine ? styles.locCtaTextMine : styles.locCtaTextOther,
+                      ]}
+                    >
+                      Open in Google Maps
+                    </Text>
+                    <Ionicons
+                      name="open-outline"
+                      size={16}
+                      color={isMine ? "#0b0b0f" : "#e5e7eb"}
+                    />
+                  </View>
+                </View>
+              </Pressable>
             ) : null}
 
             {hasText ? (
@@ -2798,6 +2901,50 @@ const styles = StyleSheet.create({
   // ✅ text colors
   textMine: { color: "#fff" },
   textOther: { color: "#e5e7eb" },
+
+  // ===== location bubble =====
+  locBubble: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+  },
+  locBubbleMine: {
+    backgroundColor: "#93c5fd",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+  },
+  locBubbleOther: {
+    backgroundColor: "#171a22",
+    borderWidth: 1,
+    borderColor: "#2a2a35",
+  },
+  locTopRow: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
+  locIconBox: {
+    width: 30,
+    height: 30,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  locTitle: { fontSize: 13, fontWeight: "900" },
+  locTitleMine: { color: "#0b0b0f" },
+  locTitleOther: { color: "#e5e7eb" },
+  locSub: { marginTop: 4, fontSize: 12, fontWeight: "700" },
+  locSubMine: { color: "rgba(11,11,15,0.75)" },
+  locSubOther: { color: "#9ca3af" },
+  locCtaRow: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.12)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  locCtaText: { fontSize: 12, fontWeight: "900" },
+  locCtaTextMine: { color: "#0b0b0f" },
+  locCtaTextOther: { color: "#e5e7eb" },
 
   msgMetaRow: { flexDirection: "row", alignItems: "center", marginTop: 4 },
   msgMetaRowMine: { justifyContent: "flex-end" },
