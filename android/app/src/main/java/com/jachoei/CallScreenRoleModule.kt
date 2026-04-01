@@ -12,6 +12,7 @@ class CallScreenRoleModule(private val reactContext: ReactApplicationContext) :
 
     companion object {
         private const val TAG = "CallScreenRoleModule"
+        private const val TRACE_TAG = "CALL_SCREEN_ROLE"
         private const val REQ_CALL_SCREENING_ROLE = 9101
     }
 
@@ -27,11 +28,12 @@ class CallScreenRoleModule(private val reactContext: ReactApplicationContext) :
     @ReactMethod
     fun isCallScreeningEnabled(promise: Promise) {
         try {
+            Log.d(TRACE_TAG, "isCallScreeningEnabled() sdk=${Build.VERSION.SDK_INT}")
+            CallBlockerModule.emitCallDebug("CALL_SCREEN_ROLE isCallScreeningEnabled sdk=${Build.VERSION.SDK_INT}")
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
                 // Android < 10 ไม่มีระบบ Role แบบนี้
-                if (BuildConfig.DEBUG) {
-                    Log.d(TAG, "[isCallScreeningEnabled] Android < 10 → false")
-                }
+                Log.d(TRACE_TAG, "Android < 10 -> false")
+                CallBlockerModule.emitCallDebug("CALL_SCREEN_ROLE unsupported (<10)")
                 promise.resolve(false)
                 return
             }
@@ -40,13 +42,37 @@ class CallScreenRoleModule(private val reactContext: ReactApplicationContext) :
                 reactContext.getSystemService(RoleManager::class.java) as RoleManager
             val held = roleManager.isRoleHeld(RoleManager.ROLE_CALL_SCREENING)
 
-            if (BuildConfig.DEBUG) {
-                Log.d(TAG, "[isCallScreeningEnabled] held=$held")
-            }
+            Log.d(TRACE_TAG, "held=$held")
+            CallBlockerModule.emitCallDebug("CALL_SCREEN_ROLE held=$held")
             promise.resolve(held)
         } catch (e: Exception) {
             Log.e(TAG, "[isCallScreeningEnabled] error", e)
+            Log.d(TRACE_TAG, "isCallScreeningEnabled() ERROR: ${e.message}")
+            CallBlockerModule.emitCallDebug("CALL_SCREEN_ROLE ERROR: ${e.message}")
             promise.reject("CHECK_ERROR", e)
+        }
+    }
+
+    @ReactMethod
+    fun debugPrintCallScreeningRoleStatus(promise: Promise) {
+        try {
+            val sdk = Build.VERSION.SDK_INT
+            if (sdk < Build.VERSION_CODES.Q) {
+                Log.d(TRACE_TAG, "debugStatus sdk=$sdk role=unsupported")
+                CallBlockerModule.emitCallDebug("CALL_SCREEN_ROLE debugStatus sdk=$sdk unsupported")
+                promise.resolve(false)
+                return
+            }
+            val roleManager = reactContext.getSystemService(RoleManager::class.java) as RoleManager
+            val available = roleManager.isRoleAvailable(RoleManager.ROLE_CALL_SCREENING)
+            val held = roleManager.isRoleHeld(RoleManager.ROLE_CALL_SCREENING)
+            Log.d(TRACE_TAG, "debugStatus sdk=$sdk available=$available held=$held")
+            CallBlockerModule.emitCallDebug("CALL_SCREEN_ROLE debugStatus sdk=$sdk available=$available held=$held")
+            promise.resolve(held)
+        } catch (e: Exception) {
+            Log.d(TRACE_TAG, "debugStatus ERROR: ${e.message}")
+            CallBlockerModule.emitCallDebug("CALL_SCREEN_ROLE debugStatus ERROR: ${e.message}")
+            promise.reject("DEBUG_ERROR", e)
         }
     }
 
@@ -55,17 +81,13 @@ class CallScreenRoleModule(private val reactContext: ReactApplicationContext) :
     fun requestCallScreeningRole(promise: Promise) {
         val activity: Activity? = reactContext.currentActivity
         if (activity == null) {
-            if (BuildConfig.DEBUG) {
-                Log.e(TAG, "[requestCallScreeningRole] currentActivity is null")
-            }
+            Log.d(TRACE_TAG, "requestCallScreeningRole() ERROR currentActivity=null")
             promise.reject("NO_ACTIVITY", "Current activity is null")
             return
         }
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            if (BuildConfig.DEBUG) {
-                Log.e(TAG, "[requestCallScreeningRole] Android < 10, unsupported")
-            }
+            Log.d(TRACE_TAG, "requestCallScreeningRole() unsupported sdk=${Build.VERSION.SDK_INT}")
             promise.reject("UNSUPPORTED", "ROLE_CALL_SCREENING requires Android 10+")
             return
         }
@@ -74,17 +96,13 @@ class CallScreenRoleModule(private val reactContext: ReactApplicationContext) :
             reactContext.getSystemService(RoleManager::class.java) as RoleManager
 
         if (roleManager.isRoleHeld(RoleManager.ROLE_CALL_SCREENING)) {
-            if (BuildConfig.DEBUG) {
-                Log.d(TAG, "[requestCallScreeningRole] already held")
-            }
+            Log.d(TRACE_TAG, "requestCallScreeningRole() already held")
             promise.resolve(true)
             return
         }
 
         if (pendingPromise != null) {
-            if (BuildConfig.DEBUG) {
-                Log.w(TAG, "[requestCallScreeningRole] already requesting, skip")
-            }
+            Log.d(TRACE_TAG, "requestCallScreeningRole() already requesting")
             promise.reject("ALREADY_REQUESTING", "Another request in progress")
             return
         }
@@ -93,12 +111,11 @@ class CallScreenRoleModule(private val reactContext: ReactApplicationContext) :
 
         try {
             val intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_CALL_SCREENING)
-            if (BuildConfig.DEBUG) {
-                Log.d(TAG, "[requestCallScreeningRole] startActivityForResult ROLE_CALL_SCREENING")
-            }
+            Log.d(TRACE_TAG, "requestCallScreeningRole() startActivityForResult")
             activity.startActivityForResult(intent, REQ_CALL_SCREENING_ROLE)
         } catch (e: Exception) {
             Log.e(TAG, "[requestCallScreeningRole] error starting intent", e)
+            Log.d(TRACE_TAG, "requestCallScreeningRole() ERROR: ${e.message}")
             pendingPromise?.reject("REQUEST_ERROR", e)
             pendingPromise = null
         }
@@ -125,20 +142,13 @@ class CallScreenRoleModule(private val reactContext: ReactApplicationContext) :
             reactContext.getSystemService(RoleManager::class.java) as RoleManager
         val held = roleManager.isRoleHeld(RoleManager.ROLE_CALL_SCREENING)
 
-        if (BuildConfig.DEBUG) {
-            Log.d(
-                TAG,
-                "[onActivityResult] req=$requestCode result=$resultCode held=$held"
-            )
-        }
+        Log.d(TRACE_TAG, "onActivityResult req=$requestCode result=$resultCode held=$held")
 
         promise.resolve(held)
     }
 
     override fun onNewIntent(intent: Intent) {
         // ไม่ได้ใช้ แต่ต้อง implement ให้ครบ interface
-        if (BuildConfig.DEBUG) {
-            Log.d(TAG, "[onNewIntent] (not used)")
-        }
+        Log.d(TRACE_TAG, "onNewIntent (not used)")
     }
 }

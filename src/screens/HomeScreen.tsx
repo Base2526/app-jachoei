@@ -76,6 +76,8 @@ import {
   toastBankReportRemoved,
 } from "../lib/toast";
 
+import { addBlockedNumber, unblockNativeNumber } from "../native/CallBlocker";
+
 // =======================
 // GraphQL
 // =======================
@@ -976,6 +978,15 @@ export const HomeScreen: React.FC = () => {
           postId: value.postId ? String(value.postId) : null,
         });
 
+        // 1.1) Update native/local DB (Android) for offline screening + notification
+        if (Platform.OS === "android") {
+          try {
+            await addBlockedNumber(tel);
+          } catch {
+            // best-effort only
+          }
+        }
+
         // 2) Optional: also submit a scam report
         const payload = value.wantReport
           ? await reportTel({
@@ -1031,6 +1042,20 @@ export const HomeScreen: React.FC = () => {
 
       try {
         await unblockTelOnServer(tel);
+
+        // Also clear native/local block (Android SQLite) after server unblock succeeds.
+        // Non-fatal if it fails; server is source of truth.
+        if (Platform.OS === "android") {
+          try {
+            const nativeRes = await unblockNativeNumber(tel);
+            if (!nativeRes?.ok) {
+              console.warn("[Home][unblock] native unblock returned not-ok", nativeRes);
+            }
+          } catch (e) {
+            console.warn("[Home][unblock] native unblock error", e);
+          }
+        }
+
         toastTelReportRemoved();
       } catch {
         setBlockedMap((prev) => {
@@ -1880,8 +1905,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#1f1f26",
   },
+  infoSectionTablet: {
+    padding: 12,
+  },
   infoRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  infoRowTablet: { gap: 12 },
   infoRowLeft: { width: 62, flexDirection: "row", alignItems: "center", gap: 8 },
+  infoRowLeftTablet: { width: 70 },
   infoRowIcon: {
     width: 22,
     height: 22,
@@ -1892,14 +1922,20 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  infoRowIconTablet: {
+    width: 24,
+    height: 24,
+  },
   infoLabel: {
     color: "#9ca3af",
     fontSize: 11,
     fontWeight: "900",
     letterSpacing: 0.8,
   },
+  infoLabelTablet: { fontSize: 12 },
   infoEmptyText: { flex: 1, color: "#6b7280", fontSize: 12, fontWeight: "800" },
   infoDivider: { height: 1, backgroundColor: "#1f1f26", opacity: 0.65, marginVertical: 10 },
+  infoDividerTablet: { marginVertical: 12 },
 
   chipsWrap: {
     flex: 1,

@@ -34,6 +34,8 @@ import {
 
 import { subscribeBookmarkStatusChanged } from "../events/bookmarkSync";
 
+import { addBlockedNumber } from "../native/CallBlocker";
+
 import {
   BottomSheetBlockReportModal,
   BottomSheetBlockReportModalRef,
@@ -543,6 +545,15 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
           note: value.note?.trim() ? value.note.trim() : null,
           postId: value.postId ? String(value.postId) : null,
         });
+
+        // Update native/local DB (Android) for offline screening + notification
+        if (Platform.OS === "android") {
+          try {
+            await addBlockedNumber(tel);
+          } catch {
+            // best-effort only
+          }
+        }
 
         const payload = value.wantReport
           ? await reportTel({

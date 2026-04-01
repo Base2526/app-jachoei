@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo } from "react";
 import { AppState } from "react-native";
 
 import { normalizeBankAccount, normalizeTel } from "../lib/jachoeiLocalState";
+import { syncBlockedNumbers } from "../native/CallBlocker";
 
 export const Q_MY_BLOCKED_PHONE_KEYS = gql`
   query MyBlockedPhoneKeys {
@@ -63,6 +64,14 @@ export function useJachoeiStatusKeys(args: UseJachoeiStatusKeysArgs) {
     const keys: string[] = blockedQ.data?.myBlockedPhoneKeys ?? [];
     return new Set(keys.map((k: string) => String(k || "").trim()).filter(Boolean));
   }, [blockedQ.data?.myBlockedPhoneKeys]);
+
+  // Keep native/local DB in sync for offline call screening (best-effort).
+  useEffect(() => {
+    if (!args.enabled) return;
+    const keys: string[] = blockedQ.data?.myBlockedPhoneKeys ?? [];
+    if (!keys.length) return;
+    void syncBlockedNumbers(keys).catch(() => {});
+  }, [args.enabled, blockedQ.data?.myBlockedPhoneKeys]);
 
   const reportedBankSet = useMemo(() => {
     const keys: string[] = reportedBankQ.data?.myReportedBankAccountKeys ?? [];

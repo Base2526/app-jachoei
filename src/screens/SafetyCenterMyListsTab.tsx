@@ -5,6 +5,7 @@ import {
   Text,
   StyleSheet,
   FlatList,
+  SectionList,
   Pressable,
   ActivityIndicator,
   TextInput,
@@ -15,6 +16,11 @@ import {
 import Ionicons from "react-native-vector-icons/Ionicons";
 import { gql } from "@apollo/client";
 import { client } from "../apollo/client";
+import { loadBlockedLogs, type BlockedLog } from "../lib/db-blocked-logs";
+import { useNativeBlockDebugData, type NativeBlockDebugItem } from "../hooks/useNativeBlockDebugData";
+import { Q_MY_BLOCKED_PHONE_KEYS } from "../hooks/useJachoeiStatusKeys";
+import { toastGenericError, toastTelReportRemoved } from "../lib/toast";
+import { unblockNativeNumber } from "../native/CallBlocker";
 
 // ======================================================
 // GraphQL
@@ -220,8 +226,9 @@ function SegmentedTabs(props: { value: string; onChange: (v: string) => void; it
 export default function SafetyCenterMyListsTab() {
   const LIMIT_BLOCKED = 50;
   const LIMIT_REPORTS = 80;
+  const LIMIT_HISTORY = 120;
 
-  const [tab, setTab] = useState<"BLOCKED" | "REPORTS">("BLOCKED");
+  const [tab, setTab] = useState<"BLOCKED" | "NATIVE_BLOCKED" | "REPORTS" | "HISTORY">("BLOCKED");
 
   const [q, setQ] = useState("");
   const [riskFilter, setRiskFilter] = useState<RiskFilter>("ALL");
@@ -241,6 +248,21 @@ export default function SafetyCenterMyListsTab() {
   const [reportsRefreshing, setReportsRefreshing] = useState(false);
   const [reportType, setReportType] = useState<"ALL" | "PHONE" | "BANK">("ALL");
   const reportsInflight = useRef(false);
+
+  // HISTORY (local SQLite blocked_logs)
+  const [history, setHistory] = useState<BlockedLog[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyRefreshing, setHistoryRefreshing] = useState(false);
+  const [historyOffset, setHistoryOffset] = useState(0);
+  const [historyHasMore, setHistoryHasMore] = useState(true);
+  const historyInflight = useRef(false);
+  const [historyFilter, setHistoryFilter] = useState<"ALL" | "BLOCKED" | "SPAM">("ALL");
+
+  const [nativeFilter, setNativeFilter] = useState<"ALL" | "LOCAL" | "GLOBAL">("ALL");
+  const [nativeUnblockBusy, setNativeUnblockBusy] = useState<Record<string, boolean>>({});
+
+  // DEBUG: Block from Native
+  const native = useNativeBlockDebugData();
 
   // -----------------------
   // fetch blocked (paged)
@@ -381,14 +403,76 @@ export default function SafetyCenterMyListsTab() {
     setReportsRefreshing(false);
   }, [loadReports]);
 
+  // -----------------------
+  // fetch history (local SQLite blocked_logs)
+  // -----------------------
+  const fetchHistoryPage = useCallback(async (nextOffset: number, mode: "replace" | "append") => {
+    if (historyInflight.current) return;
+    historyInflight.current = true;
+
+    try {
+      const list = await loadBlockedLogs({ limit: LIMIT_HISTORY, offset: nextOffset });
+      setHistoryHasMore(list.length >= LIMIT_HISTORY);
+      setHistoryOffset(nextOffset);
+      setHistory((prev) => (mode === "replace" ? list : [...prev, ...list]));
+    } catch {
+      // local-only: ignore
+    } finally {
+      historyInflight.current = false;
+    }
+  }, []);
+
+  const loadHistoryInitial = useCallback(async () => {
+    setHistoryLoading(true);
+    await fetchHistoryPage(0, "replace");
+    setHistoryLoading(false);
+  }, [fetchHistoryPage]);
+
+  const refreshHistory = useCallback(async () => {
+    setHistoryRefreshing(true);
+    await fetchHistoryPage(0, "replace");
+    setHistoryRefreshing(false);
+  }, [fetchHistoryPage]);
+
+  const loadMoreHistory = useCallback(async () => {
+    if (!historyHasMore || historyInflight.current) return;
+    await fetchHistoryPage(historyOffset + LIMIT_HISTORY, "append");
+  }, [historyHasMore, historyOffset, fetchHistoryPage]);
+
   useEffect(() => {
     loadBlockedInitial();
     loadReportsInitial();
   }, [loadBlockedInitial, loadReportsInitial]);
 
+  useEffect(() => {
+    if (tab !== "HISTORY") return;
+    if (history.length > 0 || historyInflight.current) return;
+    void loadHistoryInitial();
+  }, [history.length, loadHistoryInitial, tab]);
+
+  useEffect(() => {
+    if (tab !== "NATIVE_BLOCKED") return;
+    if (!__DEV__) return;
+    if (native.loading) return;
+    if (native.data.totalCount > 0) return;
+    void native.fetchData();
+  }, [native, tab]);
+
   // ---------------------------------
   // Unblock
   // ---------------------------------
+
+  async function unblockTelOnServer(phone: string) {
+    const input = { phone };
+    const res = await client.mutate<{ unblockPhone: { ok: boolean } }>({
+      mutation: UNBLOCK_PHONE,
+      variables: { input },
+      refetchQueries: [{ query: Q_MY_BLOCKED_PHONE_KEYS }],
+      awaitRefetchQueries: true,
+    });
+    return res.data?.unblockPhone;
+  }
+
   const unblock = useCallback(async (phone: string) => {
     const tel = normalizeTel(phone) || phone;
     Alert.alert("Unblock เบอร์นี้?", tel, [
@@ -398,12 +482,8 @@ export default function SafetyCenterMyListsTab() {
         style: "destructive",
         onPress: async () => {
           try {
-            const res = await client.mutate<{ unblockPhone: { ok: boolean } }>({
-              mutation: UNBLOCK_PHONE,
-              variables: { input: { phone: tel } },
-            });
-
-            const ok = res.data?.unblockPhone?.ok;
+            const payload = await unblockTelOnServer(tel);
+            const ok = payload?.ok;
             if (!ok) throw new Error("Unblock failed");
 
             setBlocked((prev) => prev.filter((x) => (normalizeTel(x.phone) || x.phone) !== tel));
@@ -485,11 +565,87 @@ export default function SafetyCenterMyListsTab() {
     });
   }, [reports, q, reportType, riskFilter, sortMode]);
 
-  const summaryText = useMemo(() => (tab === "BLOCKED" ? `${blockedFiltered.length} รายการ` : `${reportsFiltered.length} รายการ`), [
-    tab,
-    blockedFiltered.length,
-    reportsFiltered.length,
-  ]);
+  function parseHistoryDetail(detail: string | null | undefined): { action?: string; source?: string; note?: string } | null {
+    if (!detail) return null;
+    const s = String(detail);
+    if (!s.trim()) return null;
+    try {
+      const obj = JSON.parse(s);
+      if (!obj || typeof obj !== "object") return null;
+      return {
+        action: typeof (obj as any).action === "string" ? (obj as any).action : undefined,
+        source: typeof (obj as any).source === "string" ? (obj as any).source : undefined,
+        note: typeof (obj as any).note === "string" ? (obj as any).note : undefined,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  const historyFiltered = useMemo(() => {
+    const term = q.trim().toLowerCase();
+
+    let list = history;
+    if (term) {
+      list = list.filter((x) => {
+        const meta = parseHistoryDetail(x.detail);
+        const note = meta?.note ? String(meta.note) : "";
+        return `${x.phone_normalized || ""} ${x.raw_phone || ""} ${x.type || ""} ${note}`.toLowerCase().includes(term);
+      });
+    }
+
+    if (historyFilter !== "ALL") {
+      list = list.filter((x) => {
+        const meta = parseHistoryDetail(x.detail);
+        const action = String(meta?.action || "");
+        if (historyFilter === "BLOCKED") return action === "blocked_call";
+        if (historyFilter === "SPAM") return action === "spam_warning";
+        return true;
+      });
+    }
+
+    return list;
+  }, [history, historyFilter, q]);
+
+  const summaryText = useMemo(() => {
+    if (tab === "BLOCKED") return `${blockedFiltered.length} รายการ`;
+    if (tab === "REPORTS") return `${reportsFiltered.length} รายการ`;
+    if (tab === "NATIVE_BLOCKED") return `${native.data.totalCount} รายการ`;
+    return `${historyFiltered.length} รายการ`;
+  }, [tab, blockedFiltered.length, historyFiltered.length, native.data.totalCount, reportsFiltered.length]);
+
+  const nativeSections = useMemo(() => {
+    const term = q.trim().toLowerCase();
+
+    function matchRow(x: NativeBlockDebugItem) {
+      if (!term) return true;
+      const phone = String(x.phone || "");
+      const tags = typeof x.tags === "string" ? x.tags : "";
+      return `${phone} ${tags}`.toLowerCase().includes(term);
+    }
+
+    const local = (Array.isArray(native.data.local) ? native.data.local : []).filter(matchRow);
+    const global = (Array.isArray(native.data.global) ? native.data.global : []).filter(matchRow);
+
+    const sections: { key: "LOCAL" | "GLOBAL"; title: string; desc: string; data: NativeBlockDebugItem[] }[] = [];
+    if (nativeFilter === "ALL" || nativeFilter === "LOCAL") {
+      sections.push({
+        key: "LOCAL",
+        title: "Local",
+        desc: "blocked on this device / by user",
+        data: local,
+      });
+    }
+    if (nativeFilter === "ALL" || nativeFilter === "GLOBAL") {
+      sections.push({
+        key: "GLOBAL",
+        title: "Global",
+        desc: "synced/community/server records",
+        data: global,
+      });
+    }
+    return sections;
+  }, [native.data.global, native.data.local, nativeFilter, q]);
 
   return (
     <View style={st.container}>
@@ -498,12 +654,22 @@ export default function SafetyCenterMyListsTab() {
         onChange={(v) => setTab(v as any)}
         items={[
           { key: "BLOCKED", label: "Blocked", icon: "lock-closed-outline" },
-          { key: "REPORTS", label: "My Reports", icon: "megaphone-outline" },
+          { key: "NATIVE_BLOCKED", label: "Native", icon: "server-outline" },
+          { key: "REPORTS", label: "Reports", icon: "megaphone-outline" },
+          { key: "HISTORY", label: "History", icon: "time-outline" },
         ]}
       />
 
       <View style={{ paddingBottom: 8 }}>
-        <Text style={st.hTitle}>{tab === "BLOCKED" ? "Blocked (เบอร์ที่บล็อก)" : "My Reports (ที่รายงานไป)"}</Text>
+        <Text style={st.hTitle}>
+          {tab === "BLOCKED"
+            ? "Blocked (เบอร์ที่บล็อก)"
+            : tab === "NATIVE_BLOCKED"
+            ? "Native"
+            : tab === "REPORTS"
+            ? "Reports (ที่รายงานไป)"
+            : "History (Call/SMS events)"}
+        </Text>
         <Text style={st.hSub}>{summaryText}</Text>
       </View>
 
@@ -512,7 +678,13 @@ export default function SafetyCenterMyListsTab() {
         <TextInput
           value={q}
           onChangeText={setQ}
-          placeholder={tab === "BLOCKED" ? "ค้นหาเบอร์ที่บล็อก..." : "ค้นหา phone / bank / note ..."}
+          placeholder={
+            tab === "BLOCKED"
+              ? "ค้นหาเบอร์ที่บล็อก..."
+              : tab === "REPORTS"
+              ? "ค้นหา phone / bank / note ..."
+              : "ค้นหา phone / detail ..."
+          }
           placeholderTextColor="#6b7280"
           style={st.searchInput}
           returnKeyType="search"
@@ -524,18 +696,34 @@ export default function SafetyCenterMyListsTab() {
         )}
       </View>
 
-      <View style={st.filterRow}>
-        <Pill label="ALL" active={riskFilter === "ALL"} onPress={() => setRiskFilter("ALL")} />
-        <Pill label="HIGH" active={riskFilter === "HIGH"} onPress={() => setRiskFilter("HIGH")} />
-        <Pill label="MEDIUM" active={riskFilter === "MEDIUM"} onPress={() => setRiskFilter("MEDIUM")} />
-        <Pill label="LOW" active={riskFilter === "LOW"} onPress={() => setRiskFilter("LOW")} />
-      </View>
+      {tab === "BLOCKED" || tab === "REPORTS" ? (
+        <>
+          <View style={st.filterRow}>
+            <Pill label="ALL" active={riskFilter === "ALL"} onPress={() => setRiskFilter("ALL")} />
+            <Pill label="HIGH" active={riskFilter === "HIGH"} onPress={() => setRiskFilter("HIGH")} />
+            <Pill label="MEDIUM" active={riskFilter === "MEDIUM"} onPress={() => setRiskFilter("MEDIUM")} />
+            <Pill label="LOW" active={riskFilter === "LOW"} onPress={() => setRiskFilter("LOW")} />
+          </View>
 
-      <View style={st.filterRow}>
-        <Pill label="Latest" active={sortMode === "LATEST"} onPress={() => setSortMode("LATEST")} icon="time-outline" />
-        <Pill label="Risk" active={sortMode === "RISK"} onPress={() => setSortMode("RISK")} icon="warning-outline" />
-        <Pill label="Reports" active={sortMode === "REPORTS"} onPress={() => setSortMode("REPORTS")} icon="stats-chart-outline" />
-      </View>
+          <View style={st.filterRow}>
+            <Pill label="Latest" active={sortMode === "LATEST"} onPress={() => setSortMode("LATEST")} icon="time-outline" />
+            <Pill label="Risk" active={sortMode === "RISK"} onPress={() => setSortMode("RISK")} icon="warning-outline" />
+            <Pill label="Reports" active={sortMode === "REPORTS"} onPress={() => setSortMode("REPORTS")} icon="stats-chart-outline" />
+          </View>
+        </>
+      ) : tab === "HISTORY" ? (
+        <View style={st.filterRow}>
+          <Pill label="ALL" active={historyFilter === "ALL"} onPress={() => setHistoryFilter("ALL")} />
+          <Pill label="BLOCKED" active={historyFilter === "BLOCKED"} onPress={() => setHistoryFilter("BLOCKED")} icon="lock-closed-outline" />
+          <Pill label="SPAM" active={historyFilter === "SPAM"} onPress={() => setHistoryFilter("SPAM")} icon="warning-outline" />
+        </View>
+      ) : (
+        <View style={st.filterRow}>
+          <Pill label="ALL" active={nativeFilter === "ALL"} onPress={() => setNativeFilter("ALL")} />
+          <Pill label="Local" active={nativeFilter === "LOCAL"} onPress={() => setNativeFilter("LOCAL")} icon="lock-closed-outline" />
+          <Pill label="Global" active={nativeFilter === "GLOBAL"} onPress={() => setNativeFilter("GLOBAL")} icon="warning-outline" />
+        </View>
+      )}
 
       {tab === "REPORTS" ? (
         <View style={[st.filterRow, { marginTop: 8 }]}>
@@ -545,7 +733,185 @@ export default function SafetyCenterMyListsTab() {
         </View>
       ) : null}
 
-      {tab === "BLOCKED" ? (
+      {tab === "NATIVE_BLOCKED" ? (
+        <SectionList
+          sections={nativeSections as any}
+          keyExtractor={(item, idx) => `${String((item as any)?.phone || "-")}#${idx}`}
+          refreshControl={<RefreshControl refreshing={native.loading} onRefresh={native.fetchData} tintColor="#fff" />}
+          contentContainerStyle={{ paddingBottom: 18 }}
+          stickySectionHeadersEnabled={false}
+          ListHeaderComponent={
+            <View style={st.card}>
+              <View style={st.nativeHeaderRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={st.nativeTitle}>Block from Native</Text>
+                  <Text style={st.muted}>DB name: {native.data.dbName || "scam-protect.db"}</Text>
+                  <Text style={st.muted}>DB path: {native.data.dbPath || "(unknown)"}</Text>
+                  <Text style={st.muted}>
+                    total: {native.data.totalCount} • local: {native.data.localCount} • global: {native.data.globalCount}
+                  </Text>
+                  {(native.data.localCount > native.data.local.length || native.data.globalCount > native.data.global.length) && (
+                    <Text style={st.muted}>
+                      Showing {native.data.local.length}/{native.data.localCount} local and {native.data.global.length}/{native.data.globalCount} global (capped)
+                    </Text>
+                  )}
+                </View>
+
+                <Pressable
+                  onPress={native.fetchData}
+                  disabled={native.loading}
+                  style={[st.nativeRefreshBtn, native.loading && st.nativeRefreshBtnDisabled]}
+                >
+                  {native.loading ? (
+                    <ActivityIndicator size="small" />
+                  ) : (
+                    <Ionicons name="refresh-outline" size={18} color="#e5e7eb" />
+                  )}
+                  <Text style={st.nativeRefreshText}>Refresh</Text>
+                </Pressable>
+              </View>
+
+              {!!native.error && <Text style={st.nativeError}>Error: {native.error}</Text>}
+              {!__DEV__ && <Text style={st.nativeError}>Debug only</Text>}
+            </View>
+          }
+          ListEmptyComponent={
+            native.loading ? (
+              <View style={st.loadingBox}>
+                <ActivityIndicator />
+                <Text style={st.muted}>กำลังโหลด...</Text>
+              </View>
+            ) : (
+              <View style={st.emptyBox}>
+                <Text style={st.emptyTitle}>ยังไม่มีรายการ</Text>
+                <Text style={st.muted}>ไม่พบข้อมูลใน DB หรือไม่มีแถวที่เข้าเงื่อนไข Local/Global</Text>
+              </View>
+            )
+          }
+          renderSectionHeader={({ section }) => {
+            const key = (section as any)?.key as "LOCAL" | "GLOBAL";
+            const tone = key === "LOCAL" ? st.nativeBadgeLocal : st.nativeBadgeSpam;
+            const title = (section as any)?.title || (key === "LOCAL" ? "Local" : "Global");
+            const desc = (section as any)?.desc || "";
+            const count = Array.isArray((section as any)?.data) ? (section as any).data.length : 0;
+
+            return (
+              <View style={st.card}>
+                <View style={st.nativeRowTop}>
+                  <Text style={st.mainText}>{title}</Text>
+                  <View style={[st.nativeBadge, tone]}>
+                    <Text style={st.nativeBadgeText}>{count}</Text>
+                  </View>
+                </View>
+                {!!desc && <Text style={st.muted}>{desc}</Text>}
+              </View>
+            );
+          }}
+          renderItem={({ item, section }) => {
+            const sKey = ((section as any)?.key as "LOCAL" | "GLOBAL") || "GLOBAL";
+            const phone = String((item as any)?.phone || "");
+            const risk = Number((item as any)?.riskLevel || 0) || 0;
+            const localBlocked = Boolean((item as any)?.localBlocked);
+            const serverDeleted = Number((item as any)?.serverDeleted || 0) || 0;
+            const reportCount = (item as any)?.reportCount;
+            const tags = (item as any)?.tags;
+            const lastReportAt = (item as any)?.lastReportAt;
+
+            const badgeStyle = sKey === "LOCAL" || localBlocked ? st.nativeBadgeLocal : st.nativeBadgeSpam;
+            const badgeLabel = sKey === "LOCAL" || localBlocked ? "LOCAL BLOCK" : "GLOBAL";
+
+            const busyKey = `${sKey}:${phone}`;
+            const busy = !!nativeUnblockBusy[busyKey];
+
+            const doUnblock = () => {
+              if (sKey !== "LOCAL") return;
+              if (!phone) return;
+
+              Alert.alert("Unblock?", `Unblock ${phone} on server and locally?`, [
+                { text: "Cancel", style: "cancel" },
+                {
+                  text: "Unblock",
+                  style: "destructive",
+                  onPress: async () => {
+                    try {
+                      setNativeUnblockBusy((prev) => ({ ...prev, [busyKey]: true }));
+
+                      // 1) Server unblock (reuse Home flow)
+                      const tel = normalizeTel(phone) || phone;
+                      const payload = await unblockTelOnServer(tel);
+                      if (!payload?.ok) {
+                        toastGenericError();
+                        return;
+                      }
+                      toastTelReportRemoved();
+
+                      // keep this screen's Blocked tab state consistent if present
+                      setBlocked((prev) => prev.filter((x) => (normalizeTel(x.phone) || x.phone) !== tel));
+
+                      // 2) Native SQLite unblock
+                      const nativeRes = await unblockNativeNumber(tel);
+                      if (!nativeRes?.ok) {
+                        toastGenericError();
+                        return;
+                      }
+
+                      // 3) Refresh native debug list
+                      await native.fetchData();
+                    } catch (err) {
+                      console.error("UNBLOCK UNKNOWN ERROR:", err);
+                      toastGenericError();
+                    } finally {
+                      setNativeUnblockBusy((prev) => {
+                        const next = { ...prev };
+                        delete next[busyKey];
+                        return next;
+                      });
+                    }
+                  },
+                },
+              ]);
+            };
+
+            return (
+              <View style={st.card}>
+                <View style={st.nativeRowTop}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={st.mainText}>{phone || "-"}</Text>
+                  </View>
+                  <View style={st.nativeBadges}>
+                    <View style={[st.nativeBadge, badgeStyle]}>
+                      <Text style={st.nativeBadgeText}>{badgeLabel}</Text>
+                    </View>
+                    {serverDeleted === 1 ? (
+                      <View style={st.nativeBadge}>
+                        <Text style={st.nativeBadgeText}>DELETED</Text>
+                      </View>
+                    ) : null}
+
+                    {sKey === "LOCAL" ? (
+                      <Pressable
+                        onPress={doUnblock}
+                        disabled={busy}
+                        style={[st.nativeUnblockBtn, busy && st.nativeRefreshBtnDisabled]}
+                      >
+                        {busy ? <ActivityIndicator size="small" /> : <Ionicons name="trash-outline" size={16} color="#111" />}
+                        <Text style={st.nativeUnblockText}>Unblock</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                </View>
+
+                <Text style={st.muted}>
+                  Risk: {risk}
+                  {typeof reportCount === "number" ? ` • reports: ${reportCount}` : ""}
+                  {lastReportAt ? ` • last: ${fmtTime(String(lastReportAt))}` : ""}
+                </Text>
+                {!!tags && <Text style={st.muted}>tags: {String(tags)}</Text>}
+              </View>
+            );
+          }}
+        />
+      ) : tab === "BLOCKED" ? (
         blockedLoading ? (
           <View style={st.loadingBox}>
             <ActivityIndicator />
@@ -623,7 +989,8 @@ export default function SafetyCenterMyListsTab() {
             }}
           />
         )
-      ) : reportsLoading ? (
+      ) : tab === "REPORTS" ? (
+        reportsLoading ? (
         <View style={st.loadingBox}>
           <ActivityIndicator />
           <Text style={st.muted}>กำลังโหลด...</Text>
@@ -696,6 +1063,58 @@ export default function SafetyCenterMyListsTab() {
                       </View>
                     ))}
                   </View>
+                )}
+              </View>
+            );
+          }}
+        />
+      )
+      ) : historyLoading ? (
+        <View style={st.loadingBox}>
+          <ActivityIndicator />
+          <Text style={st.muted}>กำลังโหลด...</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={historyFiltered}
+          keyExtractor={(it) => String(it.id)}
+          refreshControl={<RefreshControl refreshing={historyRefreshing} onRefresh={refreshHistory} tintColor="#fff" />}
+          onEndReachedThreshold={0.4}
+          onEndReached={loadMoreHistory}
+          contentContainerStyle={{ paddingBottom: 18 }}
+          ListEmptyComponent={
+            <View style={st.emptyBox}>
+              <Text style={st.emptyTitle}>ยังไม่มีประวัติ</Text>
+              <Text style={st.muted}>เมื่อมีการบล็อก/เตือนสายหรือ SMS จะมาแสดงที่นี่</Text>
+            </View>
+          }
+          ListFooterComponent={
+            historyHasMore ? (
+              <View style={{ paddingVertical: 12 }}>
+                <ActivityIndicator />
+              </View>
+            ) : (
+              <View style={{ paddingVertical: 12 }}>
+                <Text style={[st.muted, { textAlign: "center" }]}>จบรายการ</Text>
+              </View>
+            )
+          }
+          renderItem={({ item }) => {
+            const meta = parseHistoryDetail(item.detail);
+            const action = meta?.action || "-";
+            const source = meta?.source || "-";
+            const note = meta?.note || "";
+
+            return (
+              <View style={st.card}>
+                <Text style={st.mainText}>{item.phone_normalized}</Text>
+                <Text style={st.muted}>
+                  {item.type.toUpperCase()} • {action} • {source} • {fmtTime(item.created_at)}
+                </Text>
+                {!!note && (
+                  <Text style={st.note} numberOfLines={3}>
+                    {note}
+                  </Text>
                 )}
               </View>
             );
@@ -813,4 +1232,49 @@ const st = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.06)",
   },
   kindText: { color: "#cbd5e1", fontWeight: "900", fontSize: 12 },
+
+  // NATIVE_BLOCKED debug UI
+  nativeHeaderRow: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
+  nativeTitle: { color: "#fff", fontWeight: "900", fontSize: 16 },
+  nativeRefreshBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#2a2a35",
+    backgroundColor: "#111116",
+  },
+  nativeRefreshBtnDisabled: { opacity: 0.6 },
+  nativeRefreshText: { color: "#e5e7eb", fontWeight: "900" },
+  nativeError: { color: "#fca5a5", marginTop: 10, fontWeight: "800" },
+
+  nativeRowTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  nativeBadges: { flexDirection: "row", gap: 8, alignItems: "center" },
+  nativeBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#27335f",
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  nativeBadgeText: { color: "#cbd5e1", fontWeight: "900", fontSize: 12 },
+  nativeBadgeLocal: { backgroundColor: "#ef4444", borderColor: "#ef4444" },
+  nativeBadgeSpam: { backgroundColor: "#f59e0b", borderColor: "#f59e0b" },
+
+  nativeUnblockBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "#e5e7eb",
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+  },
+  nativeUnblockText: { color: "#111", fontWeight: "900" },
 });

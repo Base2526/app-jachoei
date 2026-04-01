@@ -27,6 +27,8 @@ import {
   useJachoeiStatusKeys,
 } from "../hooks/useJachoeiStatusKeys";
 
+import { addBlockedNumber } from "../native/CallBlocker";
+
 // ======================================================
 // GraphQL (PHONE)
 // ======================================================
@@ -903,6 +905,15 @@ export default function PhoneCenterLookupTab() {
         refetchQueries: [{ query: Q_MY_BLOCKED_PHONE_KEYS }],
         awaitRefetchQueries: true,
       });
+
+      // Update native/local DB (Android) for offline screening + notification
+      if (Platform.OS === "android") {
+        try {
+          await addBlockedNumber(tel);
+        } catch {
+          // best-effort only
+        }
+      }
     },
     [isLoggedIn, goStack]
   );

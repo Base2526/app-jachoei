@@ -4,6 +4,8 @@ import {
   ActivityIndicator,
   View,
   Text,
+  NativeEventEmitter,
+  NativeModules,
   PermissionsAndroid,
   Pressable,
   StyleSheet,
@@ -60,6 +62,16 @@ export async function ensureSmsPermissions() {
   console.log("[PERM] RECEIVE_SMS =", res);
 }
 
+export async function ensureNotificationPermission() {
+  if (Platform.OS !== "android") return;
+  // Android 13+ runtime permission
+  if (Platform.Version < 33) return;
+
+  const perm = PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS;
+  const res = await PermissionsAndroid.request(perm);
+  console.log("[PERM] POST_NOTIFICATIONS =", res);
+}
+
 GoogleSignin.configure({
   webClientId: "619965285212-4dqfos2ifns1bdgo2anudj4c3gm8ttih.apps.googleusercontent.com",
   iosClientId: "619965285212-s5hpe2qkv53pkd46svrb9a0eq686ec7t.apps.googleusercontent.com",
@@ -70,7 +82,45 @@ function Root({ initReady }: { initReady: boolean }) {
   const { t } = useI18n();
 
   useEffect(() => {
+    // Optional global helper
+    (globalThis as any).callDebug = (msg: any) => {
+      console.log("CALL_DEBUG:", msg);
+    };
+
+    // Debug helper: synthetic incoming-call flow (bridge verification)
+    ;(globalThis as any).debugIncomingCall = async (rawNumber: string) => {
+      try {
+        const mod = (NativeModules as any).CallBlocker;
+        if (!mod?.debugSimulateIncomingCall) {
+          console.log("debugIncomingCall: native method not available");
+          return;
+        }
+        const res = await mod.debugSimulateIncomingCall(String(rawNumber ?? ""));
+        console.log("debugIncomingCall RESULT:", res);
+      } catch (e) {
+        console.log("debugIncomingCall ERROR:", e);
+      }
+    };
+
+    const mod = (NativeModules as any).CallBlocker;
+    if (!mod) return;
+
+    const emitter = new NativeEventEmitter(mod);
+    const sub = emitter.addListener("CALL_DEBUG_EVENT", (event: any) => {
+      try {
+        console.log("CALL_DEBUG_EVENT:", JSON.stringify(event ?? null, null, 2));
+      } catch (e) {
+        console.log("CALL_DEBUG_EVENT:", event);
+        console.log("CALL_DEBUG_EVENT stringify ERROR:", e);
+      }
+    });
+
+    return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
     ensureSmsPermissions();
+    ensureNotificationPermission();
     loadDeviceInfo();
   }, []);
 
