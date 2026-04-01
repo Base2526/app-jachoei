@@ -43,6 +43,7 @@ import SendMessageSection, {
 import { ENV } from "../config/env";
 import { refreshUnreadChatBadge } from "../notifications/badge";
 import { useI18n } from "../i18n";
+import { createClientMessageId } from "../utils/chat";
 
 import { AudioRecorder, AudioUtils } from "react-native-audio";
 import Sound from "react-native-sound";
@@ -333,6 +334,7 @@ type MessageAudio = {
 type Message = {
   id: string;
   chat_id: string;
+  type?: string | null;
   text?: string | null;
   created_at: string;
   sender?: { id: string; name?: string | null; avatar?: string | null } | null;
@@ -436,6 +438,22 @@ function getAudioSrc(audio: any) {
   if (!audio) return "";
   if (audio?.file_id) return `${ENV.apiBase}/api/files/${audio.file_id}`;
   return audio?.url || "";
+}
+
+function isAudioLikeMessage(m: any): boolean {
+  const t = String(m?.type || "").toLowerCase();
+  if (t === "audio" || t === "voice" || t === "voice_message") return true;
+  if (t.includes("audio") || t.includes("voice")) return true;
+  return !!m?.audio;
+}
+
+function mergeByIdSorted(prev: Message[], incoming: Message[]) {
+  const map = new Map<string, Message>();
+  for (const m of prev) map.set(m.id, m);
+  for (const m of incoming) map.set(m.id, m);
+  return Array.from(map.values()).sort(
+    (a, b) => safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime()
+  );
 }
 
 function formatDurationMMSS(totalSeconds: number) {
@@ -706,6 +724,67 @@ export default function ChatScreen({ navigation, route }: Props) {
 
   const [text, setText] = useState("");
   const [replyTarget, setReplyTarget] = useState<any | null>(null);
+
+  const listRef = useRef<FlatList<MessageListRow> | null>(null);
+  const activeChatIdRef = useRef<string | null>(null);
+
+  // Backend may emit audio messages before `audio` is populated; resolve by refetch+merge.
+  const pendingAudioResolveRef = useRef<Record<string, { attempts: number; timer: any }>>({});
+
+  const refetchLatestAndMerge = useCallback(async (chatId: string) => {
+    const res = await client.query<{ messagesConnection: MessageConnection }>({
+      query: Q_MSGS_CONNECTION,
+      variables: { chat_id: chatId, limit: PAGE_SIZE, cursor: null },
+      fetchPolicy: "network-only",
+    });
+
+    if (activeChatIdRef.current !== chatId) return [];
+
+    const page = res.data?.messagesConnection;
+    const got = page?.items ?? [];
+    const sorted = [...got].sort(
+      (a, b) => safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime()
+    );
+
+    setMessages((prev) => mergeByIdSorted(prev, sorted));
+    return sorted;
+  }, []);
+
+  const scheduleResolveAudio = useCallback(
+    (chatId: string, messageId: string) => {
+      const key = `${chatId}:${messageId}`;
+      const cur = pendingAudioResolveRef.current[key];
+      if (cur?.timer) return;
+
+      const attempts = cur?.attempts ?? 0;
+      if (attempts >= 6) {
+        delete pendingAudioResolveRef.current[key];
+        return;
+      }
+
+      pendingAudioResolveRef.current[key] = {
+        attempts,
+        timer: setTimeout(async () => {
+          const latestAttempts = pendingAudioResolveRef.current[key]?.attempts ?? attempts;
+          pendingAudioResolveRef.current[key] = { attempts: latestAttempts + 1, timer: null };
+
+          try {
+            const latest = await refetchLatestAndMerge(chatId);
+            const found = latest.find((m) => m.id === messageId);
+            if (found && getAudioSrc((found as any)?.audio)) {
+              delete pendingAudioResolveRef.current[key];
+              return;
+            }
+          } catch {
+            // best-effort
+          }
+
+          scheduleResolveAudio(chatId, messageId);
+        }, Math.min(6500, 1200 + attempts * 900)),
+      };
+    },
+    [refetchLatestAndMerge]
+  );
 
   // ===== voice recording =====
   const [isRecording, setIsRecording] = useState(false);
@@ -984,34 +1063,31 @@ export default function ChatScreen({ navigation, route }: Props) {
         return;
       }
 
-      const name = `voice-${Date.now()}.m4a`;
-      const uploadAudio = {
-        uri,
-        name,
-        type: "audio/mp4",
+      // Optimistic: show audio message immediately (playable from local file URI)
+      const clientMessageId = createClientMessageId();
+      const optimisticId = `local-audio-${clientMessageId}`;
+      const optimisticCreatedAt = new Date().toISOString();
+
+      const optimisticMsg: Message = {
+        id: optimisticId,
+        chat_id: sel,
+        type: "audio",
+        text: "",
+        created_at: optimisticCreatedAt,
+        sender: { id: meId, name: me?.name ?? null, avatar: null },
+        images: [],
+        audio: {
+          url: uri,
+          mime: "audio/mp4",
+          duration_sec: durationSec,
+        },
+        reply_to_id: replyTarget?.id ?? null,
+        reply_to: replyTarget ?? null,
       };
 
-      const res = await client.mutate<{ sendMessage: Message }>({
-        mutation: MUT_SEND,
-        variables: {
-          chat_id: sel,
-          text: "",
-          to_user_ids: toUserIds,
-          images: null,
-          audio: uploadAudio,
-          audio_duration_sec: durationSec,
-          location: null,
-          reply_to_id: replyTarget?.id ?? null,
-          client_message_id: null,
-        },
-      });
-
-      const newMsg = res.data?.sendMessage;
-      if (!newMsg) return;
-
       setMessages((prev) => {
-        if (prev.some((x) => x.id === newMsg.id)) return prev;
-        return [...prev, newMsg].sort(
+        if (prev.some((x) => x.id === optimisticId)) return prev;
+        return [...prev, optimisticMsg].sort(
           (a, b) => safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime()
         );
       });
@@ -1019,18 +1095,18 @@ export default function ChatScreen({ navigation, route }: Props) {
       setChats((prev) =>
         prev
           .map((c) => {
-            if (c.id !== newMsg.chat_id) return c;
+            if (c.id !== sel) return c;
             return {
               ...c,
               last_message: {
-                id: newMsg.id,
-                text: newMsg.text,
-                created_at: newMsg.created_at,
-                sender: newMsg.sender,
-                audio: (newMsg as any).audio ?? null,
-                images: newMsg.images ?? [],
+                id: optimisticId,
+                text: "",
+                created_at: optimisticCreatedAt,
+                sender: optimisticMsg.sender,
+                audio: optimisticMsg.audio ?? null,
+                images: [],
               },
-              last_message_at: newMsg.created_at,
+              last_message_at: optimisticCreatedAt,
             };
           })
           .sort((a, b) => {
@@ -1040,25 +1116,98 @@ export default function ChatScreen({ navigation, route }: Props) {
           })
       );
 
-      setReplyTarget(null);
-
-      // Ensure the freshly-sent message is visible immediately.
+      // Bring user to the latest message.
       isNearBottomRef.current = true;
       setShowScrollToBottom(false);
       requestAnimationFrame(() => {
         listRef.current?.scrollToOffset({ offset: 0, animated: true });
       });
 
-      if (sel && newMsg.created_at) {
-        client
-          .mutate({
-            mutation: MUT_MARK_UPTO,
-            variables: { chat_id: sel, cursor: newMsg.created_at },
-          })
-          .catch(() => {});
+      const name = `voice-${Date.now()}.m4a`;
+      const uploadAudio = {
+        uri,
+        name,
+        type: "audio/mp4",
+      };
+
+      try {
+        const res = await client.mutate<{ sendMessage: Message }>({
+          mutation: MUT_SEND,
+          variables: {
+            chat_id: sel,
+            text: "",
+            to_user_ids: toUserIds,
+            images: null,
+            audio: uploadAudio,
+            audio_duration_sec: durationSec,
+            location: null,
+            reply_to_id: replyTarget?.id ?? null,
+            client_message_id: clientMessageId,
+          },
+        });
+
+        const newMsg = res.data?.sendMessage;
+        if (!newMsg) return;
+
+        // If backend hasn't attached audio metadata yet, keep the local URI for immediate UI.
+        const mergedNewMsg: Message = {
+          ...newMsg,
+          audio: (newMsg as any)?.audio ?? optimisticMsg.audio ?? null,
+        };
+
+        setMessages((prev) => {
+          const withoutOptimistic = prev.filter((x) => x.id !== optimisticId);
+          if (withoutOptimistic.some((x) => x.id === mergedNewMsg.id)) return withoutOptimistic;
+          return [...withoutOptimistic, mergedNewMsg].sort(
+            (a, b) => safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime()
+          );
+        });
+
+        setChats((prev) =>
+          prev
+            .map((c) => {
+              if (c.id !== mergedNewMsg.chat_id) return c;
+              return {
+                ...c,
+                last_message: {
+                  id: mergedNewMsg.id,
+                  text: mergedNewMsg.text,
+                  created_at: mergedNewMsg.created_at,
+                  sender: mergedNewMsg.sender,
+                  audio: (mergedNewMsg as any).audio ?? null,
+                  images: mergedNewMsg.images ?? [],
+                },
+                last_message_at: mergedNewMsg.created_at,
+              };
+            })
+            .sort((a, b) => {
+              const at = a.last_message_at ? safeDate(a.last_message_at).getTime() : 0;
+              const bt = b.last_message_at ? safeDate(b.last_message_at).getTime() : 0;
+              return bt - at;
+            })
+        );
+
+        setReplyTarget(null);
+
+        if (sel && mergedNewMsg.created_at) {
+          client
+            .mutate({
+              mutation: MUT_MARK_UPTO,
+              variables: { chat_id: sel, cursor: mergedNewMsg.created_at },
+            })
+            .catch(() => {});
+        }
+
+        if (isAudioLikeMessage(mergedNewMsg) && !getAudioSrc((mergedNewMsg as any)?.audio)) {
+          scheduleResolveAudio(sel, mergedNewMsg.id);
+        }
+      } catch (e) {
+        // rollback optimistic
+        setMessages((prev) => prev.filter((x) => x.id !== optimisticId));
+        throw e;
       }
     },
-    [chats, meId, replyTarget?.id, sel, t]
+    [chats, me?.name, meId, replyTarget, scheduleResolveAudio, sel, t]
   );
 
   const onPressMic = useCallback(async () => {
@@ -1114,7 +1263,6 @@ export default function ChatScreen({ navigation, route }: Props) {
     });
   }, []);
 
-  const listRef = useRef<FlatList<MessageListRow> | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const isNearBottomRef = useRef(true);
   const fabBottomAnim = useRef(new Animated.Value(0)).current;
@@ -1127,7 +1275,6 @@ export default function ChatScreen({ navigation, route }: Props) {
   const subDeletedRef = useRef<any>(null);
   const loadMoreLockRef = useRef(false);
   const onEndReachedLockRef = useRef(false);
-  const activeChatIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     activeChatIdRef.current = sel;
@@ -1311,6 +1458,7 @@ export default function ChatScreen({ navigation, route }: Props) {
   }, []);
 
   /** ===== load messages for chat ===== */
+
   const loadMessages = useCallback(
     async (chatId: string, mode: "replace" | "append", cursor?: string | null) => {
       if (!chatId) return;
@@ -1337,6 +1485,15 @@ export default function ChatScreen({ navigation, route }: Props) {
           (a, b) =>
             safeDate(a.created_at).getTime() - safeDate(b.created_at).getTime()
         );
+
+        if (mode === "replace") {
+          const newest = sorted.slice(-10);
+          for (const m of newest) {
+            if (isAudioLikeMessage(m) && !getAudioSrc((m as any)?.audio)) {
+              scheduleResolveAudio(chatId, m.id);
+            }
+          }
+        }
         setHasNextPage(!!page?.hasMore);
         setNextCursor(page?.nextCursor ?? null);
 
@@ -1374,7 +1531,7 @@ export default function ChatScreen({ navigation, route }: Props) {
         }
       }
     },
-    [t]
+    [t, scheduleResolveAudio]
   );
 
   const loadChatSettings = useCallback(async (chatId: string) => {
@@ -1420,6 +1577,9 @@ export default function ChatScreen({ navigation, route }: Props) {
   useEffect(() => {
     if (!sel) return;
 
+    const chatIdForCleanup = sel;
+    const pendingEntries = pendingAudioResolveRef.current;
+
     setReplyTarget(null);
     setText("");
     setHasNextPage(true);
@@ -1452,6 +1612,10 @@ export default function ChatScreen({ navigation, route }: Props) {
         next: (ev) => {
           const m = ev.data?.messageAdded;
           if (!m) return;
+
+          if (isAudioLikeMessage(m) && !getAudioSrc((m as any)?.audio)) {
+            scheduleResolveAudio(sel, m.id);
+          }
 
           setMessages((prev) => {
             if (prev.some((x) => x.id === m.id)) return prev;
@@ -1519,8 +1683,19 @@ export default function ChatScreen({ navigation, route }: Props) {
       try {
         subDeletedRef.current?.unsubscribe?.();
       } catch {}
+
+      // Clear pending audio resolve timers for this chat
+      try {
+        const entries = pendingEntries;
+        for (const k of Object.keys(entries)) {
+          if (!k.startsWith(`${chatIdForCleanup}:`)) continue;
+          const timer = entries[k]?.timer;
+          if (timer) clearTimeout(timer);
+          delete entries[k];
+        }
+      } catch {}
     };
-  }, [sel, loadMessages, loadChatSettings, setCurrentChat, clearUnread]);
+  }, [sel, loadMessages, loadChatSettings, setCurrentChat, clearUnread, scheduleResolveAudio]);
 
   // Auto-scroll to bottom on new messages ONLY if user is already near bottom.
   useEffect(() => {
@@ -1958,6 +2133,7 @@ export default function ChatScreen({ navigation, route }: Props) {
       const imgs = Array.isArray(item.images) ? item.images : [];
       const audioSrc = getAudioSrc((item as any)?.audio);
       const hasAudio = !!audioSrc;
+      const isAudioLike = isAudioLikeMessage(item);
       const audioDurationSec = Math.max(0, Number((item as any)?.audio?.duration_sec) || 0);
 
       const loc = (item as any)?.location as MessageLocation | null | undefined;
@@ -2080,6 +2256,33 @@ export default function ChatScreen({ navigation, route }: Props) {
                 getActiveSoundCurrentTime={getActiveSoundCurrentTime}
                 getActiveSoundDuration={getActiveSoundDuration}
               />
+            ) : isAudioLike ? (
+              <Pressable onLongPress={() => openMenu(item)} delayLongPress={250}>
+                <View
+                  style={[
+                    styles.audioBubble,
+                    isMine ? styles.audioBubbleMine : styles.audioBubbleOther,
+                    styles.audioBubblePending,
+                    isFocused && styles.msgBubbleFocused,
+                  ]}
+                >
+                  <View style={styles.audioPlayBtn}>
+                    <Ionicons name="time-outline" size={18} color="#0b0b0f" />
+                  </View>
+
+                  <View style={styles.flexMinWidth0}>
+                    <Text
+                      style={[
+                        styles.audioPendingText,
+                        isMine ? styles.audioPendingTextMine : styles.audioPendingTextOther,
+                      ]}
+                      numberOfLines={2}
+                    >
+                      {isMine ? "กำลังส่งข้อความเสียง…" : "ข้อความเสียง (กำลังเตรียมไฟล์…)"}
+                    </Text>
+                  </View>
+                </View>
+              </Pressable>
             ) : null}
 
             {hasLocation ? (
@@ -2884,6 +3087,21 @@ const styles = StyleSheet.create({
   audioTimeText: {
     fontSize: 11,
     fontWeight: "700",
+  },
+
+  audioBubblePending: {
+    opacity: 0.92,
+  },
+  audioPendingText: {
+    fontSize: 13,
+    fontWeight: "800",
+    lineHeight: 18,
+  },
+  audioPendingTextMine: {
+    color: "#dbeafe",
+  },
+  audioPendingTextOther: {
+    color: "#e5e7eb",
   },
 
   msgText: { fontSize: 14, lineHeight: 18 },

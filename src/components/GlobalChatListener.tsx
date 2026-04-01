@@ -1,5 +1,5 @@
 // src/components/GlobalChatListener.tsx
-import React, { useEffect } from "react";
+import { useEffect } from "react";
 import { AppState, AppStateStatus } from "react-native";
 import { gql } from "@apollo/client";
 import { client } from "../apollo/client";
@@ -26,12 +26,19 @@ const Q_CHATS = gql`
       last_message_at
       last_message {
         id
+        type
         text
         created_at
         sender {
           id
           name
           avatar
+        }
+        audio {
+          file_id
+          url
+          mime
+          duration_sec
         }
         images {
           id
@@ -49,12 +56,19 @@ const SUB_INCOMING = gql`
     incomingMessage(user_id: $user_id) {
       id
       chat_id
+      type
       text
       created_at
       sender {
         id
         name
         avatar
+      }
+      audio {
+        file_id
+        url
+        mime
+        duration_sec
       }
       images {
         id
@@ -71,6 +85,7 @@ const SUB_USER_MESSAGE = gql`
     userMessageAdded(user_id: $user_id) {
       id
       chat_id
+      type
       sender {
         id
         name
@@ -80,6 +95,18 @@ const SUB_USER_MESSAGE = gql`
       text
       created_at
       to_user_ids
+      audio {
+        file_id
+        url
+        mime
+        duration_sec
+      }
+      images {
+        id
+        url
+        file_id
+        mime
+      }
     }
   }
 `;
@@ -126,9 +153,11 @@ function updateChatLastMessageInCache(m: any) {
               ...chat,
               last_message: {
                 id: m.id,
+                type: m.type,
                 text: m.text,
                 created_at: m.created_at,
                 sender: m.sender,
+                audio: m.audio ?? null,
                 images: m.images ?? [],
               },
               last_message_at: m.created_at,
@@ -195,7 +224,17 @@ export function GlobalChatListener() {
             // เพิ่ม unread เฉพาะตอน: ไม่ได้เปิดห้องนี้ หรือ app ไม่ได้อยู่ foreground
             if (!(isCurrentRoom && isFocused)) {
               incrementUnread(m.chat_id, 1);
-              await notifyLocal(m.sender?.name || "New message", m.text || "ส่งรูปภาพมา");
+              const t = String(m?.type || "").toLowerCase();
+              const body = m.text
+                ? String(m.text)
+                : m.audio
+                ? "ส่งข้อความเสียงมา"
+                : Array.isArray(m.images) && m.images.length
+                ? "ส่งรูปภาพมา"
+                : t.includes("audio")
+                ? "ส่งข้อความเสียงมา"
+                : "มีข้อความใหม่";
+              await notifyLocal(m.sender?.name || "New message", body);
             }
 
             updateChatLastMessageInCache(m);
