@@ -35,6 +35,16 @@ export function toastGenericError() {
   showError(MSG_ERROR_GENERIC);
 }
 
+export function toastSuccess(message: string) {
+  const text = String(message || "").trim();
+  showSuccess(text || "OK");
+}
+
+export function toastError(message: string) {
+  const text = String(message || "").trim();
+  showError(text || MSG_ERROR_GENERIC);
+}
+
 export function toastTelReportedSuccessfully() {
   showSuccess(MSG_TEL_REPORTED);
 }

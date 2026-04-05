@@ -688,7 +688,10 @@ export const HomeScreen: React.FC = () => {
         },
         { dialogTitle: "Share post" }
       );
-    } catch {}
+    } catch (e) {
+      console.warn("[Home][share] failed", e);
+      toastGenericError();
+    }
   }, []);
 
   const onOpenProfile = useCallback(

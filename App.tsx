@@ -11,6 +11,7 @@ import {
   StyleSheet,
   Platform,
   InteractionManager,
+  AppState,
 } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 import SystemNavigationBar from "react-native-system-navigation-bar";
@@ -27,6 +28,10 @@ import { ScamProtectTabs } from "./src/screens/ScamProtectTabs";
 import { client } from "./src/apollo/client";
 import { useInitScamSync } from "./src/hooks/useInitScamSync";
 import { loadDeviceInfo } from "./src/device/deviceInfo";
+import { ensureSessionId } from "./src/lib/observability/session";
+import { installGlobalErrorHandlers } from "./src/lib/observability/globalErrors";
+import { flushClientLogQueue } from "./src/lib/observability/clientLog";
+import { setLogRouteName } from "./src/lib/observability/logContext";
 import { PostViewScreen } from "./src/screens/PostViewScreen";
 import { BlockedLogsSearchScreen } from "./src/screens/BlockedLogsSearchScreen";
 import { ProfileScreen } from "./src/screens/ProfileScreen";
@@ -36,6 +41,7 @@ import SignInScreen from "./src/screens/SignInScreen";
 import SettingScreen from "./src/screens/SettingsScreen";
 
 import NotificationPage from "./src/screens/NotificationPage";
+import DiagnosticsScreen from "./src/screens/DiagnosticsScreen";
 
 import type { RootStackParamList } from "./src/navigation/types";
 
@@ -82,6 +88,9 @@ function Root({ initReady }: { initReady: boolean }) {
   const { t } = useI18n();
 
   useEffect(() => {
+    // Install global error + rejection capture ASAP.
+    installGlobalErrorHandlers();
+
     // Optional global helper
     (globalThis as any).callDebug = (msg: any) => {
       console.log("CALL_DEBUG:", msg);
@@ -122,6 +131,9 @@ function Root({ initReady }: { initReady: boolean }) {
     ensureSmsPermissions();
     ensureNotificationPermission();
     loadDeviceInfo();
+
+    // Session id is used for log replay/timeline on the server.
+    void ensureSessionId();
   }, []);
 
   if (!initReady) {
@@ -340,6 +352,27 @@ function Root({ initReady }: { initReady: boolean }) {
           },
          }}
       />
+
+      <Stack.Screen
+        name="Diagnostics"
+        component={DiagnosticsScreen}
+        options={{
+          headerShown: true,
+          title: "Diagnostics",
+          presentation: "card",
+          headerBackVisible: false,
+          headerLeft(props) {
+            return (
+              <Pressable
+                onPress={() => navigationRef.goBack()}
+                style={{ paddingHorizontal: 4 }}
+              >
+                <Ionicons name="chevron-back" size={26} color="#fff" />
+              </Pressable>
+            );
+          },
+        }}
+      />
     </Stack.Navigator>
   );
 }
@@ -355,6 +388,49 @@ function AppShell() {
   const appReady = useMemo(() => {
     return navReady && !booting && initReady;
   }, [booting, initReady, navReady]);
+
+  useEffect(() => {
+    // Keep route context up to date for logs.
+    const update = () => {
+      try {
+        const route = navigationRef.getCurrentRoute();
+        setLogRouteName(route?.name ? String(route.name) : null);
+      } catch {
+        // ignore
+      }
+    };
+
+    update();
+    const unsub = navigationRef.addListener?.("state", update as any);
+    return () => {
+      try {
+        (unsub as any)?.();
+      } catch {
+        // ignore
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    // Opportunistic flush on app becoming interactive.
+    if (!appReady) return;
+    void flushClientLogQueue();
+  }, [appReady]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        void flushClientLogQueue();
+      }
+    });
+    return () => {
+      try {
+        sub.remove();
+      } catch {
+        // ignore
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!appReady) return;
@@ -415,6 +491,17 @@ function AppShell() {
         },
       }}
       onReady={() => setNavReady(true)}
+      onStateChange={() => {
+        try {
+          const route = navigationRef.getCurrentRoute();
+          setLogRouteName(route?.name ? String(route.name) : null);
+        } catch {
+          // ignore
+        }
+
+        // Flush in background (best-effort) after navigation changes.
+        void flushClientLogQueue();
+      }}
     >
       <GlobalWiresWrapper />
       <FcmWires />

@@ -4,6 +4,7 @@ import {
   ApolloLink,
   HttpLink,
   split,
+  Observable,
 } from "@apollo/client";
 import { setContext } from "@apollo/client/link/context";
 import { getMainDefinition } from "@apollo/client/utilities";
@@ -23,8 +24,83 @@ import {
   operationHasReactNativeUpload,
 } from "./multipartLink";
 
+import { enqueueClientLog, newClientLog } from "../lib/observability/clientLog";
+import { redactDeep, clampString, safeErrorMessage } from "../lib/observability/redact";
+
+function newCorrelationId(): string {
+  return `op_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 // ================= Error Link (HTTP only) =================
 const errorLink = new ErrorLink(({ error, operation }) => {
+  try {
+    const opName = operation.operationName || "anonymous";
+    const correlationId = String((operation.getContext() as any)?.correlationId || "").trim() || null;
+
+    if (CombinedGraphQLErrors.is(error)) {
+      error.errors.forEach((e) => {
+        console.log(
+          "[GraphQL error]",
+          e.message,
+          e.path,
+          operation.operationName
+        );
+      });
+
+      void enqueueClientLog(
+        newClientLog({
+          action: "API_GQL_ERROR",
+          status: "error",
+          message: `GraphQL error: ${opName}`,
+          errorMessage: clampString(error.errors.map((e) => e.message).join(" | "), 600),
+          payload: {
+            operationName: opName,
+            errors: error.errors.map((e) => ({ message: clampString(e.message, 240), path: e.path })),
+          },
+          correlationId: correlationId ?? undefined,
+          screenName: "Apollo",
+        })
+      );
+      return;
+    }
+
+    if (CombinedProtocolErrors.is(error)) {
+      error.errors.forEach((e) => {
+        console.log("[Protocol error]", e.message);
+      });
+
+      void enqueueClientLog(
+        newClientLog({
+          action: "API_PROTOCOL_ERROR",
+          status: "error",
+          message: `Protocol error: ${opName}`,
+          errorMessage: clampString(error.errors.map((e) => e.message).join(" | "), 600),
+          payload: { operationName: opName },
+          correlationId: correlationId ?? undefined,
+          screenName: "Apollo",
+        })
+      );
+      return;
+    }
+
+    if (error) {
+      console.log("[Network error]", error);
+      void enqueueClientLog(
+        newClientLog({
+          action: "API_NETWORK_ERROR",
+          status: "error",
+          message: `Network error: ${opName}`,
+          errorMessage: safeErrorMessage(error),
+          payload: { operationName: opName },
+          correlationId: correlationId ?? undefined,
+          screenName: "Apollo",
+        })
+      );
+    }
+  } catch {
+    // never crash
+  }
+
   if (CombinedGraphQLErrors.is(error)) {
     error.errors.forEach((e) => {
       console.log(
@@ -45,6 +121,116 @@ const errorLink = new ErrorLink(({ error, operation }) => {
   }
 
   if (error) console.log("[Network error]", error);
+});
+
+// ================= Observability Link =================
+const observabilityLink = new ApolloLink((operation, forward) => {
+  const startedAt = Date.now();
+  const opName = operation.operationName || "anonymous";
+  const correlationId = newCorrelationId();
+
+  operation.setContext((prev) => ({
+    ...prev,
+    correlationId,
+    observabilityStartedAt: startedAt,
+  }));
+
+  try {
+    const safeVars = redactDeep(operation.variables ?? {});
+    void enqueueClientLog(
+      newClientLog({
+        action: "API_GQL_REQUEST",
+        status: "start",
+        message: `GQL ${opName}`,
+        payload: {
+          operationName: opName,
+          hasUpload: operationHasReactNativeUpload(operation),
+          variables: clampString(JSON.stringify(safeVars), 1800),
+        },
+        correlationId,
+        screenName: "Apollo",
+      })
+    );
+  } catch {
+    // ignore
+  }
+
+  // Defensive: ensure we always return a valid Observable.
+  if (!forward) {
+    console.warn("[Apollo][observabilityLink] missing forward for op", opName);
+    return new Observable((observer) => {
+      observer.error(new Error("ApolloLink forward is missing"));
+    });
+  }
+
+  const forwarded = forward(operation) as any;
+  if (!forwarded || typeof forwarded.subscribe !== "function") {
+    console.warn("[Apollo][observabilityLink] forward(operation) returned non-observable", {
+      opName,
+      type: typeof forwarded,
+    });
+    return new Observable((observer) => {
+      observer.error(new Error("ApolloLink forward(operation) did not return an Observable"));
+    });
+  }
+
+  return new Observable((observer) => {
+    const sub = forwarded.subscribe({
+      next: (result: any) => {
+        const durationMs = Date.now() - startedAt;
+        try {
+          void enqueueClientLog(
+            newClientLog({
+              action: "API_GQL_RESPONSE",
+              status: "success",
+              message: `GQL ${opName}`,
+              payload: {
+                operationName: opName,
+                hasErrors: Array.isArray(result?.errors) && result.errors.length > 0,
+              },
+              correlationId,
+              durationMs,
+              screenName: "Apollo",
+            })
+          );
+        } catch {
+          // ignore
+        }
+        observer.next(result);
+      },
+      error: (err: any) => {
+        const durationMs = Date.now() - startedAt;
+        try {
+          void enqueueClientLog(
+            newClientLog({
+              action: "API_GQL_RESPONSE",
+              status: "error",
+              message: `GQL ${opName}`,
+              errorMessage: safeErrorMessage(err),
+              payload: { operationName: opName },
+              correlationId,
+              durationMs,
+              screenName: "Apollo",
+            })
+          );
+        } catch {
+          // ignore
+        }
+        observer.error(err);
+      },
+      complete: () => {
+        observer.complete();
+      },
+    });
+
+    return () => {
+      try {
+        sub?.unsubscribe?.();
+      } catch {
+        // ignore
+      }
+    };
+  });
 });
 
 // ================= HTTP Link =================
@@ -137,6 +323,7 @@ const splitLink = split(
   },
   wsLink,
   ApolloLink.from([
+    observabilityLink,
     errorLink, // log errors
     authLink, // ✅ ใส่ header token ที่นี่
 

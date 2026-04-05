@@ -1,7 +1,7 @@
 // src/lib/syncScamPhones.ts
 
 import { gql, ApolloClient } from "@apollo/client";
-import { runAsync, withTransactionAsync } from "./db";
+import { runAsync } from "./db";
 import { normalizePhone } from "./normalizePhone";
 
 // ===== GraphQL Queries =====
@@ -109,6 +109,51 @@ function getFirstRow(rows: any): any | null {
   return null;
 }
 
+function rowsToArray(rows: any): any[] {
+  if (!rows) return [];
+  if (typeof rows.raw === "function") {
+    try {
+      return rows.raw() || [];
+    } catch {
+      return [];
+    }
+  }
+  if (Array.isArray(rows._array)) return rows._array;
+  const out: any[] = [];
+  try {
+    const len = typeof rows.length === "number" ? rows.length : 0;
+    if (typeof rows.item === "function") {
+      for (let i = 0; i < len; i++) out.push(rows.item(i));
+    }
+  } catch {
+    // ignore
+  }
+  return out;
+}
+
+let didLogDbEnv = false;
+async function logDbEnvOnce() {
+  if (didLogDbEnv) return;
+  didLogDbEnv = true;
+  try {
+    const vRes: any = await runAsync("SELECT sqlite_version() AS v;");
+    const vRow = getFirstRow(vRes?.rows);
+    const version = vRow?.v ?? "";
+
+    const pRes: any = await runAsync("PRAGMA database_list;");
+    const list = rowsToArray(pRes?.rows);
+    const main = list.find((r: any) => r?.name === "main") || null;
+
+    console.log("[ScamSync][DB_ENV]", {
+      sqlite_version: version,
+      main_path: main?.file || main?.path || "",
+      db_list: list,
+    });
+  } catch (e) {
+    console.warn("[ScamSync][DB_ENV] failed", e);
+  }
+}
+
 // =====================
 // Helper: upsert batch ScamPhoneItem ลง SQLite
 // =====================
@@ -116,42 +161,126 @@ function getFirstRow(rows: any): any | null {
 async function upsertBatch(items: ScamPhoneItem[]): Promise<void> {
   if (!items.length) return;
 
-  await withTransactionAsync(async () => {
-    for (const row of items) {
-      const phone = normalizePhone(row.phone);
+  await logDbEnvOnce();
 
+  // Android devices can have older SQLite versions that don't support
+  // `ON CONFLICT ... DO UPDATE` (UPSERT). Emulator often runs newer versions.
+  // We auto-detect and fall back to a safe UPDATE + INSERT OR IGNORE.
+  type UpsertMode = "unknown" | "upsert" | "legacy";
+  // eslint-disable-next-line @typescript-eslint/no-use-before-define
+  upsertMode = upsertMode || "unknown";
+
+  for (const row of items) {
+    const phone = normalizePhone(row.phone);
+    const reportCount = row.report_count ?? 0;
+    const lastReportAt = row.last_report_at ?? null;
+    const riskLevel = row.risk_level ?? 0;
+    const tagsJson = JSON.stringify(row.tags ?? []);
+    const serverUpdatedAt = row.updated_at;
+    const serverDeleted = row.is_deleted ? 1 : 0;
+
+    // Try modern UPSERT first (once).
+    if (upsertMode !== "legacy") {
+      try {
+        await runAsync(
+          `
+          INSERT INTO scam_phones (
+            phone_normalized,
+            report_count,
+            last_report_at,
+            risk_level,
+            tags,
+            server_updated_at,
+            server_deleted
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(phone_normalized) DO UPDATE SET
+            report_count      = excluded.report_count,
+            last_report_at    = excluded.last_report_at,
+            risk_level        = excluded.risk_level,
+            tags              = excluded.tags,
+            server_updated_at = excluded.server_updated_at,
+            server_deleted    = excluded.server_deleted;
+          `,
+          [phone, reportCount, lastReportAt, riskLevel, tagsJson, serverUpdatedAt, serverDeleted]
+        );
+
+        if (upsertMode !== "upsert") {
+          upsertMode = "upsert";
+          console.log("[ScamSync][DB_WRITE] upsertMode=upsert");
+        }
+        continue;
+      } catch (e: any) {
+        const msg = String(e?.message || e || "");
+        // Typical old-SQLite error: "near \"DO\": syntax error"
+        if (/near\s+"DO"\s*:\s*syntax error/i.test(msg) || /syntax error/i.test(msg)) {
+          upsertMode = "legacy";
+          console.warn("[ScamSync][DB_WRITE] UPSERT not supported; falling back to legacy mode:", msg);
+        } else {
+          // If not the known UPSERT incompatibility, bubble up.
+          throw e;
+        }
+      }
+    }
+
+    // Legacy mode: UPDATE first (preserves local_blocked), then INSERT OR IGNORE if row didn't exist.
+    const updateRes: any = await runAsync(
+      `
+      UPDATE scam_phones
+      SET report_count = ?,
+          last_report_at = ?,
+          risk_level = ?,
+          tags = ?,
+          server_updated_at = ?,
+          server_deleted = ?
+      WHERE phone_normalized = ?;
+      `,
+      [reportCount, lastReportAt, riskLevel, tagsJson, serverUpdatedAt, serverDeleted, phone]
+    );
+
+    const rowsAffected = typeof updateRes?.rowsAffected === "number" ? updateRes.rowsAffected : 0;
+    if (rowsAffected === 0) {
       await runAsync(
         `
-        INSERT INTO scam_phones (
+        INSERT OR IGNORE INTO scam_phones (
           phone_normalized,
           report_count,
           last_report_at,
           risk_level,
           tags,
           server_updated_at,
-          server_deleted
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(phone_normalized) DO UPDATE SET
-          report_count      = excluded.report_count,
-          last_report_at    = excluded.last_report_at,
-          risk_level        = excluded.risk_level,
-          tags              = excluded.tags,
-          server_updated_at = excluded.server_updated_at,
-          server_deleted    = excluded.server_deleted;
-      `,
-        [
-          phone,
-          row.report_count ?? 0,
-          row.last_report_at ?? null,
-          row.risk_level ?? 0,
-          JSON.stringify(row.tags ?? []),
-          row.updated_at,
-          row.is_deleted ? 1 : 0,
-        ]
+          server_deleted,
+          local_blocked
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0);
+        `,
+        [phone, reportCount, lastReportAt, riskLevel, tagsJson, serverUpdatedAt, serverDeleted]
       );
     }
-  });
+  }
+
+  // Post-write sanity counts (helps confirm persistence on real device).
+  try {
+    const res: any = await runAsync(
+      `
+      SELECT
+        COUNT(*) AS c,
+        SUM(CASE WHEN local_blocked = 1 THEN 1 ELSE 0 END) AS lc,
+        SUM(CASE WHEN server_deleted = 0 THEN 1 ELSE 0 END) AS alive
+      FROM scam_phones;
+      `
+    );
+    const row = getFirstRow(res?.rows);
+    console.log("[ScamSync][DB_WRITE] counts", {
+      total: row?.c ?? 0,
+      local: row?.lc ?? 0,
+      alive: row?.alive ?? 0,
+      mode: upsertMode,
+    });
+  } catch (e) {
+    console.warn("[ScamSync][DB_WRITE] count-after-write failed", e);
+  }
 }
+
+let upsertMode: "unknown" | "upsert" | "legacy" = "unknown";
 
 // =====================
 // Helper: อ่าน last_version จาก sync_state
@@ -180,14 +309,17 @@ export async function initialScamSync(
   let total = 0;
 
   while (true) {
-    const { data } = await client.query<ScamPhonesSnapshotResponse>({
+    const result: any = await client.query<ScamPhonesSnapshotResponse>({
       query: Q_SCAM_PHONES_SNAPSHOT,
       variables: { cursor, limit: batchSize },
       fetchPolicy: "network-only",
     });
 
+    const data: any = result?.data;
+
     console.log("[initialScamSync] = ", data);
     const page = data?.scamPhonesSnapshot;
+    if (!page) break;
     const items = page?.items ?? [];
     if (!items.length) break;
 
@@ -230,15 +362,18 @@ export async function deltaScamSync(
   let maxVersion: string | null = sinceVersion;
 
   while (true) {
-    let { data } = await client.query<ScamPhonesDeltaResponse>({
+    const result: any = await client.query<ScamPhonesDeltaResponse>({
       query: Q_SCAM_PHONES_DELTA,
       variables: { sinceVersion, cursor, limit: batchSize },
       fetchPolicy: "network-only",
     });
 
+    const data: any = result?.data;
+
     console.log("[deltaScamSync] = ", data);
 
-    let page = data?.scamPhonesDelta;
+    const page = data?.scamPhonesDelta;
+    if (!page) break;
     const items = page?.items ?? [];
     if (!items.length) break;
 
