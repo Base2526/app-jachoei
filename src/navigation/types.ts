@@ -18,6 +18,7 @@ export type RootStackParamList = {
   Chat: { to?: string; chatId?: string } | undefined;
 
   Setting: undefined;
+  Diagnostics: undefined;
   PostForm: { id?: string } | undefined;
 
   Notifications: undefined;

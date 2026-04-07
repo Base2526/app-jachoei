@@ -19,6 +19,15 @@ class SmsBlockerReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         Log.d(TRACE_TAG, "SmsBlockerReceiver.onReceive() ENTER action=${intent.action}")
+        DiagnosticsStore.record(
+            context = context,
+            topic = "SMS_RX",
+            msg = "onReceive action=${intent.action}",
+            data = mapOf(
+                "action" to (intent.action ?: ""),
+                "sdk" to android.os.Build.VERSION.SDK_INT,
+            ),
+        )
         CallBlockerModule.emitCallDebug("PHONE_RECEIVER onReceive action=${intent.action}")
         // Keep work lightweight in the broadcast path.
         // We do NOT abort/intercept SMS delivery and we do NOT read SMS history.
@@ -35,12 +44,12 @@ class SmsBlockerReceiver : BroadcastReceiver() {
                     val sender = sms.displayOriginatingAddress ?: ""
                     Log.d(TRACE_TAG, "Incoming SMS sender: $sender")
                     CallBlockerModule.emitCallDebug("PHONE_RECEIVER SMS sender raw=$sender")
-                    val normalized = PhoneUtils.normalize(sender)
-                    Log.d(TRACE_TAG, "Canonical sender: $normalized")
-                    CallBlockerModule.emitCallDebug("PHONE_RECEIVER SMS canonical=$normalized")
-                    if (normalized.isEmpty()) continue
+                    val canonical = PhoneUtils.normalize(sender)
+                    Log.d(TRACE_TAG, "Canonical sender: $canonical")
+                    CallBlockerModule.emitCallDebug("PHONE_RECEIVER SMS canonical=$canonical")
+                    if (canonical.isEmpty()) continue
 
-                    val status = lookupStatus(context, normalized)
+                    val status = lookupStatus(context, sender, canonical)
                     Log.d(TRACE_TAG, "SMS MatchResult localBlocked=${status.localBlocked} communitySpam=${status.isCommunitySpam} risk=${status.riskLevel}")
                     CallBlockerModule.emitCallDebug(
                         "PHONE_RECEIVER SMS MatchResult localBlocked=${status.localBlocked} communitySpam=${status.isCommunitySpam} risk=${status.riskLevel}"
@@ -49,7 +58,7 @@ class SmsBlockerReceiver : BroadcastReceiver() {
                         Log.d(TRACE_TAG, "SMS Decision: SELF_BLOCK (log only)")
                         BlockLogUtils.logEvent(
                             context = context,
-                            phone = normalized,
+                            phone = canonical,
                             rawPhone = sender,
                             type = "sms",
                             source = "self",
@@ -66,7 +75,7 @@ class SmsBlockerReceiver : BroadcastReceiver() {
                         Log.d(TRACE_TAG, "SMS Decision: COMMUNITY_SPAM warn-only (log only)")
                         BlockLogUtils.logEvent(
                             context = context,
-                            phone = normalized,
+                            phone = canonical,
                             rawPhone = sender,
                             type = "sms",
                             source = "community",
@@ -92,17 +101,56 @@ class SmsBlockerReceiver : BroadcastReceiver() {
 
     private fun openDb(context: Context): SQLiteDatabase? {
         val dbFile = context.getDatabasePath(DB_NAME)
-        Log.d(TRACE_TAG, "SMS DB present=${dbFile.exists()} path=${dbFile.absolutePath}")
-        if (!dbFile.exists()) {
-            Log.d(TRACE_TAG, "SMS DB NOT FOUND")
-            return null
-        }
-
-        return SQLiteDatabase.openDatabase(
-            dbFile.absolutePath,
-            null,
-            SQLiteDatabase.OPEN_READONLY
+        Log.d(TRACE_TAG, "SMS DB present=${dbFile.exists()} size=${dbFile.length()} pkg=${context.packageName} path=${dbFile.absolutePath}")
+        DiagnosticsStore.record(
+            context = context,
+            topic = "DB",
+            msg = "sms openDb present=${dbFile.exists()} size=${dbFile.length()}",
+            data = mapOf(
+                "db" to DB_NAME,
+                "path" to dbFile.absolutePath,
+                "exists" to dbFile.exists(),
+                "size" to dbFile.length(),
+            ),
         )
+
+        return try {
+            val db = SQLiteDatabase.openDatabase(
+                dbFile.absolutePath,
+                null,
+                SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.CREATE_IF_NECESSARY
+            )
+
+            // Ensure schema exists even if JS init hasn't run yet.
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS scam_phones (
+                  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                  phone_normalized  TEXT NOT NULL UNIQUE,
+                  report_count      INTEGER NOT NULL DEFAULT 0,
+                  last_report_at    TEXT,
+                  risk_level        INTEGER NOT NULL DEFAULT 0,
+                  tags              TEXT,
+                  server_updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  server_deleted    INTEGER NOT NULL DEFAULT 0,
+                  local_blocked     INTEGER NOT NULL DEFAULT 0
+                );
+                """.trimIndent()
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_scam_phones_phone ON scam_phones(phone_normalized);")
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_scam_phones_risk ON scam_phones(risk_level DESC);")
+
+            db
+        } catch (e: Exception) {
+            Log.d(TRACE_TAG, "SMS openDb ERROR: ${e.message}")
+            DiagnosticsStore.record(
+                context = context,
+                topic = "DB",
+                msg = "sms openDb ERROR: ${e.message}",
+                data = mapOf("db" to DB_NAME),
+            )
+            null
+        }
     }
 
     private data class ScamPhoneStatus(
@@ -111,9 +159,9 @@ class SmsBlockerReceiver : BroadcastReceiver() {
         val riskLevel: Int,
     )
 
-    private fun lookupStatus(context: Context, phoneCanonical: String): ScamPhoneStatus {
-        val variants = PhoneUtils.variants(phoneCanonical)
-        Log.d(TRACE_TAG, "SMS Variants: ${variants.joinToString(",")}")
+    private fun lookupStatus(context: Context, raw: String, phoneCanonical: String): ScamPhoneStatus {
+        val variants = PhoneUtils.variantsFromRaw(raw)
+        Log.d(TRACE_TAG, "SMS Variants(count=${variants.size}): ${variants.joinToString(",")}")
 
         return try {
             val db = openDb(context) ?: return ScamPhoneStatus(false, false, 0)

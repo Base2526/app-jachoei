@@ -27,6 +27,7 @@ import { subscribeBookmarkStatusChanged } from "../events/bookmarkSync";
 
 
 import { useAuth } from "../auth/AuthProvider";
+import { useHiddenDiagnosticsMode } from "../lib/hiddenDiagnostics";
 
 // ================= GraphQL =================
 
@@ -256,6 +257,7 @@ function Pill({
 export default function SettingsScreen() {
   const navigation = useNavigation<any>();
   const { t, setLanguage: setAppLanguage } = useI18n();
+  const hiddenDiag = useHiddenDiagnosticsMode();
   const [active, setActive] = useState<MenuKey>("profile");
 
   // Me/Profile
@@ -966,6 +968,17 @@ export default function SettingsScreen() {
       </Field>
 
       <Text style={styles.hint}>{t("settings.password_hint")}</Text>
+
+      {hiddenDiag.enabled ? (
+        <>
+          <Divider />
+          <Field label="Diagnostics" hint="Release-safe debug info (DB + blocker events)">
+            <Pressable style={styles.smallBtn} onPress={() => navigation.navigate("Diagnostics")}>
+              <Text style={styles.smallBtnText}>Open diagnostics</Text>
+            </Pressable>
+          </Field>
+        </>
+      ) : null}
     </View>
   );
 
