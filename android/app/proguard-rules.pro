@@ -18,3 +18,16 @@
 -keep class com.jachoei.CallScreenRoleModule { *; }
 -keep class com.jachoei.CallScreenRolePackage { *; }
 -keep class com.jachoei.DiagnosticsStore { *; }
+
+# --- Call screening + DB lookup helpers (defensive) ---
+-keep class com.jachoei.PhoneUtils { *; }
+-keep class com.jachoei.BlockLogUtils { *; }
+-keep class com.jachoei.JachoeiNotificationUtils { *; }
+
+# Keep React Native bridge annotations and generated/native binding bits.
+-keepclassmembers class * {
+	@com.facebook.react.bridge.ReactMethod <methods>;
+}
+
+# Kotlin: keep metadata used by reflection/stacktraces (low risk).
+-keep class kotlin.Metadata { *; }

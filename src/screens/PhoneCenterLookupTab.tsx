@@ -28,6 +28,7 @@ import {
 } from "../hooks/useJachoeiStatusKeys";
 
 import { addBlockedNumber } from "../native/CallBlocker";
+import { promptCallScreeningIfNeededWithOptions } from "../utils/callScreening";
 
 // ======================================================
 // GraphQL (PHONE)
@@ -909,6 +910,7 @@ export default function PhoneCenterLookupTab() {
       // Update native/local DB (Android) for offline screening + notification
       if (Platform.OS === "android") {
         try {
+          await promptCallScreeningIfNeededWithOptions({ cooldownMs: 30_000 });
           await addBlockedNumber(tel);
         } catch {
           // best-effort only

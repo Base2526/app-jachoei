@@ -35,6 +35,7 @@ import {
 import { subscribeBookmarkStatusChanged } from "../events/bookmarkSync";
 
 import { addBlockedNumber } from "../native/CallBlocker";
+import { promptCallScreeningIfNeededWithOptions } from "../utils/callScreening";
 
 import {
   BottomSheetBlockReportModal,
@@ -549,6 +550,7 @@ export const PostViewScreen: React.FC<Props> = ({ route, navigation }) => {
         // Update native/local DB (Android) for offline screening + notification
         if (Platform.OS === "android") {
           try {
+            await promptCallScreeningIfNeededWithOptions({ cooldownMs: 30_000 });
             await addBlockedNumber(tel);
           } catch {
             // best-effort only

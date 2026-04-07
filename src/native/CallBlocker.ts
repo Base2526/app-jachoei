@@ -178,6 +178,45 @@ const { CallScreenRole } = NativeModules as {
   CallScreenRole: {
     isCallScreeningEnabled(): Promise<boolean>;
     requestCallScreeningRole(): Promise<boolean>;
+    getCallScreeningStatus(): Promise<{
+      sdk: number;
+      packageName: string;
+      supported: boolean;
+      enabled: boolean;
+      state?: "ENABLED" | "NOT_ENABLED" | "UNSUPPORTED" | "UNKNOWN";
+      reason: string;
+      roleHeld?: boolean;
+      telecomDefaultPkg?: string;
+      manufacturer?: string;
+      model?: string;
+      isEmulator?: boolean;
+    }>;
+    openCallerIdAndSpamSettings(): Promise<boolean>;
+    getAppInstallDiagnostics(): Promise<{
+      packageName: string;
+      applicationId: string;
+      buildType: string;
+      debug: boolean;
+      versionCode: number;
+      versionName: string;
+      installer?: string;
+      signingCertSha256?: string;
+    }>;
+    getCallScreeningSummary(): Promise<{
+      lastServiceCreateAt?: number;
+      lastServiceBindAt?: number;
+      lastScreenAt?: number;
+      lastDecision?: string;
+      lastRaw?: string;
+      lastCanonical?: string;
+      lastError?: string;
+    }>;
+    getLastCallScreeningEvent(): Promise<{
+      found: boolean;
+      ts?: number;
+      msg?: string;
+      data?: Record<string, any>;
+    }>;
   };
 };
 
@@ -185,4 +224,24 @@ export async function ensureCallScreeningRole(): Promise<boolean> {
   const held = await CallScreenRole.isCallScreeningEnabled();
   if (held) return true;
   return await CallScreenRole.requestCallScreeningRole();
+}
+
+export function getCallScreeningStatus() {
+  return CallScreenRole.getCallScreeningStatus();
+}
+
+export function openCallerIdAndSpamSettings() {
+  return CallScreenRole.openCallerIdAndSpamSettings();
+}
+
+export function getLastCallScreeningEvent() {
+  return CallScreenRole.getLastCallScreeningEvent();
+}
+
+export function getCallScreeningSummary() {
+  return CallScreenRole.getCallScreeningSummary();
+}
+
+export function getAppInstallDiagnostics() {
+  return CallScreenRole.getAppInstallDiagnostics();
 }

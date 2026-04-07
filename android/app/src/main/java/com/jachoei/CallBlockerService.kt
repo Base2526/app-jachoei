@@ -199,6 +199,10 @@ class CallBlockerService : CallScreeningService() {
                 "sdk=${android.os.Build.VERSION.SDK_INT} dir=${callDetails.callDirection} handle=${callDetails.handle}"
             )
 
+            // Spec-required explicit key/value log lines (real-device friendly).
+            Log.i(TAG, "CALL_SCREEN_START")
+            Log.i(TAG, "APP pkg=$packageName appId=${BuildConfig.APPLICATION_ID} buildType=${BuildConfig.BUILD_TYPE} debug=${BuildConfig.DEBUG} vc=${BuildConfig.VERSION_CODE} vn=${BuildConfig.VERSION_NAME}")
+
             Log.d(TRACE_TAG, "onScreenCall ENTER")
             CallBlockerModule.emitCallDebug(
                 source = "CALL_SCREEN_SERVICE",
@@ -209,6 +213,7 @@ class CallBlockerService : CallScreeningService() {
             val number = extractRawNumber(callDetails)
             ck("CALL_SCREEN_NUMBER_RAW", "raw='$number'")
             Log.d(TRACE_TAG, "Incoming number: $number")
+            Log.i(TAG, "RAW_NUMBER=$number")
 
             val digits = PhoneUtils.digitsOnly(number)
             val canonical = PhoneUtils.normalize(number)
@@ -217,16 +222,37 @@ class CallBlockerService : CallScreeningService() {
                 "CALL_SCREEN_NUMBER_NORMALIZED",
                 "digits='$digits' canonical='$canonical' variants=${safeJoin(variants)}"
             )
+            Log.i(TAG, "NORMALIZED=digits:$digits canonical:$canonical variants:${safeJoin(variants)}")
 
             val dbFile = getDatabasePath(DB_NAME)
             ck(
                 "CALL_SCREEN_DB_PATH",
                 "db=$DB_NAME path=${dbFile.absolutePath} exists=${dbFile.exists()} size=${dbFile.length()}"
             )
+            Log.i(TAG, "DB_PATH=${dbFile.absolutePath} exists=${dbFile.exists()} size=${dbFile.length()}")
 
             if (canonical.isEmpty()) {
                 ck("CALL_SCREEN_DECISION", "ALLOW reason=empty_or_private")
                 ck("CALL_SCREEN_RESPONSE_ALLOW", "disallow=false")
+                Log.i(TAG, "MATCH_FOUND=false")
+                Log.i(TAG, "DECISION=ALLOW")
+                Log.i(TAG, "RESPONSE=disallow:false")
+
+                DiagnosticsStore.record(
+                    context = this,
+                    topic = "CALL_SCREEN",
+                    msg = "ALLOW empty_or_private",
+                    data = mapOf(
+                        "raw" to number,
+                        "digits" to digits,
+                        "canonical" to canonical,
+                        "pkg" to packageName,
+                        "buildType" to BuildConfig.BUILD_TYPE,
+                        "vc" to BuildConfig.VERSION_CODE,
+                        "decision" to "ALLOW",
+                        "reason" to "empty_or_private",
+                    ),
+                )
                 respondToCall(callDetails, CallResponse.Builder().setDisallowCall(false).build())
                 return
             }
@@ -236,6 +262,7 @@ class CallBlockerService : CallScreeningService() {
                 "CALL_SCREEN_LOOKUP_RESULT",
                 "rowsFound=${status.rowsFound} matched=${status.matchedPhoneNormalized ?: ""} local_blocked=${status.localBlockedRaw} risk=${status.riskLevel} deleted=${status.serverDeletedRaw}"
             )
+            Log.i(TAG, "MATCH_FOUND=${status.rowsFound > 0}")
             if (status.rowsFound > 0) {
                 ck(
                     "CALL_SCREEN_MATCHED_ROW",
@@ -256,6 +283,7 @@ class CallBlockerService : CallScreeningService() {
             when {
                 status.localBlocked -> {
                     ck("CALL_SCREEN_DECISION", "BLOCK reason=local_blocked")
+                    Log.i(TAG, "DECISION=BLOCK")
                     CallBlockerModule.emitCallDebug(
                         source = "BLOCK_DECISION",
                         msg = "SELF_BLOCK -> REJECT",
@@ -284,19 +312,43 @@ class CallBlockerService : CallScreeningService() {
                     val response = CallResponse.Builder()
                         .setDisallowCall(true)
                         .setRejectCall(true)
-                        .setSkipCallLog(true)
-                        .setSkipNotification(true)
+                        // Spec requirement: do NOT skip call log/notification for blocked calls.
+                        .setSkipCallLog(false)
+                        .setSkipNotification(false)
                         .build()
 
                     ck(
                         "CALL_SCREEN_RESPONSE_BLOCK",
-                        "disallow=true reject=true skipLog=true skipNoti=true"
+                        "disallow=true reject=true skipLog=false skipNoti=false"
+                    )
+
+                    Log.i(TAG, "RESPONSE=disallow:true reject:true skipLog:false skipNoti:false")
+
+                    DiagnosticsStore.record(
+                        context = this,
+                        topic = "CALL_SCREEN",
+                        msg = "BLOCK local_blocked",
+                        data = mapOf(
+                            "raw" to number,
+                            "digits" to digits,
+                            "canonical" to canonical,
+                            "variants" to safeJoin(variants),
+                            "matched" to (status.matchedPhoneNormalized ?: ""),
+                            "local_blocked" to status.localBlockedRaw,
+                            "risk_level" to status.riskLevel,
+                            "server_deleted" to status.serverDeletedRaw,
+                            "pkg" to packageName,
+                            "buildType" to BuildConfig.BUILD_TYPE,
+                            "vc" to BuildConfig.VERSION_CODE,
+                            "decision" to "BLOCK",
+                        ),
                     )
                     respondToCall(callDetails, response)
                 }
 
                 status.isCommunitySpam -> {
                     ck("CALL_SCREEN_DECISION", "ALLOW reason=community_spam_warn_only risk=${status.riskLevel}")
+                    Log.i(TAG, "DECISION=WARN")
                     CallBlockerModule.emitCallDebug(
                         source = "BLOCK_DECISION",
                         msg = "COMMUNITY_SPAM -> WARN_ONLY",
@@ -324,18 +376,70 @@ class CallBlockerService : CallScreeningService() {
                     CallBlockerModule.emitIncomingSpamCall(canonical, status.riskLevel, number)
 
                     ck("CALL_SCREEN_RESPONSE_ALLOW", "disallow=false")
+                    Log.i(TAG, "RESPONSE=disallow:false")
+
+                    DiagnosticsStore.record(
+                        context = this,
+                        topic = "CALL_SCREEN",
+                        msg = "WARN community_spam_warn_only",
+                        data = mapOf(
+                            "raw" to number,
+                            "digits" to digits,
+                            "canonical" to canonical,
+                            "matched" to (status.matchedPhoneNormalized ?: ""),
+                            "risk_level" to status.riskLevel,
+                            "pkg" to packageName,
+                            "buildType" to BuildConfig.BUILD_TYPE,
+                            "vc" to BuildConfig.VERSION_CODE,
+                            "decision" to "WARN",
+                        ),
+                    )
                     respondToCall(callDetails, CallResponse.Builder().setDisallowCall(false).build())
                 }
 
                 else -> {
                     ck("CALL_SCREEN_DECISION", "ALLOW reason=no_match")
                     ck("CALL_SCREEN_RESPONSE_ALLOW", "disallow=false")
+                    Log.i(TAG, "DECISION=ALLOW")
+                    Log.i(TAG, "RESPONSE=disallow:false")
+
+                    DiagnosticsStore.record(
+                        context = this,
+                        topic = "CALL_SCREEN",
+                        msg = "ALLOW no_match",
+                        data = mapOf(
+                            "raw" to number,
+                            "digits" to digits,
+                            "canonical" to canonical,
+                            "variants" to safeJoin(variants),
+                            "pkg" to packageName,
+                            "buildType" to BuildConfig.BUILD_TYPE,
+                            "vc" to BuildConfig.VERSION_CODE,
+                            "decision" to "ALLOW",
+                            "reason" to "no_match",
+                        ),
+                    )
                     respondToCall(callDetails, CallResponse.Builder().setDisallowCall(false).build())
                 }
             }
         } catch (e: Exception) {
             ck("CALL_SCREEN_ERROR", "${e.message ?: "unknown"}")
             Log.e(TAG, "onScreenCall ERROR", e)
+
+            // Release-safe persisted error diagnostics.
+            DiagnosticsStore.record(
+                context = this,
+                topic = "CALL_SCREEN",
+                msg = "ERROR ${e.message ?: "unknown"}",
+                data = mapOf(
+                    "error" to (e.message ?: "unknown"),
+                    "pkg" to packageName,
+                    "buildType" to BuildConfig.BUILD_TYPE,
+                    "vc" to BuildConfig.VERSION_CODE,
+                ),
+            )
+
+            Log.i(TAG, "FALLBACK_REASON=exception")
             // Fail-safe: do not crash the screening binder path.
             try {
                 respondToCall(callDetails, CallResponse.Builder().setDisallowCall(false).build())

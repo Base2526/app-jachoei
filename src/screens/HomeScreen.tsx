@@ -52,6 +52,7 @@ import {
 } from "../hooks/useJachoeiStatusKeys";
 
 import { subscribeBookmarkStatusChanged } from "../events/bookmarkSync";
+import { subscribeHomeInvalidate } from "../events/homeInvalidate";
 import { formatDateTime } from "../utils/date";
 
 import type { RootStackParamList, TabsParamList } from "../navigation/types";
@@ -77,6 +78,7 @@ import {
 } from "../lib/toast";
 
 import { addBlockedNumber, unblockNativeNumber } from "../native/CallBlocker";
+import { promptCallScreeningIfNeededWithOptions } from "../utils/callScreening";
 
 // =======================
 // GraphQL
@@ -409,6 +411,7 @@ type HomeRoute = RouteProp<TabsParamList, "HomeScreen">;
 
 
 export const HomeScreen: React.FC = () => {
+  const HOME_TAG = "HOME";
   const { width: windowWidth } = useWindowDimensions();
   const isTablet =
     Platform.OS === "ios"
@@ -459,6 +462,16 @@ export const HomeScreen: React.FC = () => {
   const [bankModalList, setBankModalList] = useState<
     Array<{ bank_name?: string | null; seller_account?: string | null }>
   >([]);
+
+  // Scroll + refresh behavior
+  const listRef = useRef<FlatList<PostItem> | null>(null);
+  const scrollOffsetRef = useRef(0);
+  const hasLoadedOnceRef = useRef(false);
+  const lastFetchAtRef = useRef(0);
+  const lastFocusAtRef = useRef(0);
+  const refreshRequestedRef = useRef(false);
+  const metaRefreshRequestedRef = useRef(false);
+  const STALE_MS = 15 * 60 * 1000;
 
   const canLoadMore = items.length < total;
 
@@ -613,13 +626,44 @@ export const HomeScreen: React.FC = () => {
     [q]
   );
 
-  const loadFirst = useCallback(async () => {
+  const refreshMeta = useCallback(
+    async (reason: string) => {
+      try {
+        console.log(`[${HOME_TAG}] HOME_FETCH_START reason=${reason}`);
+        const t0 = Date.now();
+        await loadBlocked();
+        await loadReportedBank();
+        await refetchStatusKeys();
+        metaRefreshRequestedRef.current = false;
+        console.log(
+          `[${HOME_TAG}] HOME_FETCH_DONE reason=${reason} dtMs=${Date.now() - t0}`
+        );
+      } catch (e) {
+        console.log(`[${HOME_TAG}] HOME_FETCH_ERROR reason=${reason}`);
+      }
+    },
+    [loadBlocked, loadReportedBank, refetchStatusKeys]
+  );
+
+  const loadFirst = useCallback(async (reason: string) => {
     setLoading(true);
     try {
+      console.log(`[${HOME_TAG}] HOME_FETCH_START reason=${reason}`);
+      const t0 = Date.now();
       await fetchPage(1, "replace");
       await loadBlocked();
       await loadReportedBank();
-      await refetchStatusKeys();
+      // Avoid aggressive refetch on every focus; Apollo cache/subscriptions/AppState handle most updates.
+      if (reason === "manual" || reason === "stale" || reason === "invalidated") {
+        await refetchStatusKeys();
+      }
+
+      hasLoadedOnceRef.current = true;
+      lastFetchAtRef.current = Date.now();
+      refreshRequestedRef.current = false;
+      console.log(
+        `[${HOME_TAG}] HOME_FETCH_DONE reason=${reason} dtMs=${Date.now() - t0}`
+      );
     } catch (e: any) {
       Alert.alert("Load error", e?.message || "unknown");
     } finally {
@@ -629,13 +673,68 @@ export const HomeScreen: React.FC = () => {
 
   useFocusEffect(
     useCallback(() => {
-      loadFirst();
-    }, [loadFirst])
+      const now = Date.now();
+      lastFocusAtRef.current = now;
+      console.log(`[${HOME_TAG}] HOME_FOCUS`);
+
+      const neverLoaded = !hasLoadedOnceRef.current;
+      const stale = lastFetchAtRef.current > 0 && now - lastFetchAtRef.current > STALE_MS;
+      const requested = refreshRequestedRef.current;
+      const metaRequested = metaRefreshRequestedRef.current;
+
+      if (neverLoaded) {
+        void loadFirst("initial");
+      } else if (metaRequested) {
+        // Keep feed + scroll stable; refresh only keys/maps.
+        void refreshMeta("invalidated");
+      } else if (requested) {
+        // Explicit full refresh (pull-to-refresh).
+        void loadFirst("manual");
+      } else if (stale) {
+        // Prefer lightweight refresh after time away.
+        void refreshMeta("stale");
+      } else {
+        // Normal tab return: keep list + restore scroll.
+        const offset = Math.max(0, scrollOffsetRef.current || 0);
+        if (offset > 0) {
+          console.log(`[${HOME_TAG}] HOME_SCROLL_OFFSET_RESTORE offset=${offset}`);
+          requestAnimationFrame(() => {
+            try {
+              listRef.current?.scrollToOffset({ offset, animated: false });
+            } catch {
+              // ignore
+            }
+          });
+        }
+        console.log(`[${HOME_TAG}] HOME_FETCH_SKIPPED reason=focus_no_need`);
+      }
+
+      return () => {
+        console.log(`[${HOME_TAG}] HOME_BLUR`);
+        console.log(
+          `[${HOME_TAG}] HOME_SCROLL_OFFSET_SAVE offset=${Math.max(0, scrollOffsetRef.current || 0)}`
+        );
+      };
+    }, [loadFirst, refreshMeta])
   );
 
   useEffect(() => {
-    loadFirst();
-  }, [loadFirst]);
+    console.log(`[${HOME_TAG}] HOME_MOUNT`);
+
+    const unsub = subscribeHomeInvalidate((e) => {
+      const r = e?.reason ? String(e.reason) : "(unknown)";
+      console.log(`[${HOME_TAG}] HOME_INVALIDATION_FLAG source=event reason=${r}`);
+      metaRefreshRequestedRef.current = true;
+    });
+    return () => {
+      try {
+        unsub?.();
+      } catch {
+        // ignore
+      }
+      console.log(`[${HOME_TAG}] HOME_UNMOUNT`);
+    };
+  }, []);
 
   // ✅ รับผล bookmark ที่ยิงมาจาก PostView (merge params)
   useEffect(() => {
@@ -657,8 +756,22 @@ export const HomeScreen: React.FC = () => {
     } as any);
   }, [route.params, navigation]);
 
+  // Optional: one-time invalidation flag (set by other screens) to refresh Home only when truly needed.
+  useEffect(() => {
+    const p: any = route.params as any;
+    const inv = p?.homeInvalidate;
+    if (!inv) return;
+
+    metaRefreshRequestedRef.current = true;
+    console.log(`[${HOME_TAG}] HOME_INVALIDATION_FLAG value=${String(inv)}`);
+
+    // Clear so it won't retrigger.
+    navigation.setParams({ homeInvalidate: undefined } as any);
+  }, [navigation, route.params]);
+
   const onRefresh = useCallback(async () => {
-    await loadFirst();
+    refreshRequestedRef.current = true;
+    await loadFirst("manual");
   }, [loadFirst]);
 
   const onLoadMore = useCallback(async () => {
@@ -984,6 +1097,7 @@ export const HomeScreen: React.FC = () => {
         // 1.1) Update native/local DB (Android) for offline screening + notification
         if (Platform.OS === "android") {
           try {
+            await promptCallScreeningIfNeededWithOptions({ cooldownMs: 30_000 });
             await addBlockedNumber(tel);
           } catch {
             // best-effort only
@@ -1620,10 +1734,17 @@ export const HomeScreen: React.FC = () => {
   return (
     <View style={styles.container}>
       <FlatList
+        ref={(r) => {
+          listRef.current = r as any;
+        }}
         data={items}
         keyExtractor={(it) => String(it.id)}
         renderItem={renderPostItem}
         contentContainerStyle={{ padding: 12, paddingBottom: 24 }}
+        onScroll={(e) => {
+          scrollOffsetRef.current = e.nativeEvent.contentOffset?.y || 0;
+        }}
+        scrollEventThrottle={16}
         refreshControl={
           <RefreshControl
             refreshing={loading && page === 1}
