@@ -155,7 +155,107 @@ export const translations: Record<AppLanguage, TranslationDict> = {
       home: "Home",
       check_phone: "Check Phone",
       blocked: "Blocked",
+      more: "More",
       app_title: "จ่าเฉย (JACHOEI)",
+    },
+    more: {
+      help_title: "Help",
+      privacy_title: "Privacy",
+      about_title: "About app",
+      intro_badge: "About Jachoei",
+      intro_title: "Scam checking that stays practical",
+      intro_description:
+        "Jachoei is an online scam checking platform built around real user reports. Users can check phone numbers, bank accounts, suspicious links, and page names in one place.",
+      tools_title: "Safety Tools",
+      tools_description: "Start with the checks you need most.",
+      caller_spam_title: "Caller ID & spam",
+      caller_spam_desc:
+        "This must be enabled for real-time spam warnings and call blocking to work on supported Android devices.",
+      caller_spam_label: "Current status",
+      caller_spam_status_enabled: "Enabled",
+      caller_spam_status_not_enabled: "Not enabled",
+      caller_spam_status_unsupported: "Unsupported",
+      caller_spam_status_checking: "Checking...",
+      caller_spam_enabled_hint:
+        "Jachoei can receive real-time call screening callbacks on this device.",
+      open_settings: "Open Settings",
+      check_again: "Check Again",
+      tool_phone_title: "Check phone number",
+      tool_phone_desc:
+        "Open phone lookup to review warnings, report count, and history before you answer or call back.",
+      tool_bank_title: "Check bank account",
+      tool_bank_desc:
+        "Open bank lookup to review community-submitted report data before making a transfer.",
+      tool_link_title: "Check suspicious link",
+      tool_link_desc: "Link checking is being prepared for a future release.",
+      tool_page_title: "Check page name",
+      tool_page_desc: "Page-name checking is being prepared for a future release.",
+      support_title: "Support",
+      support_description: "Helpful pages and lightweight app info.",
+      help_desc:
+        "Simple guidance for checking, reporting, warnings, and urgent scam response.",
+      privacy_desc:
+        "A short summary of how reports and permissions are used inside the app.",
+      about_desc:
+        "Mission, supported scam-check areas, and app version details.",
+      learn_more_title: "Why people use Jachoei",
+      learn_more_desc:
+        "Real user reports help surface risky numbers and accounts faster so users can receive warnings and track cases more easily.",
+      coming_soon: "Coming soon",
+      app_version_short: "Version {{version}}",
+      help_intro_title: "Use Jachoei with confidence",
+      help_intro_desc:
+        "These quick answers explain how to check suspicious information, report details, and understand what the app's warnings mean.",
+      help_phone_title: "How to check a suspicious phone number",
+      help_phone_body:
+        "Open Check Phone, enter the number, and review the risk level, report count, and community details before you respond.",
+      help_report_title: "How to report scam information",
+      help_report_body:
+        "After checking a result, use the report action to add what happened. Clear details help future warnings become more useful.",
+      help_blocked_title: 'What "Blocked" means',
+      help_blocked_body:
+        "Blocked shows numbers you chose to block or manage, so your own protection actions stay easy to review.",
+      help_local_vs_community_title: "Local block vs community report",
+      help_local_vs_community_body:
+        "A local block affects your own device behavior, while a community report helps other users see risk signals when they search.",
+      help_urgent_title: "If the scam is urgent",
+      help_urgent_body:
+        "Stop replying, avoid sending more money, secure your accounts, keep screenshots or receipts, and contact your bank or platform immediately if needed.",
+      help_quick_actions_title: "Quick actions",
+      help_quick_actions_desc: "Jump back into the tools when you need them.",
+      privacy_intro_title: "Privacy summary",
+      privacy_intro_desc:
+        "Jachoei uses report information to improve scam checking and warnings. This page summarizes app behavior in simple language and does not replace a full legal policy.",
+      privacy_submit_title: "What information users may submit",
+      privacy_submit_body:
+        "Reports can include scam-related details such as phone numbers, bank accounts, notes, and case context that users choose to provide.",
+      privacy_reports_title: "How reports help warnings",
+      privacy_reports_body:
+        "Community reports help the app surface risk levels, report counts, and warning signals so users can check suspicious information faster.",
+      privacy_permissions_title: "Permissions only when relevant",
+      privacy_permissions_body:
+        "The app may request device permissions only for features you use, such as notifications or call-blocking related tools.",
+      privacy_control_title: "User control",
+      privacy_control_body:
+        "You can control language, notification preferences, and device-level permissions through app settings and your phone's system settings.",
+      about_intro_title: "About Jachoei",
+      about_intro_desc:
+        "Jachoei helps users detect and avoid online scams using practical checks based on real user reports.",
+      about_mission_title: "What Jachoei helps with",
+      about_mission_body:
+        "Users can check scam-related information, receive warnings earlier, and keep track of scam cases more easily.",
+      about_checks_title: "Supported scam-check areas",
+      about_checks_phone: "Phone number",
+      about_checks_bank: "Bank account",
+      about_checks_link: "Suspicious link",
+      about_checks_page: "Page name",
+      about_app_info_title: "About app",
+      about_app_name_label: "App name",
+      about_app_name_value: "Jachoei",
+      about_version_label: "Version",
+      about_build_label: "Build",
+      about_platform_label: "Platform",
+      about_loading: "Loading app info...",
     },
     app: {
       preparing_local_db: "Preparing local database...",
@@ -401,7 +501,104 @@ export const translations: Record<AppLanguage, TranslationDict> = {
       home: "หน้าแรก",
       check_phone: "ตรวจเบอร์",
       blocked: "บล็อก",
+      more: "เพิ่มเติม",
       app_title: "จ่าเฉย (JACHOEI)",
+    },
+    more: {
+      help_title: "ช่วยเหลือ",
+      privacy_title: "ความเป็นส่วนตัว",
+      about_title: "เกี่ยวกับแอป",
+      intro_badge: "เกี่ยวกับ Jachoei",
+      intro_title: "ศูนย์ตรวจสอบมิจฉาชีพที่ใช้งานได้จริง",
+      intro_description:
+        "Jachoei เป็นแพลตฟอร์มตรวจสอบข้อมูลมิจฉาชีพออนไลน์จากรายงานผู้ใช้จริง รองรับการตรวจเบอร์โทร เลขบัญชี ลิงก์น่าสงสัย และชื่อเพจในที่เดียว",
+      tools_title: "เครื่องมือความปลอดภัย",
+      tools_description: "เริ่มจากการตรวจสอบที่คุณต้องการมากที่สุด",
+      caller_spam_title: "Caller ID & spam",
+      caller_spam_desc:
+        "ต้องเปิดใช้งานส่วนนี้ก่อน จึงจะรองรับคำเตือนสแปมแบบเรียลไทม์และการบล็อกสายบนอุปกรณ์ Android ที่รองรับ",
+      caller_spam_label: "สถานะปัจจุบัน",
+      caller_spam_status_enabled: "เปิดใช้งานแล้ว",
+      caller_spam_status_not_enabled: "ยังไม่ได้เปิดใช้งาน",
+      caller_spam_status_unsupported: "อุปกรณ์ไม่รองรับ",
+      caller_spam_status_checking: "กำลังตรวจสอบ...",
+      caller_spam_enabled_hint:
+        "Jachoei พร้อมรับสถานะคัดกรองสายแบบเรียลไทม์บนอุปกรณ์นี้",
+      open_settings: "เปิดการตั้งค่า",
+      check_again: "ตรวจสอบอีกครั้ง",
+      tool_phone_title: "ตรวจเบอร์โทร",
+      tool_phone_desc:
+        "เปิดหน้าตรวจเบอร์เพื่อดูคำเตือน จำนวนรายงาน และประวัติก่อนรับสายหรือโทรกลับ",
+      tool_bank_title: "ตรวจเลขบัญชี",
+      tool_bank_desc:
+        "เปิดหน้าตรวจเลขบัญชีเพื่อดูข้อมูลรายงานจากชุมชนก่อนโอนเงิน",
+      tool_link_title: "ตรวจลิงก์น่าสงสัย",
+      tool_link_desc: "ฟีเจอร์ตรวจลิงก์กำลังเตรียมสำหรับเวอร์ชันถัดไป",
+      tool_page_title: "ตรวจชื่อเพจ",
+      tool_page_desc: "ฟีเจอร์ตรวจชื่อเพจกำลังเตรียมสำหรับเวอร์ชันถัดไป",
+      support_title: "ข้อมูลช่วยเหลือ",
+      support_description: "หน้าข้อมูลสำคัญและรายละเอียดแอปแบบกระชับ",
+      help_desc: "คู่มือสั้น ๆ สำหรับการตรวจสอบ การรายงาน คำเตือน และกรณีเร่งด่วน",
+      privacy_desc: "สรุปสั้น ๆ ว่าแอปใช้รายงานและสิทธิ์ต่าง ๆ อย่างไร",
+      about_desc: "ภารกิจของ Jachoei ขอบเขตการตรวจสอบ และข้อมูลเวอร์ชันแอป",
+      learn_more_title: "ทำไมผู้ใช้ถึงเลือก Jachoei",
+      learn_more_desc:
+        "รายงานจากผู้ใช้จริงช่วยให้ระบบแสดงความเสี่ยงของเบอร์และบัญชีได้เร็วขึ้น เพื่อให้ผู้ใช้รับคำเตือนได้ไวและติดตามเคสได้ง่ายขึ้น",
+      coming_soon: "เร็ว ๆ นี้",
+      app_version_short: "เวอร์ชัน {{version}}",
+      help_intro_title: "ใช้งาน Jachoei อย่างมั่นใจ",
+      help_intro_desc:
+        "คำอธิบายสั้น ๆ เหล่านี้ช่วยให้เข้าใจการตรวจสอบข้อมูลน่าสงสัย การรายงาน และความหมายของคำเตือนในแอป",
+      help_phone_title: "วิธีตรวจเบอร์โทรที่น่าสงสัย",
+      help_phone_body:
+        "เปิดหน้า ตรวจเบอร์ กรอกหมายเลข แล้วดูระดับความเสี่ยง จำนวนรายงาน และข้อมูลจากชุมชนก่อนตอบกลับ",
+      help_report_title: "วิธีรายงานข้อมูลน่าสงสัย",
+      help_report_body:
+        "หลังตรวจสอบผลลัพธ์แล้ว ใช้ปุ่มรายงานเพื่อเพิ่มรายละเอียดของเหตุการณ์ ข้อมูลที่ชัดเจนช่วยให้คำเตือนในอนาคตมีประโยชน์มากขึ้น",
+      help_blocked_title: 'ความหมายของ "บล็อก"',
+      help_blocked_body:
+        "หน้า บล็อก แสดงเบอร์ที่คุณเลือกบล็อกหรือจัดการไว้ เพื่อให้ทบทวนการป้องกันของตัวเองได้ง่าย",
+      help_local_vs_community_title: "บล็อกในเครื่อง กับ รายงานจากชุมชน ต่างกันอย่างไร",
+      help_local_vs_community_body:
+        "การบล็อกในเครื่องมีผลกับอุปกรณ์ของคุณ ส่วนรายงานจากชุมชนช่วยให้ผู้ใช้อื่นเห็นสัญญาณความเสี่ยงเมื่อค้นหา",
+      help_urgent_title: "ถ้าเป็นกรณีเร่งด่วนควรทำอย่างไร",
+      help_urgent_body:
+        "หยุดตอบกลับทันที อย่าโอนเพิ่ม รีบป้องกันบัญชีของคุณ เก็บสลิปหรือภาพหน้าจอ และติดต่อธนาคารหรือแพลตฟอร์มที่เกี่ยวข้องโดยเร็วหากจำเป็น",
+      help_quick_actions_title: "ทางลัดที่ใช้บ่อย",
+      help_quick_actions_desc: "กลับไปยังเครื่องมือหลักได้ทันทีเมื่อจำเป็น",
+      privacy_intro_title: "สรุปความเป็นส่วนตัว",
+      privacy_intro_desc:
+        "Jachoei ใช้ข้อมูลรายงานเพื่อช่วยปรับปรุงการตรวจสอบและคำเตือนเกี่ยวกับมิจฉาชีพ หน้านี้เป็นเพียงสรุปพฤติกรรมของแอปแบบเข้าใจง่าย ไม่ใช่เอกสารกฎหมายฉบับเต็ม",
+      privacy_submit_title: "ข้อมูลที่ผู้ใช้อาจส่งเข้ามา",
+      privacy_submit_body:
+        "รายงานอาจมีข้อมูลเกี่ยวกับการหลอกลวง เช่น เบอร์โทร เลขบัญชี บันทึกข้อความ และบริบทของเคสที่ผู้ใช้เลือกส่งเข้ามา",
+      privacy_reports_title: "รายงานช่วยให้คำเตือนทำงานอย่างไร",
+      privacy_reports_body:
+        "รายงานจากชุมชนช่วยให้ระบบแสดงระดับความเสี่ยง จำนวนรายงาน และสัญญาณเตือน เพื่อให้ผู้ใช้ตรวจสอบข้อมูลต้องสงสัยได้เร็วขึ้น",
+      privacy_permissions_title: "ขอสิทธิ์เมื่อเกี่ยวข้องกับฟีเจอร์เท่านั้น",
+      privacy_permissions_body:
+        "แอปจะขอสิทธิ์ของอุปกรณ์เฉพาะเมื่อจำเป็นต่อฟีเจอร์ที่คุณใช้งาน เช่น การแจ้งเตือน หรือเครื่องมือที่เกี่ยวข้องกับการบล็อกสาย",
+      privacy_control_title: "ผู้ใช้ควบคุมได้",
+      privacy_control_body:
+        "คุณสามารถจัดการภาษา การแจ้งเตือน และสิทธิ์ของอุปกรณ์ได้ผ่านการตั้งค่าในแอปและการตั้งค่าระบบของโทรศัพท์",
+      about_intro_title: "เกี่ยวกับ Jachoei",
+      about_intro_desc:
+        "Jachoei ช่วยให้ผู้ใช้ตรวจจับและหลีกเลี่ยงมิจฉาชีพออนไลน์ผ่านการตรวจสอบที่ใช้งานได้จริงจากรายงานผู้ใช้จริง",
+      about_mission_title: "Jachoei ช่วยเรื่องอะไร",
+      about_mission_body:
+        "ผู้ใช้สามารถตรวจสอบข้อมูลที่เกี่ยวข้องกับมิจฉาชีพ รับคำเตือนได้เร็วขึ้น และติดตามเคสได้สะดวกขึ้น",
+      about_checks_title: "ประเภทข้อมูลที่รองรับการตรวจสอบ",
+      about_checks_phone: "เบอร์โทร",
+      about_checks_bank: "เลขบัญชี",
+      about_checks_link: "ลิงก์น่าสงสัย",
+      about_checks_page: "ชื่อเพจ",
+      about_app_info_title: "ข้อมูลแอป",
+      about_app_name_label: "ชื่อแอป",
+      about_app_name_value: "Jachoei",
+      about_version_label: "เวอร์ชัน",
+      about_build_label: "บิลด์",
+      about_platform_label: "แพลตฟอร์ม",
+      about_loading: "กำลังโหลดข้อมูลแอป...",
     },
     app: {
       preparing_local_db: "กำลังเตรียมฐานข้อมูลบนเครื่อง...",

@@ -9,6 +9,7 @@ import { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
 import PhoneCenterLookupTab from "./PhoneCenterLookupTab";
 import { HomeScreen } from "./HomeScreen";
 import SafetyCenterMyListsTab from "./SafetyCenterMyListsTab";
+import { MoreScreen } from "./MoreScreen";
 
 import { HeaderAccountButton } from "../components/HeaderAccountButton";
 import { useAuth } from "../auth/AuthProvider";
@@ -304,6 +305,19 @@ export const ScamProtectTabs: React.FC = () => {
           }}
         />
       ) : null}
+
+      <Tab.Screen
+        name="More"
+        component={MoreScreen}
+        options={{
+          title: t("tabs.more"),
+          tabBarLabel: t("tabs.more"),
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="grid-outline" size={size} color={color} />
+          ),
+          // headerRight: () => <HeaderAccountButton />,
+        }}
+      />
     </Tab.Navigator>
   );
 };

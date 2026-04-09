@@ -215,9 +215,10 @@ class CallBlockerService : CallScreeningService() {
             Log.d(TRACE_TAG, "Incoming number: $number")
             Log.i(TAG, "RAW_NUMBER=$number")
 
-            val digits = PhoneUtils.digitsOnly(number)
-            val canonical = PhoneUtils.normalize(number)
-            val variants = PhoneUtils.variantsFromRaw(number)
+            val matchContext = PhoneUtils.buildMatchContext(number)
+            val digits = matchContext.digitsOnly
+            val canonical = matchContext.canonical
+            val variants = matchContext.variants
             ck(
                 "CALL_SCREEN_NUMBER_NORMALIZED",
                 "digits='$digits' canonical='$canonical' variants=${safeJoin(variants)}"
@@ -232,6 +233,15 @@ class CallBlockerService : CallScreeningService() {
             Log.i(TAG, "DB_PATH=${dbFile.absolutePath} exists=${dbFile.exists()} size=${dbFile.length()}")
 
             if (canonical.isEmpty()) {
+                CallBlockerModule.recordLastBlockedPhoneLookup(
+                    originalInput = number,
+                    canonical = canonical,
+                    variants = variants.toList(),
+                    matchingRowsByVariant = variants.associateWith { emptyList() },
+                    finalDecision = "ALLOW",
+                    matchedVariant = null,
+                    matchedRow = null,
+                )
                 ck("CALL_SCREEN_DECISION", "ALLOW reason=empty_or_private")
                 ck("CALL_SCREEN_RESPONSE_ALLOW", "disallow=false")
                 Log.i(TAG, "MATCH_FOUND=false")
@@ -257,16 +267,16 @@ class CallBlockerService : CallScreeningService() {
                 return
             }
 
-            val status = lookupStatus(canonical, variants)
+            val status = lookupStatus(number)
             ck(
                 "CALL_SCREEN_LOOKUP_RESULT",
-                "rowsFound=${status.rowsFound} matched=${status.matchedPhoneNormalized ?: ""} local_blocked=${status.localBlockedRaw} risk=${status.riskLevel} deleted=${status.serverDeletedRaw}"
+                "rowsFound=${status.rowsFound} matched=${status.matchedPhoneNormalized ?: ""} variant=${status.matchedVariant ?: ""} local_blocked=${status.localBlockedRaw} risk=${status.riskLevel} deleted=${status.serverDeletedRaw}"
             )
             Log.i(TAG, "MATCH_FOUND=${status.rowsFound > 0}")
             if (status.rowsFound > 0) {
                 ck(
                     "CALL_SCREEN_MATCHED_ROW",
-                    "phone_normalized=${status.matchedPhoneNormalized} local_blocked=${status.localBlockedRaw} risk_level=${status.riskLevel} server_deleted=${status.serverDeletedRaw}"
+                    "phone_normalized=${status.matchedPhoneNormalized} matched_variant=${status.matchedVariant ?: ""} local_blocked=${status.localBlockedRaw} risk_level=${status.riskLevel} server_deleted=${status.serverDeletedRaw}"
                 )
             }
 
@@ -334,6 +344,7 @@ class CallBlockerService : CallScreeningService() {
                             "canonical" to canonical,
                             "variants" to safeJoin(variants),
                             "matched" to (status.matchedPhoneNormalized ?: ""),
+                            "matchedVariant" to (status.matchedVariant ?: ""),
                             "local_blocked" to status.localBlockedRaw,
                             "risk_level" to status.riskLevel,
                             "server_deleted" to status.serverDeletedRaw,
@@ -387,6 +398,7 @@ class CallBlockerService : CallScreeningService() {
                             "digits" to digits,
                             "canonical" to canonical,
                             "matched" to (status.matchedPhoneNormalized ?: ""),
+                            "matchedVariant" to (status.matchedVariant ?: ""),
                             "risk_level" to status.riskLevel,
                             "pkg" to packageName,
                             "buildType" to BuildConfig.BUILD_TYPE,
@@ -465,6 +477,7 @@ class CallBlockerService : CallScreeningService() {
         val matchedPhoneNormalized: String?,
         val localBlockedRaw: Int,
         val serverDeletedRaw: Int,
+        val matchedVariant: String?,
     )
 
     private fun openDbReadOnly(): SQLiteDatabase? {
@@ -567,8 +580,11 @@ class CallBlockerService : CallScreeningService() {
         }
     }
 
-    private fun lookupStatus(phoneCanonical: String, variants: Array<String>): ScamPhoneStatus {
+    private fun lookupStatus(rawInput: String): ScamPhoneStatus {
         val t0 = SystemClock.elapsedRealtime()
+        val ctx = PhoneUtils.buildMatchContext(rawInput)
+        val phoneCanonical = ctx.canonical
+        val variants = ctx.variants
 
         Log.d(TRACE_TAG, "Variants(count=${variants.size}): ${if (DEBUG_DB_VERBOSE) variants.joinToString(",") else "(hidden)"}")
         CallBlockerModule.emitCallDebug(
@@ -595,7 +611,16 @@ class CallBlockerService : CallScreeningService() {
                     lookupDurationMs = dt,
                     action = "DB_MISSING",
                 )
-                return ScamPhoneStatus(false, false, 0, 0, null, 0, 0)
+                CallBlockerModule.recordLastBlockedPhoneLookup(
+                    originalInput = ctx.originalInput,
+                    canonical = ctx.canonical,
+                    variants = ctx.variants.toList(),
+                    matchingRowsByVariant = ctx.variants.associateWith { emptyList() },
+                    finalDecision = "ALLOW",
+                    matchedVariant = null,
+                    matchedRow = null,
+                )
+                return ScamPhoneStatus(false, false, 0, 0, null, 0, 0, null)
             }
 
             // Keep screening-time work minimal; only run extra counts in verbose debug.
@@ -619,13 +644,11 @@ class CallBlockerService : CallScreeningService() {
                 }
             }
 
-            val placeholders = variants.joinToString(",") { "?" }
             val sql = """
-                SELECT phone_normalized, risk_level, server_deleted, local_blocked
+                SELECT id, phone_normalized, local_blocked, risk_level, server_deleted, report_count, last_report_at, tags, server_updated_at
                 FROM $DB_TABLE
-                WHERE phone_normalized IN ($placeholders)
-                ORDER BY local_blocked DESC, risk_level DESC
-                LIMIT 1
+                WHERE phone_normalized IN (${variants.joinToString(",") { "?" }})
+                ORDER BY local_blocked DESC, risk_level DESC, server_deleted ASC, phone_normalized ASC
                 """.trimIndent()
 
             CallBlockerModule.emitCallDebug(
@@ -640,87 +663,90 @@ class CallBlockerService : CallScreeningService() {
                 variants = if (DEBUG_DB_VERBOSE) variants.toList() else null,
                 action = "DB_QUERY_EXEC",
             )
-            val cursor = db.rawQuery(
-                sql,
-                variants
+            val lookup = ScamPhoneLookup.lookup(db, DB_TABLE, rawInput, SPAM_WARN_RISK_THRESHOLD)
+            db.close()
+
+            val dt = (SystemClock.elapsedRealtime() - t0).toDouble()
+            CallBlockerModule.recordLastBlockedPhoneLookup(
+                originalInput = lookup.originalInput,
+                canonical = lookup.canonical,
+                variants = lookup.variants,
+                matchingRowsByVariant = lookup.matchingRowsByVariant,
+                finalDecision = lookup.finalDecision,
+                matchedVariant = lookup.matchedVariant,
+                matchedRow = lookup.matchedRow,
             )
 
-            cursor.use { c ->
-                if (!c.moveToFirst()) {
-                    db.close()
-                    val dt = (SystemClock.elapsedRealtime() - t0).toDouble()
-                    CallBlockerModule.emitCallDebug(
-                        source = "DB_LOOKUP",
-                        msg = "no match found in scam_phones",
-                        normalizedNumber = phoneCanonical,
-                        matchedBlocked = false,
-                        matchedSpam = false,
-                        dbName = DB_NAME,
-                        dbPath = try { getDatabasePath(DB_NAME).absolutePath } catch (_: Exception) { null },
-                        table = DB_TABLE,
-                        query = if (DEBUG_DB_VERBOSE) sql else null,
-                        queryArgs = if (DEBUG_DB_VERBOSE) variants.toList() else null,
-                        variants = if (DEBUG_DB_VERBOSE) variants.toList() else null,
-                        rowsFound = 0,
-                        finalDecision = "NO_MATCH",
-                        lookupDurationMs = dt,
-                        action = "NO_MATCH",
-                    )
-                    return ScamPhoneStatus(false, false, 0, 0, null, 0, 0)
-                }
-
-                val matchedPhone = c.getString(c.getColumnIndexOrThrow("phone_normalized"))
-                val risk = c.getInt(c.getColumnIndexOrThrow("risk_level"))
-                val deleted = c.getInt(c.getColumnIndexOrThrow("server_deleted"))
-                val local = c.getInt(c.getColumnIndexOrThrow("local_blocked"))
-                db.close()
-
-                Log.d(TRACE_TAG, "DB row: risk=$risk deleted=$deleted local=$local")
-
-                val localBlocked = local == 1
-                val communitySpam = !localBlocked && deleted == 0 && risk >= SPAM_WARN_RISK_THRESHOLD
-                val dt = (SystemClock.elapsedRealtime() - t0).toDouble()
+            if (lookup.rowsFound == 0) {
                 CallBlockerModule.emitCallDebug(
                     source = "DB_LOOKUP",
-                    msg = "db row risk=$risk deleted=$deleted local=$local threshold=$SPAM_WARN_RISK_THRESHOLD",
+                    msg = "no match found in scam_phones",
                     normalizedNumber = phoneCanonical,
-                    matchedBlocked = localBlocked,
-                    matchedSpam = communitySpam,
+                    matchedBlocked = false,
+                    matchedSpam = false,
                     dbName = DB_NAME,
                     dbPath = try { getDatabasePath(DB_NAME).absolutePath } catch (_: Exception) { null },
                     table = DB_TABLE,
                     query = if (DEBUG_DB_VERBOSE) sql else null,
                     queryArgs = if (DEBUG_DB_VERBOSE) variants.toList() else null,
                     variants = if (DEBUG_DB_VERBOSE) variants.toList() else null,
-                    rowsFound = 1,
-                    matchedRow = if (DEBUG_DB_VERBOSE) {
-                        mapOf(
-                            "phone_normalized" to matchedPhone,
-                            "risk_level" to risk,
-                            "server_deleted" to deleted,
-                            "local_blocked" to local,
-                            "phone_canonical" to phoneCanonical,
-                        )
-                    } else {
-                        null
-                    },
-                    riskLevel = risk,
-                    localBlocked = localBlocked,
-                    serverDeleted = deleted == 1,
-                    finalDecision = when {
-                        localBlocked -> "BLOCK"
-                        communitySpam -> "WARN"
-                        else -> "ALLOW"
-                    },
+                    rowsFound = 0,
+                    finalDecision = "NO_MATCH",
                     lookupDurationMs = dt,
-                    action = "DB_ROW",
+                    action = "NO_MATCH",
                 )
-                return ScamPhoneStatus(localBlocked, communitySpam, risk, 1, matchedPhone, local, deleted)
+                return ScamPhoneStatus(false, false, 0, 0, null, 0, 0, null)
             }
+
+            Log.d(
+                TRACE_TAG,
+                "DB row: risk=${lookup.riskLevel} deleted=${lookup.serverDeletedRaw} local=${lookup.localBlockedRaw} matchedVariant=${lookup.matchedVariant ?: ""}"
+            )
+
+            CallBlockerModule.emitCallDebug(
+                source = "DB_LOOKUP",
+                msg = "db row risk=${lookup.riskLevel} deleted=${lookup.serverDeletedRaw} local=${lookup.localBlockedRaw} matchedVariant=${lookup.matchedVariant ?: ""} threshold=$SPAM_WARN_RISK_THRESHOLD",
+                normalizedNumber = phoneCanonical,
+                matchedBlocked = lookup.localBlocked,
+                matchedSpam = lookup.communitySpam,
+                dbName = DB_NAME,
+                dbPath = try { getDatabasePath(DB_NAME).absolutePath } catch (_: Exception) { null },
+                table = DB_TABLE,
+                query = if (DEBUG_DB_VERBOSE) sql else null,
+                queryArgs = if (DEBUG_DB_VERBOSE) variants.toList() else null,
+                variants = if (DEBUG_DB_VERBOSE) variants.toList() else null,
+                rowsFound = lookup.rowsFound,
+                matchedRow = if (DEBUG_DB_VERBOSE) lookup.matchedRow else null,
+                riskLevel = lookup.riskLevel,
+                localBlocked = lookup.localBlocked,
+                serverDeleted = lookup.serverDeletedRaw == 1,
+                finalDecision = lookup.finalDecision,
+                lookupDurationMs = dt,
+                action = "DB_ROW",
+            )
+            return ScamPhoneStatus(
+                localBlocked = lookup.localBlocked,
+                isCommunitySpam = lookup.communitySpam,
+                riskLevel = lookup.riskLevel,
+                rowsFound = lookup.rowsFound,
+                matchedPhoneNormalized = lookup.matchedPhoneNormalized,
+                localBlockedRaw = lookup.localBlockedRaw,
+                serverDeletedRaw = lookup.serverDeletedRaw,
+                matchedVariant = lookup.matchedVariant,
+            )
         } catch (e: Exception) {
             Log.e(TAG, "lookupStatus error", e)
             Log.d(TRACE_TAG, "lookupStatus() ERROR: ${e.message}")
             val dt = (SystemClock.elapsedRealtime() - t0).toDouble()
+            CallBlockerModule.recordLastBlockedPhoneLookup(
+                originalInput = rawInput,
+                canonical = ctx.canonical,
+                variants = ctx.variants.toList(),
+                matchingRowsByVariant = ctx.variants.associateWith { emptyList() },
+                finalDecision = "ALLOW",
+                matchedVariant = null,
+                matchedRow = null,
+            )
             CallBlockerModule.emitCallDebug(
                 source = "DB_LOOKUP",
                 msg = "lookupStatus ERROR: ${e.message}",
@@ -731,7 +757,7 @@ class CallBlockerService : CallScreeningService() {
                 lookupDurationMs = dt,
                 action = "LOOKUP_ERROR",
             )
-            return ScamPhoneStatus(false, false, 0, 0, null, 0, 0)
+            return ScamPhoneStatus(false, false, 0, 0, null, 0, 0, null)
         }
     }
 

@@ -91,6 +91,68 @@ class CallBlockerModule(private val reactContext: ReactApplicationContext) :
         @Volatile private var lastBlockedInputRaw: String? = null
         @Volatile private var lastBlockedCanonical: String? = null
         @Volatile private var lastBlockedVariants: List<String>? = null
+        @Volatile private var lastBlockedMatchingRowsByVariantJson: String? = null
+        @Volatile private var lastBlockedFinalDecision: String? = null
+        @Volatile private var lastBlockedMatchedVariant: String? = null
+        @Volatile private var lastBlockedMatchedRowJson: String? = null
+
+        private fun toJsonValue(value: Any?): Any {
+            return when (value) {
+                null -> JSONObject.NULL
+                is String -> value
+                is Boolean -> value
+                is Int -> value
+                is Long -> value
+                is Double -> value
+                is Float -> value.toDouble()
+                is Number -> value.toDouble()
+                else -> value.toString()
+            }
+        }
+
+        private fun rowsByVariantToJson(rowsByVariant: Map<String, List<Map<String, Any?>>>): String {
+            val root = JSONObject()
+            for ((variant, rows) in rowsByVariant) {
+                val arr = JSONArray()
+                for (row in rows) {
+                    val obj = JSONObject()
+                    for ((key, value) in row) {
+                        obj.put(key, toJsonValue(value))
+                    }
+                    arr.put(obj)
+                }
+                root.put(variant, arr)
+            }
+            return root.toString()
+        }
+
+        private fun rowToJson(row: Map<String, Any?>?): String? {
+            if (row == null) return null
+            val obj = JSONObject()
+            for ((key, value) in row) {
+                obj.put(key, toJsonValue(value))
+            }
+            return obj.toString()
+        }
+
+        @Synchronized
+        fun recordLastBlockedPhoneLookup(
+            originalInput: String?,
+            canonical: String?,
+            variants: List<String>?,
+            matchingRowsByVariant: Map<String, List<Map<String, Any?>>>,
+            finalDecision: String,
+            matchedVariant: String?,
+            matchedRow: Map<String, Any?>?,
+        ) {
+            lastBlockedInputRaw = originalInput?.trim().orEmpty()
+            lastBlockedCanonical = canonical?.trim().orEmpty()
+            lastBlockedVariants = variants?.toList() ?: emptyList()
+            lastBlockedMatchingRowsByVariantJson = rowsByVariantToJson(matchingRowsByVariant)
+            lastBlockedFinalDecision = finalDecision
+            lastBlockedMatchedVariant = matchedVariant?.trim().orEmpty()
+            lastBlockedMatchedRowJson = rowToJson(matchedRow)
+        }
 
         @Synchronized
         private fun recordLastWrite(
@@ -437,6 +499,83 @@ class CallBlockerModule(private val reactContext: ReactApplicationContext) :
         )
     }
 
+    private fun ensureCanonicalBlockedRow(db: SQLiteDatabase, rawPhone: String): PhoneUtils.PhoneMatchContext {
+        val ctx = PhoneUtils.buildMatchContext(rawPhone)
+        if (ctx.canonical.isBlank()) return ctx
+
+        db.execSQL(
+            """
+            INSERT OR IGNORE INTO scam_phones (phone_normalized, server_updated_at)
+            VALUES (?, datetime('now'))
+            """.trimIndent(),
+            arrayOf(ctx.canonical)
+        )
+
+        db.execSQL(
+            """
+            UPDATE scam_phones
+            SET local_blocked = 1,
+                server_deleted = 0,
+                server_updated_at = datetime('now')
+            WHERE phone_normalized = ?
+            """.trimIndent(),
+            arrayOf(ctx.canonical)
+        )
+
+        val cleanupTargets = ctx.variants.filter { it != ctx.canonical }
+        if (cleanupTargets.isNotEmpty()) {
+            val placeholders = cleanupTargets.joinToString(",") { "?" }
+            db.execSQL(
+                """
+                UPDATE scam_phones
+                SET local_blocked = 0,
+                    server_updated_at = datetime('now')
+                WHERE local_blocked = 1
+                  AND phone_normalized IN ($placeholders)
+                """.trimIndent(),
+                cleanupTargets.toTypedArray()
+            )
+        }
+
+        return ctx
+    }
+
+    private fun cleanupInconsistentLocalBlockedRows(db: SQLiteDatabase): Int {
+        val storedPhones = ArrayList<String>()
+        db.rawQuery(
+            """
+            SELECT phone_normalized
+            FROM scam_phones
+            WHERE local_blocked = 1
+            ORDER BY phone_normalized ASC
+            """.trimIndent(),
+            emptyArray()
+        ).use { c ->
+            while (c.moveToNext()) {
+                val phone = c.getString(c.getColumnIndexOrThrow("phone_normalized"))
+                if (!phone.isNullOrBlank()) storedPhones.add(phone)
+            }
+        }
+
+        var touched = 0
+        val processedCanonicals = LinkedHashSet<String>()
+        for (stored in storedPhones) {
+            val ctx = PhoneUtils.buildMatchContext(stored)
+            if (ctx.canonical.isBlank()) {
+                val stmt = db.compileStatement(
+                    "UPDATE scam_phones SET local_blocked = 0, server_updated_at = datetime('now') WHERE phone_normalized = ?"
+                )
+                stmt.bindString(1, stored)
+                touched += try { stmt.executeUpdateDelete() } catch (_: Exception) { 0 }
+                continue
+            }
+            if (!processedCanonicals.add(ctx.canonical)) continue
+            ensureCanonicalBlockedRow(db, stored)
+            touched += 1
+        }
+        return touched
+    }
+
     private fun ensureScamPhonesTable(db: SQLiteDatabase) {
         db.execSQL(
             """
@@ -559,7 +698,7 @@ class CallBlockerModule(private val reactContext: ReactApplicationContext) :
 
         val writeTable = "scam_phones"
         val updateSql = "UPDATE scam_phones SET local_blocked = 1, server_deleted = 0, server_updated_at = datetime('now') WHERE phone_normalized = ?"
-        val insertSql = "INSERT INTO scam_phones (phone_normalized, local_blocked, risk_level, report_count, server_deleted, server_updated_at) VALUES (?, 1, 0, 0, 0, datetime('now'))"
+        val insertSql = "INSERT OR IGNORE INTO scam_phones (phone_normalized, server_updated_at) VALUES (?, datetime('now'))"
         var committed = false
         var insertRowId: Long = 0
         var rowsUpdated = 0
@@ -578,7 +717,8 @@ class CallBlockerModule(private val reactContext: ReactApplicationContext) :
                 data = mapOf("raw" to phoneRaw),
             )
             val dbPath = try { getDbFile().absolutePath } catch (_: Exception) { null }
-            val phone = PhoneUtils.normalize(phoneRaw)
+            val phoneContext = PhoneUtils.buildMatchContext(phoneRaw)
+            val phone = phoneContext.canonical
             if (phone.isBlank()) {
                 val msg = "empty normalized phone"
                 recordLastWriteDeep(
@@ -602,7 +742,7 @@ class CallBlockerModule(private val reactContext: ReactApplicationContext) :
                 promise.reject("ADD_BLOCK_ERROR", msg)
                 return
             }
-            val variants = PhoneUtils.variantsFromRaw(phoneRaw)
+            val variants = phoneContext.variants
 
             // Save last lookup context for export.
             lastBlockedInputRaw = phoneRaw
@@ -626,27 +766,17 @@ class CallBlockerModule(private val reactContext: ReactApplicationContext) :
 
             db.beginTransaction()
             try {
-                // 1) UPDATE-first (deterministic)
+                val ins = db.compileStatement(insertSql)
+                ins.bindString(1, phone)
+                insertRowId = try { ins.executeInsert() } catch (_: Exception) { -1L }
+                didInsert = insertRowId > 0
+
                 val upd = db.compileStatement(updateSql)
                 upd.bindString(1, phone)
                 rowsUpdated = try { upd.executeUpdateDelete() } catch (_: Exception) { 0 }
                 didUpdate = rowsUpdated > 0
 
-                // 2) INSERT if missing
-                if (rowsUpdated == 0) {
-                    try {
-                        val ins = db.compileStatement(insertSql)
-                        ins.bindString(1, phone)
-                        insertRowId = ins.executeInsert()
-                        didInsert = insertRowId > 0
-                    } catch (e: Exception) {
-                        // If a row appeared concurrently, fall back to UPDATE.
-                        val upd2 = db.compileStatement(updateSql)
-                        upd2.bindString(1, phone)
-                        rowsUpdated = try { upd2.executeUpdateDelete() } catch (_: Exception) { 0 }
-                        didUpdate = didUpdate || rowsUpdated > 0
-                    }
-                }
+                ensureCanonicalBlockedRow(db, phoneRaw)
 
                 if (BuildConfig.DEBUG) {
                     emitCallDebug(
@@ -659,19 +789,6 @@ class CallBlockerModule(private val reactContext: ReactApplicationContext) :
                         normalizedNumber = phone,
                         rowsFound = rowsUpdated,
                     )
-                }
-
-                // Keep previous behavior: set variants to local_blocked=1 too.
-                val placeholders = variants.joinToString(",") { "?" }
-                val updateVariantsSql = "UPDATE scam_phones SET local_blocked = 1, server_deleted = 0, server_updated_at = datetime('now') WHERE phone_normalized IN ($placeholders)"
-                val updVar = db.compileStatement(updateVariantsSql)
-                for ((i, v) in variants.withIndex()) {
-                    updVar.bindString(i + 1, v)
-                }
-                val variantsUpdated = try { updVar.executeUpdateDelete() } catch (_: Exception) { 0 }
-                if (variantsUpdated > 0) {
-                    rowsUpdated += variantsUpdated
-                    didUpdate = true
                 }
 
                 db.setTransactionSuccessful()
@@ -1046,6 +1163,14 @@ class CallBlockerModule(private val reactContext: ReactApplicationContext) :
                 return
             }
 
+            db.beginTransaction()
+            try {
+                cleanupInconsistentLocalBlockedRows(db)
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
+
             val arr = WritableNativeArray()
 
             Log.d(TAG, "[SQL] SELECT phone_normalized FROM scam_phones WHERE local_blocked = 1")
@@ -1102,13 +1227,15 @@ class CallBlockerModule(private val reactContext: ReactApplicationContext) :
             return
         }
 
-        val canonical = PhoneUtils.normalize(phoneRaw)
-        val variantsArr = PhoneUtils.variantsFromRaw(phoneRaw)
+        val ctx = PhoneUtils.buildMatchContext(phoneRaw)
+        val canonical = ctx.canonical
+        val variantsArr = ctx.variants
         val variants = variantsArr.toList()
         out.putString("canonical", canonical)
         out.putArray("variants", Arguments.fromList(variants))
         out.putInt("rowsFound", 0)
         out.putString("decision", "ALLOW")
+        out.putString("finalDecision", "ALLOW")
         out.putString("reason", "no_match")
 
         if (canonical.isBlank() || variants.isEmpty()) {
@@ -1128,65 +1255,64 @@ class CallBlockerModule(private val reactContext: ReactApplicationContext) :
                 return
             }
 
-            val placeholders = variants.joinToString(",") { "?" }
-            val sql = """
-                SELECT id, phone_normalized, local_blocked, risk_level, server_deleted, report_count, last_report_at, tags
-                FROM scam_phones
-                WHERE phone_normalized IN ($placeholders)
-                ORDER BY local_blocked DESC, risk_level DESC
-                LIMIT 1
-            """.trimIndent()
+            val lookup = ScamPhoneLookup.lookup(db, "scam_phones", phoneRaw, 60)
+            out.putInt("rowsFound", lookup.rowsFound)
+            out.putString("decision", lookup.finalDecision)
+            out.putString("finalDecision", lookup.finalDecision)
+            out.putString("reason", lookup.finalReason)
+            if (!lookup.matchedVariant.isNullOrBlank()) out.putString("matchedVariant", lookup.matchedVariant)
 
-            val c = db.rawQuery(sql, variantsArr)
-            c.use { cur ->
-                if (!cur.moveToFirst()) {
-                    out.putInt("rowsFound", 0)
-                    out.putString("decision", "ALLOW")
-                    out.putString("reason", "no_match")
-                    return
-                }
-
-                val id = if (!cur.isNull(0)) cur.getInt(0) else 0
-                val phoneNorm = if (!cur.isNull(1)) cur.getString(1) else ""
-                val localRaw = if (!cur.isNull(2)) cur.getInt(2) else 0
-                val risk = if (!cur.isNull(3)) cur.getInt(3) else 0
-                val delRaw = if (!cur.isNull(4)) cur.getInt(4) else 0
-                val reportCount = if (!cur.isNull(5)) cur.getInt(5) else 0
-                val lastReportAt = if (!cur.isNull(6)) cur.getString(6) else null
-                val tags = if (!cur.isNull(7)) cur.getString(7) else null
-
-                out.putInt("rowsFound", 1)
+            lookup.matchedRow?.let { rowMap ->
                 val row = Arguments.createMap()
-                row.putInt("id", id)
-                row.putString("phone_normalized", phoneNorm)
-                row.putInt("local_blocked", localRaw)
-                row.putInt("risk_level", risk)
-                row.putInt("server_deleted", delRaw)
-                row.putInt("report_count", reportCount)
-                if (lastReportAt != null) row.putString("last_report_at", lastReportAt)
-                if (tags != null) row.putString("tags", tags)
-                out.putMap("matchedRow", row)
-
-                val localBlocked = localRaw == 1
-                val communitySpam = !localBlocked && delRaw == 0 && risk >= 60
-                when {
-                    localBlocked -> {
-                        out.putString("decision", "BLOCK")
-                        out.putString("reason", "local_blocked")
-                    }
-                    communitySpam -> {
-                        out.putString("decision", "ALLOW")
-                        out.putString("reason", "community_spam_warn_only")
-                    }
-                    else -> {
-                        out.putString("decision", "ALLOW")
-                        out.putString("reason", "not_blocked")
+                for ((key, value) in rowMap) {
+                    when (value) {
+                        null -> row.putNull(key)
+                        is String -> row.putString(key, value)
+                        is Boolean -> row.putBoolean(key, value)
+                        is Int -> row.putInt(key, value)
+                        is Long -> row.putDouble(key, value.toDouble())
+                        is Double -> row.putDouble(key, value)
+                        else -> row.putString(key, value.toString())
                     }
                 }
+                out.putMap("matchedRow", row)
             }
+
+            val matchingRows = Arguments.createMap()
+            for ((variant, rows) in lookup.matchingRowsByVariant) {
+                val arr = Arguments.createArray()
+                for (rowMap in rows) {
+                    val row = Arguments.createMap()
+                    for ((key, value) in rowMap) {
+                        when (value) {
+                            null -> row.putNull(key)
+                            is String -> row.putString(key, value)
+                            is Boolean -> row.putBoolean(key, value)
+                            is Int -> row.putInt(key, value)
+                            is Long -> row.putDouble(key, value.toDouble())
+                            is Double -> row.putDouble(key, value)
+                            else -> row.putString(key, value.toString())
+                        }
+                    }
+                    arr.pushMap(row)
+                }
+                matchingRows.putArray(variant, arr)
+            }
+            out.putMap("matchingRowsByVariant", matchingRows)
+
+            recordLastBlockedPhoneLookup(
+                originalInput = lookup.originalInput,
+                canonical = lookup.canonical,
+                variants = lookup.variants,
+                matchingRowsByVariant = lookup.matchingRowsByVariant,
+                finalDecision = lookup.finalDecision,
+                matchedVariant = lookup.matchedVariant,
+                matchedRow = lookup.matchedRow,
+            )
         } catch (e: Exception) {
             out.putString("error", e.message ?: "unknown")
             out.putString("decision", "ALLOW")
+            out.putString("finalDecision", "ALLOW")
             out.putString("reason", "lookup_error")
         } finally {
             try {
@@ -1248,6 +1374,14 @@ class CallBlockerModule(private val reactContext: ReactApplicationContext) :
             val db = openDb() ?: run {
                 promise.resolve(out)
                 return
+            }
+
+            db.beginTransaction()
+            try {
+                cleanupInconsistentLocalBlockedRows(db)
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
             }
 
             val rows = Arguments.createArray()
@@ -1612,6 +1746,14 @@ class CallBlockerModule(private val reactContext: ReactApplicationContext) :
                 )
                 promise.resolve(out)
                 return
+            }
+
+            db.beginTransaction()
+            try {
+                cleanupInconsistentLocalBlockedRows(db)
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
             }
 
             try {
@@ -2214,42 +2356,28 @@ class CallBlockerModule(private val reactContext: ReactApplicationContext) :
             for (v in vList) vArr.put(v)
             lookup.put("variants", vArr)
 
-            val matches = JSONObject()
-            if (tables.contains(preferredTable) && vList.isNotEmpty()) {
-                for (v in vList) {
-                    val rows = try {
-                        queryToJsonArray(
-                            db,
-                            "SELECT * FROM ${quoteIdent(preferredTable)} WHERE phone_normalized = ?",
-                            arrayOf(v),
-                            null
-                        )
-                    } catch (_: Exception) {
-                        JSONArray()
-                    }
-                    matches.put(v, rows)
-                }
-
-                // Also check exact canonical if not already in variants
-                val canonical = (lastBlockedCanonical ?: "").trim()
-                if (canonical.isNotEmpty() && !vList.contains(canonical)) {
-                    val rows = try {
-                        queryToJsonArray(
-                            db,
-                            "SELECT * FROM ${quoteIdent(preferredTable)} WHERE phone_normalized = ?",
-                            arrayOf(canonical),
-                            null
-                        )
-                    } catch (_: Exception) {
-                        JSONArray()
-                    }
-                    matches.put(canonical, rows)
-                }
-            } else {
-                if (!tables.contains(preferredTable)) warnings.put("Table 'scam_phones' not found; cannot run last lookup queries")
-                if (vList.isEmpty()) warnings.put("No lastBlocked variants captured yet (block a number first)")
+            val matches = try {
+                val raw = (lastBlockedMatchingRowsByVariantJson ?: "").trim()
+                if (raw.isNotEmpty()) JSONObject(raw) else JSONObject()
+            } catch (_: Exception) {
+                JSONObject()
+            }
+            if (!tables.contains(preferredTable)) {
+                warnings.put("Table 'scam_phones' not found; cannot run last lookup queries")
+            }
+            if (vList.isEmpty()) {
+                warnings.put("No lastBlocked variants captured yet (screen a call or run Lookup Number first)")
             }
             lookup.put("matchingRowsByVariant", matches)
+            lookup.put("finalDecision", lastBlockedFinalDecision ?: "")
+            lookup.put("matchedVariant", lastBlockedMatchedVariant ?: "")
+            val matchedRowObj = try {
+                val raw = (lastBlockedMatchedRowJson ?: "").trim()
+                if (raw.isNotEmpty()) JSONObject(raw) else JSONObject()
+            } catch (_: Exception) {
+                JSONObject()
+            }
+            lookup.put("matchedRow", matchedRowObj)
             root.put("lastBlockedPhoneLookup", lookup)
 
             // 8) WARNINGS based on contradictions
@@ -2507,24 +2635,7 @@ class CallBlockerModule(private val reactContext: ReactApplicationContext) :
                     val raw = numbers.getString(i)
                     val phone = PhoneUtils.normalize(raw)
                     if (phone.isEmpty()) continue
-
-                    db.execSQL(
-                        """
-                        INSERT OR IGNORE INTO scam_phones (phone_normalized, server_updated_at)
-                        VALUES (?, datetime('now'))
-                        """.trimIndent(),
-                        arrayOf(phone)
-                    )
-
-                    db.execSQL(
-                        """
-                        UPDATE scam_phones
-                        SET local_blocked = 1
-                        WHERE (local_blocked IS NULL OR local_blocked = 0)
-                          AND phone_normalized = ?
-                        """.trimIndent(),
-                        arrayOf(phone)
-                    )
+                    ensureCanonicalBlockedRow(db, raw ?: phone)
                 }
 
                 db.setTransactionSuccessful()

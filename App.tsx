@@ -42,6 +42,9 @@ import SettingScreen from "./src/screens/SettingsScreen";
 
 import NotificationPage from "./src/screens/NotificationPage";
 import DiagnosticsScreen from "./src/screens/DiagnosticsScreen";
+import { MoreHelpScreen } from "./src/screens/MoreHelpScreen";
+import { MorePrivacyScreen } from "./src/screens/MorePrivacyScreen";
+import { MoreAboutScreen } from "./src/screens/MoreAboutScreen";
 
 import type { RootStackParamList } from "./src/navigation/types";
 
@@ -351,6 +354,72 @@ function Root({ initReady }: { initReady: boolean }) {
             );
           },
          }}
+      />
+
+      <Stack.Screen
+        name="MoreHelp"
+        component={MoreHelpScreen}
+        options={{
+          headerShown: true,
+          title: t("more.help_title"),
+          headerStyle: { backgroundColor: "#0b0b0f" },
+          headerTintColor: "#fff",
+          headerBackVisible: false,
+          headerLeft(props) {
+            return (
+              <Pressable
+                  onPress={() => navigationRef.goBack()}
+                  style={{ paddingHorizontal: 4 }}
+                >
+                  <Ionicons name="chevron-back" size={26} color="#fff" />
+              </Pressable>
+            );
+          },
+        }}
+      />
+
+      <Stack.Screen
+        name="MorePrivacy"
+        component={MorePrivacyScreen}
+        options={{
+          headerShown: true,
+          title: t("more.privacy_title"),
+          headerStyle: { backgroundColor: "#0b0b0f" },
+          headerTintColor: "#fff",
+          headerBackVisible: false,
+          headerLeft(props) {
+            return (
+              <Pressable
+                  onPress={() => navigationRef.goBack()}
+                  style={{ paddingHorizontal: 4 }}
+                >
+                  <Ionicons name="chevron-back" size={26} color="#fff" />
+              </Pressable>
+            );
+          },
+        }}
+      />
+
+      <Stack.Screen
+        name="MoreAbout"
+        component={MoreAboutScreen}
+        options={{
+          headerShown: true,
+          title: t("more.about_title"),
+          headerStyle: { backgroundColor: "#0b0b0f" },
+          headerTintColor: "#fff",
+          headerBackVisible: false,
+          headerLeft(props) {
+            return (
+              <Pressable
+                  onPress={() => navigationRef.goBack()}
+                  style={{ paddingHorizontal: 4 }}
+                >
+                  <Ionicons name="chevron-back" size={26} color="#fff" />
+              </Pressable>
+            );
+          },
+        }}
       />
 
       <Stack.Screen
