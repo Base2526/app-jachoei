@@ -104,7 +104,10 @@ export type NativeLookupDebugResult = {
   variants?: string[];
   rowsFound?: number;
   matchedRow?: Record<string, any>;
-  decision?: "BLOCK" | "ALLOW";
+  matchingRowsByVariant?: Record<string, Record<string, any>[]>;
+  matchedVariant?: string;
+  decision?: "BLOCK" | "ALLOW" | "WARN";
+  finalDecision?: "BLOCK" | "ALLOW" | "WARN";
   reason?: string;
   lookupDurationMs?: number;
   error?: string;

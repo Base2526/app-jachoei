@@ -18,7 +18,7 @@ import Ionicons from "react-native-vector-icons/Ionicons";
 import { gql } from "@apollo/client";
 import { client } from "../apollo/client";
 import { checkScamPhoneWithFallback } from "../lib/syncScamPhones";
-import { useNavigation } from "@react-navigation/native";
+import { RouteProp, useNavigation, useRoute } from "@react-navigation/native";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useAuth } from "../auth/AuthProvider";
 import {
@@ -26,6 +26,7 @@ import {
   Q_MY_REPORTED_BANK_ACCOUNT_KEYS,
   useJachoeiStatusKeys,
 } from "../hooks/useJachoeiStatusKeys";
+import type { TabsParamList } from "../navigation/types";
 
 import { addBlockedNumber } from "../native/CallBlocker";
 import { promptCallScreeningIfNeededWithOptions } from "../utils/callScreening";
@@ -841,6 +842,7 @@ function BankReportInlineForm(props: {
 // =======================
 export default function PhoneCenterLookupTab() {
   const navigation = useNavigation<any>();
+  const route = useRoute<RouteProp<TabsParamList, "CheckPhone">>();
   useHeaderHeight();
 
   // ✅ Auth
@@ -880,12 +882,35 @@ export default function PhoneCenterLookupTab() {
 
   const blurTimer = useRef<any>(null);
 
+  const resetLookupState = useCallback((nextType: LookupType) => {
+    setLookupType(nextType);
+    setQ("");
+    setItems([]);
+    setBankItems([]);
+    setExpandedTel(null);
+    setExpandedAcc(null);
+    setCheckResult(null);
+    setPhoneSearched(false);
+    setBankSearched(false);
+    setLastPhoneTerm("");
+    setLastBankTerm("");
+    setHistoryOpen(false);
+  }, []);
+
   useEffect(() => {
     (async () => {
       const h = await loadHistory(userId, lookupType);
       setHistory(h);
     })();
   }, [userId, lookupType]);
+
+  useEffect(() => {
+    const nextType = route.params?.initialLookupType;
+    if (!nextType) return;
+
+    resetLookupState(nextType);
+    navigation.setParams?.({ initialLookupType: undefined });
+  }, [navigation, resetLookupState, route.params?.initialLookupType]);
 
   const isBlocked = useCallback((telNormalized: string) => isBlockedTelServer(telNormalized), [isBlockedTelServer]);
 
@@ -1175,19 +1200,7 @@ export default function PhoneCenterLookupTab() {
         <View style={topTabs.wrap}>
           <View style={topTabs.pill}>
             <Pressable
-              onPress={() => {
-                setLookupType("PHONE");
-                setQ("");
-                setItems([]);
-                setBankItems([]);
-                setExpandedTel(null);
-                setExpandedAcc(null);
-                setCheckResult(null);
-                setPhoneSearched(false);
-                setBankSearched(false);
-                setLastPhoneTerm("");
-                setLastBankTerm("");
-              }}
+              onPress={() => resetLookupState("PHONE")}
               style={[topTabs.btn, lookupType === "PHONE" && topTabs.btnOn]}
             >
               <Ionicons name="call-outline" size={16} color={lookupType === "PHONE" ? "#111" : "#cbd5e1"} />
@@ -1195,19 +1208,7 @@ export default function PhoneCenterLookupTab() {
             </Pressable>
 
             <Pressable
-              onPress={() => {
-                setLookupType("BANK");
-                setQ("");
-                setItems([]);
-                setBankItems([]);
-                setExpandedTel(null);
-                setExpandedAcc(null);
-                setCheckResult(null);
-                setPhoneSearched(false);
-                setBankSearched(false);
-                setLastPhoneTerm("");
-                setLastBankTerm("");
-              }}
+              onPress={() => resetLookupState("BANK")}
               style={[topTabs.btn, lookupType === "BANK" && topTabs.btnOn]}
             >
               <Ionicons name="card-outline" size={16} color={lookupType === "BANK" ? "#111" : "#cbd5e1"} />

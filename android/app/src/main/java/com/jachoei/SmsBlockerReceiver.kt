@@ -165,33 +165,9 @@ class SmsBlockerReceiver : BroadcastReceiver() {
 
         return try {
             val db = openDb(context) ?: return ScamPhoneStatus(false, false, 0)
-            val placeholders = variants.joinToString(",") { "?" }
-            val cursor = db.rawQuery(
-                """
-                SELECT risk_level, server_deleted, local_blocked
-                FROM scam_phones
-                WHERE phone_normalized IN ($placeholders)
-                ORDER BY local_blocked DESC, risk_level DESC
-                LIMIT 1
-                """.trimIndent(),
-                variants
-            )
-
-            cursor.use { c ->
-                if (!c.moveToFirst()) {
-                    db.close()
-                    return ScamPhoneStatus(false, false, 0)
-                }
-
-                val risk = c.getInt(c.getColumnIndexOrThrow("risk_level"))
-                val del = c.getInt(c.getColumnIndexOrThrow("server_deleted"))
-                val local = c.getInt(c.getColumnIndexOrThrow("local_blocked"))
-                db.close()
-
-                val localBlocked = local == 1
-                val communitySpam = !localBlocked && del == 0 && risk >= SPAM_WARN_RISK_THRESHOLD
-                ScamPhoneStatus(localBlocked, communitySpam, risk)
-            }
+            val lookup = ScamPhoneLookup.lookup(db, "scam_phones", raw, SPAM_WARN_RISK_THRESHOLD)
+            db.close()
+            ScamPhoneStatus(lookup.localBlocked, lookup.communitySpam, lookup.riskLevel)
         } catch (e: Exception) {
             Log.e(TAG, "lookupStatus error", e)
             Log.d(TRACE_TAG, "SMS lookupStatus ERROR: ${e.message}")

@@ -1,8 +1,9 @@
 export type TabsParamList = {
   HomeScreen: undefined;
-  CheckPhone: undefined;
+  CheckPhone: { initialLookupType?: "PHONE" | "BANK" } | undefined;
   BlockedNumbers: undefined;
   BlockedLogs: undefined;
+  More: undefined;
 };
 
 export type RootStackParamList = {
@@ -22,4 +23,7 @@ export type RootStackParamList = {
   PostForm: { id?: string } | undefined;
 
   Notifications: undefined;
+  MoreHelp: undefined;
+  MorePrivacy: undefined;
+  MoreAbout: undefined;
 };
