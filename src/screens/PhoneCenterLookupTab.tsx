@@ -21,6 +21,7 @@ import { checkScamPhoneWithFallback } from "../lib/syncScamPhones";
 import { RouteProp, useNavigation, useRoute } from "@react-navigation/native";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useAuth } from "../auth/AuthProvider";
+import { useI18n } from "../i18n";
 import {
   Q_MY_BLOCKED_PHONE_KEYS,
   Q_MY_REPORTED_BANK_ACCOUNT_KEYS,
@@ -29,6 +30,8 @@ import {
 import type { TabsParamList } from "../navigation/types";
 
 import { addBlockedNumber } from "../native/CallBlocker";
+import { SpamContactPrompt } from "../components/SpamContactPrompt";
+import { useSpamContactPrompt } from "../hooks/useSpamContactPrompt";
 import { promptCallScreeningIfNeededWithOptions } from "../utils/callScreening";
 
 // ======================================================
@@ -461,6 +464,7 @@ type InlinePanelProps = {
 
 function InlineBlockReportPanel(props: InlinePanelProps) {
   const { tel, postId, title, reportCount, riskScore, isLoggedIn, goStack, isBlocked, onBlock, onUnblock, onReport } = props;
+  const { t } = useI18n();
 
   const telNorm = useMemo(() => normalizeTel(tel), [tel]);
   const blockedNow = useMemo(() => (telNorm ? isBlocked(telNorm) : false), [telNorm, isBlocked]);
@@ -475,6 +479,17 @@ function InlineBlockReportPanel(props: InlinePanelProps) {
   const [category, setCategory] = useState<ReportCategory>("SCAM");
   const [note, setNote] = useState("");
   const [dontAskAgain, setDontAskAgain] = useState(false);
+  const {
+    prompt,
+    busy: spamPromptBusy,
+    contactMatch,
+    inspectPhone,
+    requestPromptForCurrent,
+    onConfirmSpam,
+    onSkip,
+    onDontAskAgain,
+    unmarkCurrentContact,
+  } = useSpamContactPrompt();
 
   useEffect(() => {
     let mounted = true;
@@ -487,6 +502,11 @@ function InlineBlockReportPanel(props: InlinePanelProps) {
       mounted = false;
     };
   }, [telNorm]);
+
+  useEffect(() => {
+    if (!telNorm) return;
+    void inspectPhone(telNorm);
+  }, [inspectPhone, telNorm]);
 
   const primaryText = useMemo(() => {
     if (blockedNow) return "ยกเลิกบล็อก";
@@ -627,9 +647,46 @@ function InlineBlockReportPanel(props: InlinePanelProps) {
         </Pressable>
       </View>
 
+      {contactMatch?.found && !contactMatch.spamMarked ? (
+        <Pressable onPress={requestPromptForCurrent} style={[ui.btn, ui.btnSecondary, { marginTop: 10 }]}>
+          <View style={ui.btnRow}>
+            <Ionicons name="person-add-outline" size={16} color="#fbbf24" />
+            <Text style={ui.btnSecondaryText}>{t("button.mark_as_spam")}</Text>
+          </View>
+        </Pressable>
+      ) : null}
+
+      {contactMatch?.spamMarked ? (
+        <Pressable
+          onPress={() => {
+            void unmarkCurrentContact();
+          }}
+          style={[ui.btn, ui.btnSecondary, { marginTop: 10 }]}
+        >
+          <View style={ui.btnRow}>
+            <Ionicons name="person-remove-outline" size={16} color="#fbbf24" />
+            <Text style={ui.btnSecondaryText}>{t("button.remove_spam_mark")}</Text>
+          </View>
+        </Pressable>
+      ) : null}
+
       <Text style={ui.hint}>
         Risk tip: {fallbackRiskScore} • {riskText(fallbackRiskScore)}
       </Text>
+
+      <SpamContactPrompt
+        visible={prompt.visible}
+        phone={prompt.phone}
+        displayName={prompt.contact?.displayName}
+        busy={spamPromptBusy}
+        onConfirmSpam={() => {
+          void onConfirmSpam();
+        }}
+        onSkip={onSkip}
+        onDontAskAgain={() => {
+          void onDontAskAgain();
+        }}
+      />
     </View>
   );
 }
@@ -1759,9 +1816,11 @@ const ui = StyleSheet.create({
   btn: { flex: 1, height: 46, borderRadius: 14, alignItems: "center", justifyContent: "center" },
   btnPrimary: { backgroundColor: "#34c759" },
   btnUnblock: { backgroundColor: "#111116", borderWidth: 1, borderColor: "#2a2a35" },
+  btnSecondary: { backgroundColor: "#0b1020", borderWidth: 1, borderColor: "#27335f" },
 
   btnRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   btnPrimaryText: { fontSize: 13, fontWeight: "900", color: "#111" },
+  btnSecondaryText: { fontSize: 13, fontWeight: "900", color: "#fbbf24" },
 
   hint: { marginTop: 10, color: "#6b7280", fontSize: 11, lineHeight: 15 },
 });

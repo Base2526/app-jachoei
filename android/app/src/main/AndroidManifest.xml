@@ -12,6 +12,8 @@
     <!-- Share location (Phase 1: current location + search) -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.WRITE_CONTACTS" />
 
     <!--
       Google Play (SMS/Call Log) compliance intent (Jachoei):
