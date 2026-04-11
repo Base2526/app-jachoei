@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { NativeModules } from "react-native";
+import { normalizeTel } from "../lib/jachoeiLocalState";
 
 export type NativeBlockDebugItem = {
   phone: string;
@@ -126,6 +127,36 @@ const EMPTY: NativeBlockDebugData = {
   global: [],
 };
 
+function getPhoneKey(phone: string | undefined): string {
+  const normalized = normalizeTel(String(phone || ""));
+  return normalized || String(phone || "").trim();
+}
+
+function matchesPhone(itemPhone: string | undefined, targetPhone: string): boolean {
+  const itemKey = getPhoneKey(itemPhone);
+  if (!itemKey) return false;
+  return itemKey === getPhoneKey(targetPhone);
+}
+
+function sortRows(rows: NativeBlockDebugItem[]): NativeBlockDebugItem[] {
+  return [...rows].sort((left, right) => {
+    const riskDiff = Number(right.riskLevel || 0) - Number(left.riskLevel || 0);
+    if (riskDiff !== 0) return riskDiff;
+
+    const leftPhone = String(left.phone || "");
+    const rightPhone = String(right.phone || "");
+    return leftPhone.localeCompare(rightPhone);
+  });
+}
+
+function toOptimisticGlobalRow(item: NativeBlockDebugItem): NativeBlockDebugItem {
+  return {
+    ...item,
+    localBlocked: false,
+    localBlockedRaw: -1,
+  };
+}
+
 export function useNativeBlockDebugData() {
   const [state, setState] = useState<State>({ data: EMPTY, loading: false, error: null });
   const inflightRef = useRef(false);
@@ -204,10 +235,83 @@ export function useNativeBlockDebugData() {
     }
   }, []);
 
+  const applyOptimisticUnblock = useCallback((phone: string) => {
+    const targetKey = getPhoneKey(phone);
+    if (!targetKey) return;
+
+    setState((prev) => {
+      const previousData = prev.data;
+
+      let localRemoved = 0;
+      let globalAdded = 0;
+
+      let globalPromotion: NativeBlockDebugItem | null = null;
+      const nextLocal = previousData.local.filter((item) => {
+        if (!matchesPhone(item.phone, targetKey)) return true;
+        localRemoved += 1;
+        if (item.serverDeleted !== 1 && globalPromotion == null) {
+          globalPromotion = toOptimisticGlobalRow(item);
+        }
+        return false;
+      });
+
+      let sawGlobalMatch = false;
+      const nextGlobalMapped = previousData.global.map((item) => {
+        if (!matchesPhone(item.phone, targetKey)) return item;
+        sawGlobalMatch = true;
+        return toOptimisticGlobalRow(item);
+      });
+
+      let nextGlobal = nextGlobalMapped;
+      if (!sawGlobalMatch && globalPromotion) {
+        nextGlobal = sortRows([...nextGlobalMapped, globalPromotion]);
+        globalAdded = 1;
+      }
+
+      const nextRawRows = (previousData.rawRows || []).map((item) => {
+        if (!matchesPhone(item.phone, targetKey)) return item;
+        return toOptimisticGlobalRow(item);
+      });
+
+      const nextLocalPreview = (previousData.localRowsPreview || []).filter((item) => !matchesPhone(item.phone, targetKey));
+
+      let sawGlobalPreviewMatch = false;
+      const nextGlobalPreviewMapped = (previousData.globalRowsPreview || []).map((item) => {
+        if (!matchesPhone(item.phone, targetKey)) return item;
+        sawGlobalPreviewMatch = true;
+        return toOptimisticGlobalRow(item);
+      });
+
+      let nextGlobalPreview = nextGlobalPreviewMapped;
+      if (!sawGlobalPreviewMatch && globalPromotion) {
+        nextGlobalPreview = sortRows([...nextGlobalPreviewMapped, globalPromotion]).slice(0, 10);
+      }
+
+      const nextLocalCount = Math.max(0, Number(previousData.localCount || 0) - localRemoved);
+      const nextGlobalCount = Math.max(0, Number(previousData.globalCount || 0) + globalAdded);
+
+      return {
+        ...prev,
+        data: {
+          ...previousData,
+          localCount: nextLocalCount,
+          globalCount: nextGlobalCount,
+          totalCount: nextLocalCount + nextGlobalCount,
+          local: nextLocal,
+          global: nextGlobal,
+          rawRows: nextRawRows,
+          localRowsPreview: nextLocalPreview,
+          globalRowsPreview: nextGlobalPreview,
+        },
+      };
+    });
+  }, []);
+
   return {
     data: state.data,
     loading: state.loading,
     error: state.error,
     fetchData,
+    applyOptimisticUnblock,
   };
 }

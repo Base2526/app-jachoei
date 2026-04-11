@@ -3,11 +3,14 @@ import React, { useEffect } from "react";
 import { useNavigation } from "@react-navigation/native";
 import { GlobalChatListener } from "./GlobalChatListener";
 import { useAuth } from "../auth/AuthProvider";
+import { useI18n } from "../i18n";
 import { AppState } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { gql } from "@apollo/client";
 import { client } from "../apollo/client";
 import { addIncomingSpamCallListener, getIncomingCallEvents, type IncomingCallEvent } from "../native/CallBlocker";
+import { SpamContactPrompt } from "./SpamContactPrompt";
+import { useSpamContactPrompt } from "../hooks/useSpamContactPrompt";
 import Toast from "react-native-toast-message";
 
 const M_INGEST_CALL_LOGS = gql`
@@ -34,6 +37,15 @@ function safeParseDetail(detail: string | null | undefined): { action?: string; 
 export function GlobalWiresWrapper() {
   const navigation = useNavigation<any>();
   const { user, isLoggedIn, booting, logout } = useAuth();
+  const { t } = useI18n();
+  const {
+    prompt,
+    busy: spamPromptBusy,
+    suggestFromPhone,
+    onConfirmSpam,
+    onSkip,
+    onDontAskAgain,
+  } = useSpamContactPrompt();
 
   useEffect(() => {
     const sub = addIncomingSpamCallListener?.((payload) => {
@@ -42,13 +54,23 @@ export function GlobalWiresWrapper() {
       const risk = Number(payload?.risk || 0);
       Toast.show({
         type: "info",
-        text1: "Suspected spam caller",
+        text1: t("call_screening.incoming_spam_warning"),
         text2: risk > 0 ? `${phone} (risk ${risk})` : phone,
         visibilityTime: 4500,
       });
+      void suggestFromPhone(phone, risk).then((result) => {
+        if (result === "auto_marked") {
+          Toast.show({
+            type: "success",
+            text1: t("toast.mark_spam_success"),
+            text2: phone,
+            visibilityTime: 3500,
+          });
+        }
+      });
     });
     return () => sub?.remove?.();
-  }, []);
+  }, [suggestFromPhone, t]);
 
   useEffect(() => {
     if (!isLoggedIn || !user?.id) return;
@@ -125,5 +147,22 @@ export function GlobalWiresWrapper() {
   // ยังไม่ login → ไม่ต้องเปิด socket / chat
   if (!isLoggedIn || !user) return null;
 
-  return <GlobalChatListener />;
+  return (
+    <>
+      <GlobalChatListener />
+      <SpamContactPrompt
+        visible={prompt.visible}
+        phone={prompt.phone}
+        displayName={prompt.contact?.displayName}
+        busy={spamPromptBusy}
+        onConfirmSpam={() => {
+          void onConfirmSpam();
+        }}
+        onSkip={onSkip}
+        onDontAskAgain={() => {
+          void onDontAskAgain();
+        }}
+      />
+    </>
+  );
 }

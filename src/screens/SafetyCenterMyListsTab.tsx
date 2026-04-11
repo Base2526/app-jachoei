@@ -373,6 +373,7 @@ export default function SafetyCenterMyListsTab() {
   const [blockedOffset, setBlockedOffset] = useState(0);
   const [blockedHasMore, setBlockedHasMore] = useState(true);
   const blockedInflight = useRef(false);
+  const [blockedUnblockBusy, setBlockedUnblockBusy] = useState<Record<string, boolean>>({});
 
   // REPORTS
   const [reports, setReports] = useState<ReportItem[]>([]);
@@ -768,6 +769,7 @@ export default function SafetyCenterMyListsTab() {
 
   const unblock = useCallback(async (phone: string) => {
     const tel = normalizeTel(phone) || phone;
+    if (blockedUnblockBusy[tel]) return;
     Alert.alert("Unblock เบอร์นี้?", tel, [
       { text: "ยกเลิก", style: "cancel" },
       {
@@ -775,18 +777,26 @@ export default function SafetyCenterMyListsTab() {
         style: "destructive",
         onPress: async () => {
           try {
+            setBlockedUnblockBusy((prev) => ({ ...prev, [tel]: true }));
             const payload = await unblockTelOnServer(tel);
             const ok = payload?.ok;
             if (!ok) throw new Error("Unblock failed");
 
             setBlocked((prev) => prev.filter((x) => (normalizeTel(x.phone) || x.phone) !== tel));
+            void refreshBlocked();
           } catch (e: any) {
             Alert.alert("Unblock ไม่สำเร็จ", e?.message || "กรุณาลองใหม่");
+          } finally {
+            setBlockedUnblockBusy((prev) => {
+              const next = { ...prev };
+              delete next[tel];
+              return next;
+            });
           }
         },
       },
     ]);
-  }, []);
+  }, [blockedUnblockBusy, refreshBlocked]);
 
   // ---------------------------------
   // Derived lists (filter/sort)
@@ -1351,6 +1361,10 @@ export default function SafetyCenterMyListsTab() {
                         return;
                       }
 
+                      native.applyOptimisticUnblock(tel);
+                      void native.fetchData();
+                      void refreshBlocked();
+
                       recordUiDiagOnce(
                         `tap:${tab}:${nativeFilter}:${sKey}:${phone}:ok`,
                         "unblock OK",
@@ -1496,8 +1510,12 @@ export default function SafetyCenterMyListsTab() {
                         <Text style={[st.badgeText, { color: tone.fg }]}>{meta.label}</Text>
                       </View>
 
-                      <Pressable onPress={() => unblock(tel)} style={st.actionBtn}>
-                        <Ionicons name="lock-open-outline" size={16} color="#e5e7eb" />
+                      <Pressable onPress={() => unblock(tel)} disabled={!!blockedUnblockBusy[tel]} style={[st.actionBtn, !!blockedUnblockBusy[tel] && st.nativeRefreshBtnDisabled]}>
+                        {!!blockedUnblockBusy[tel] ? (
+                          <ActivityIndicator size="small" color="#e5e7eb" />
+                        ) : (
+                          <Ionicons name="lock-open-outline" size={16} color="#e5e7eb" />
+                        )}
                         <Text style={st.actionText}>Unblock</Text>
                       </Pressable>
                     </View>

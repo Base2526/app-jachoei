@@ -22,6 +22,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage"; // ถ้�
 import { client } from "../apollo/client";
 import { ENV } from "../config/env";
 import { useI18n } from "../i18n";
+import { useContactProtection } from "../lib/contactProtection";
 
 import { subscribeBookmarkStatusChanged } from "../events/bookmarkSync";
 
@@ -298,6 +299,13 @@ export default function SettingsScreen() {
     const id = user?.id;
     return id ? String(id) : null;
   }, [user?.id]);
+
+  const {
+    settings: contactProtectionSettings,
+    updateSettings: updateContactProtectionSettings,
+    loading: loadingContactProtection,
+  } = useContactProtection({ enabled: !!currentUserId, userId: currentUserId });
+  const [savingContactProtection, setSavingContactProtection] = useState(false);
 
   const displayAvatarUri = useMemo(() => {
     const localUri = normalizeImageUri(avatarLocal);
@@ -802,6 +810,92 @@ export default function SettingsScreen() {
             </View>
           </Field>
 
+          <Divider />
+
+          <SectionTitle>{t("settings.contact_protection_title")}</SectionTitle>
+
+          <Field label={t("settings.block_mode_title")} hint={t("settings.contact_protection_description")}>
+            <View style={styles.pillsInlineWrap}>
+              <Pill
+                label={t("settings.block_mode_allow")}
+                active={contactProtectionSettings.mode === "OFF"}
+                onPress={() => {
+                  setSavingContactProtection(true);
+                  void updateContactProtectionSettings({ mode: "OFF" }).finally(() => setSavingContactProtection(false));
+                }}
+              />
+              <Pill
+                label={t("settings.block_mode_warn")}
+                active={contactProtectionSettings.mode === "PROMPT"}
+                onPress={() => {
+                  setSavingContactProtection(true);
+                  void updateContactProtectionSettings({ mode: "PROMPT" }).finally(() => setSavingContactProtection(false));
+                }}
+              />
+              <Pill
+                label={t("settings.block_mode_block")}
+                active={contactProtectionSettings.mode === "AUTO"}
+                onPress={() => {
+                  setSavingContactProtection(true);
+                  void updateContactProtectionSettings({ mode: "AUTO" }).finally(() => setSavingContactProtection(false));
+                }}
+              />
+            </View>
+          </Field>
+
+          <Field label={t("settings.spam_warning_title")} hint={t("settings.spam_warning_description")}>
+            <View style={styles.pillsInlineWrap}>
+              {[55, 70, 85].map((value) => (
+                <Pill
+                  key={value}
+                  label={String(value)}
+                  active={contactProtectionSettings.riskThreshold === value}
+                  onPress={() => {
+                    setSavingContactProtection(true);
+                    void updateContactProtectionSettings({ riskThreshold: value }).finally(() => setSavingContactProtection(false));
+                  }}
+                />
+              ))}
+            </View>
+          </Field>
+
+          <Field label={t("settings.contact_protection_sync_title")} hint={t("settings.contact_protection_sync_description")}>
+            <View style={styles.toggleRow}>
+              <Text style={styles.toggleLabel}>{t("settings.contact_protection_sync_toggle")}</Text>
+              {loadingContactProtection || savingContactProtection ? (
+                <ActivityIndicator />
+              ) : (
+                <Switch
+                  value={contactProtectionSettings.syncEnabled}
+                  onValueChange={(next) => {
+                    setSavingContactProtection(true);
+                    void updateContactProtectionSettings({ syncEnabled: next }).finally(() => setSavingContactProtection(false));
+                  }}
+                />
+              )}
+            </View>
+          </Field>
+
+          <Field label={t("settings.contact_protection_auto_mark_title")} hint={t("settings.contact_protection_auto_mark_description")}>
+            <View style={styles.toggleRow}>
+              <Text style={styles.toggleLabel}>{t("settings.contact_protection_auto_mark_toggle")}</Text>
+              {loadingContactProtection || savingContactProtection ? (
+                <ActivityIndicator />
+              ) : (
+                <Switch
+                  value={contactProtectionSettings.autoMarkEnabled}
+                  onValueChange={(next) => {
+                    setSavingContactProtection(true);
+                    void updateContactProtectionSettings({ autoMarkEnabled: next }).finally(() => setSavingContactProtection(false));
+                  }}
+                  disabled={contactProtectionSettings.mode !== "AUTO"}
+                />
+              )}
+            </View>
+          </Field>
+
+          <Text style={styles.hint}>{t("settings.contact_protection_description")}</Text>
+
           {/* Save อยู่ที่ header แล้ว */}
         </>
       )}
@@ -1051,6 +1145,7 @@ const styles = StyleSheet.create({
 
   pillsBar: { height: 54, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 6 },
   pillsRowContent: { alignItems: "center", paddingRight: 12 },
+  pillsInlineWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
 
   contentScroll: { flex: 1 },
   container: {

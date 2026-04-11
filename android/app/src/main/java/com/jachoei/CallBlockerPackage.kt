@@ -8,7 +8,10 @@ import com.facebook.react.uimanager.ViewManager
 
 class CallBlockerPackage : ReactPackage {
     override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
-        return listOf(CallBlockerModule(reactContext))
+        return listOf(
+            CallBlockerModule(reactContext),
+            ContactProtectionModule(reactContext)
+        )
     }
 
     override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {
