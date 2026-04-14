@@ -230,3 +230,59 @@ export function encodeBankCategoryIntoText(category: BankReportCategory | undefi
   if (base.startsWith(prefix)) return base;
   return `${prefix} ${base}`;
 }
+
+type ClearUserScopedLocalDataResult = {
+  userId: string;
+  removedKeys: string[];
+};
+
+const USER_SCOPED_EXACT_KEYS = [
+  BLOCKED_TEL_STORE_KEY,
+  REPORTED_BANK_STORE_KEY,
+  "jachoei_global_search_history_v1",
+  "@blocked_logs_search_history",
+];
+
+const USER_SCOPED_PREFIXES = {
+  dontAsk: TEL_BLOCK_DONT_ASK_PREFIX,
+  blockedPhones: "jachoei.blockedPhones.v2.",
+  searchHistory: "jachoei.search_history.v2.",
+  bankReportedLocal: "jachoei.bank_reported_local.v1.",
+};
+
+function shouldRemoveScopedKey(key: string, userId: string): boolean {
+  if (!key) return false;
+  if (USER_SCOPED_EXACT_KEYS.includes(key)) return true;
+  if (key.startsWith(USER_SCOPED_PREFIXES.dontAsk)) return true;
+
+  if (key.startsWith(USER_SCOPED_PREFIXES.blockedPhones)) {
+    const uid = key.slice(USER_SCOPED_PREFIXES.blockedPhones.length);
+    return uid === userId || uid === "guest";
+  }
+
+  if (key.startsWith(USER_SCOPED_PREFIXES.searchHistory)) {
+    return key.endsWith(`.${userId}`) || key.endsWith(".guest");
+  }
+
+  if (key.startsWith(USER_SCOPED_PREFIXES.bankReportedLocal)) {
+    return key.includes(`.${userId}.`) || key.includes(".guest.");
+  }
+
+  return false;
+}
+
+export async function clearUserScopedLocalData(currentUserId?: string | null): Promise<ClearUserScopedLocalDataResult> {
+  const userId = String(currentUserId || "").trim() || "guest";
+  const allKeys = await AsyncStorage.getAllKeys().catch(() => [] as string[]);
+  const removedKeys = allKeys.filter((key) => shouldRemoveScopedKey(String(key || ""), userId));
+
+  console.log("[LOGOUT_CLEAR_USER_DATA_START]", { userId, totalKeys: allKeys.length });
+
+  if (removedKeys.length > 0) {
+    removedKeys.forEach((key) => console.log("[LOGOUT_CLEAR_KEY]", key));
+    await AsyncStorage.multiRemove(removedKeys).catch(() => {});
+  }
+
+  console.log("[LOGOUT_CLEAR_USER_DATA_DONE]", { userId, removedCount: removedKeys.length });
+  return { userId, removedKeys };
+}

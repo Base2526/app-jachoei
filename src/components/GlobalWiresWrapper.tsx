@@ -1,5 +1,5 @@
 // src/components/GlobalWiresWrapper.tsx
-import React, { useEffect } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigation } from "@react-navigation/native";
 import { GlobalChatListener } from "./GlobalChatListener";
 import { useAuth } from "../auth/AuthProvider";
@@ -10,6 +10,8 @@ import { gql } from "@apollo/client";
 import { client } from "../apollo/client";
 import { addIncomingSpamCallListener, getIncomingCallEvents, type IncomingCallEvent } from "../native/CallBlocker";
 import { SpamContactPrompt } from "./SpamContactPrompt";
+import { AfterCallPopup } from "./AfterCallPopup";
+import { usePhoneActions, type PhoneActionItem } from "../hooks/usePhoneActions";
 import { useSpamContactPrompt } from "../hooks/useSpamContactPrompt";
 import Toast from "react-native-toast-message";
 
@@ -38,6 +40,7 @@ export function GlobalWiresWrapper() {
   const navigation = useNavigation<any>();
   const { user, isLoggedIn, booting, logout } = useAuth();
   const { t } = useI18n();
+  const { blockPhone, getPhoneInfo, logIgnoredPhone, reportPhone } = usePhoneActions();
   const {
     prompt,
     busy: spamPromptBusy,
@@ -46,6 +49,50 @@ export function GlobalWiresWrapper() {
     onSkip,
     onDontAskAgain,
   } = useSpamContactPrompt();
+  const [afterCallItem, setAfterCallItem] = useState<PhoneActionItem | null>(null);
+  const [afterCallBusy, setAfterCallBusy] = useState<"block" | "report" | null>(null);
+  const popupSeenKey = useMemo(() => `jachoei.after_call_popup.last_id.v1.${user?.id ?? "guest"}`, [user?.id]);
+
+  const maybeShowAfterCallPopup = useCallback(
+    async (payload: { phone: string; rawPhone?: string | null; eventId?: number; risk?: number }) => {
+      const phone = String(payload.phone || "").trim();
+      if (!phone) return;
+
+      if (typeof payload.eventId === "number") {
+        const seen = Number((await AsyncStorage.getItem(popupSeenKey)) || 0) || 0;
+        if (payload.eventId <= seen) return;
+      }
+
+      const info = await getPhoneInfo(phone);
+      const risk = Math.max(Number(payload.risk || 0), Number(info?.risk_level || 0));
+      const reportCount = Number(info?.report_count || 0);
+      if (!info && risk < 7) return;
+
+      setAfterCallItem(
+        info ?? {
+          phone,
+          phone_normalized: phone,
+          my_blocked: false,
+          my_blocked_at: null,
+          my_reported: false,
+          my_reported_at: null,
+          in_history: true,
+          last_history_at: new Date().toISOString(),
+          report_count: reportCount,
+          last_report_at: null,
+          risk_level: risk,
+          updated_at: new Date().toISOString(),
+          filters: ["ALL", "HISTORY"],
+          tags: [],
+        }
+      );
+
+      if (typeof payload.eventId === "number") {
+        await AsyncStorage.setItem(popupSeenKey, String(payload.eventId));
+      }
+    },
+    [getPhoneInfo, popupSeenKey]
+  );
 
   useEffect(() => {
     const sub = addIncomingSpamCallListener?.((payload) => {
@@ -68,9 +115,15 @@ export function GlobalWiresWrapper() {
           });
         }
       });
+
+      void maybeShowAfterCallPopup({
+        phone,
+        rawPhone: payload?.raw_phone ?? phone,
+        risk,
+      });
     });
     return () => sub?.remove?.();
-  }, [suggestFromPhone, t]);
+  }, [maybeShowAfterCallPopup, suggestFromPhone, t]);
 
   useEffect(() => {
     if (!isLoggedIn || !user?.id) return;
@@ -86,6 +139,21 @@ export function GlobalWiresWrapper() {
         const events: IncomingCallEvent[] = await getIncomingCallEvents(sinceId, 200);
         if (cancelled) return;
         if (!Array.isArray(events) || events.length === 0) return;
+
+        const latestEvent = [...events]
+          .reverse()
+          .find((event) => ["call", "sms"].includes(String(event.type || "")));
+
+        if (latestEvent) {
+          const meta = safeParseDetail(latestEvent.detail);
+          if (meta?.action === "spam_warning" || meta?.action === "blocked_call") {
+            await maybeShowAfterCallPopup({
+              phone: latestEvent.phone_normalized,
+              rawPhone: latestEvent.raw_phone,
+              eventId: latestEvent.id,
+            });
+          }
+        }
 
         const logs = events
           .map((e) => {
@@ -131,7 +199,7 @@ export function GlobalWiresWrapper() {
       cancelled = true;
       sub.remove();
     };
-  }, [isLoggedIn, user?.id]);
+  }, [isLoggedIn, maybeShowAfterCallPopup, popupSeenKey, user?.id]);
 
   // ตัวอย่าง: ถ้า token หมดอายุจาก backend
   const forceLogout = async () => {
@@ -142,25 +210,63 @@ export function GlobalWiresWrapper() {
     });
   };
 
-  if (booting) return null; // หรือ splash
-
-  // ยังไม่ login → ไม่ต้องเปิด socket / chat
-  if (!isLoggedIn || !user) return null;
+  if (booting) return null;
 
   return (
     <>
-      <GlobalChatListener />
-      <SpamContactPrompt
-        visible={prompt.visible}
-        phone={prompt.phone}
-        displayName={prompt.contact?.displayName}
-        busy={spamPromptBusy}
-        onConfirmSpam={() => {
-          void onConfirmSpam();
+      {isLoggedIn && user ? <GlobalChatListener /> : null}
+      {isLoggedIn && user ? (
+        <SpamContactPrompt
+          visible={prompt.visible}
+          phone={prompt.phone}
+          displayName={prompt.contact?.displayName}
+          busy={spamPromptBusy}
+          onConfirmSpam={() => {
+            void onConfirmSpam();
+          }}
+          onSkip={onSkip}
+          onDontAskAgain={() => {
+            void onDontAskAgain();
+          }}
+        />
+      ) : null}
+      <AfterCallPopup
+        visible={!!afterCallItem}
+        item={afterCallItem}
+        busyAction={afterCallBusy}
+        onBlock={() => {
+          if (!afterCallItem) return;
+          setAfterCallBusy("block");
+          void blockPhone({
+            phone: afterCallItem.phone_normalized,
+            rawPhone: afterCallItem.phone,
+            source: "after_call_popup",
+            syncServer: isLoggedIn,
+            appendLog: true,
+          })
+            .then(() => setAfterCallItem(null))
+            .catch(() => {})
+            .finally(() => setAfterCallBusy(null));
         }}
-        onSkip={onSkip}
-        onDontAskAgain={() => {
-          void onDontAskAgain();
+        onReport={() => {
+          if (!afterCallItem) return;
+          setAfterCallBusy("report");
+          void reportPhone({
+            phone: afterCallItem.phone_normalized,
+            rawPhone: afterCallItem.phone,
+            source: "after_call_popup",
+            category: "SCAM",
+            appendLog: true,
+          })
+            .then(() => setAfterCallItem(null))
+            .catch(() => {})
+            .finally(() => setAfterCallBusy(null));
+        }}
+        onIgnore={() => {
+          if (afterCallItem) {
+            void logIgnoredPhone(afterCallItem.phone_normalized, "after_call_popup", afterCallItem.phone);
+          }
+          setAfterCallItem(null);
         }}
       />
     </>

@@ -20,6 +20,7 @@ import {
 } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 import { gql } from "@apollo/client";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
   loadBlockedTelMap,
@@ -257,15 +258,15 @@ function getPostMediaSizing(imageCount: number) {
   // - phone 3 images: hero-top + 2 below (needs extra height to avoid squashed bottoms)
   // - tablet 3 images: hero-left + 2 stacked (height should stay balanced, not towering)
   if (imageCount <= 1) {
-    return { phoneRatio: 0.64, tabletRatio: 0.46, phoneMinHeight: 180 };
+    return { phoneRatio: 0.48, tabletRatio: 0.36, phoneMinHeight: 144 };
   }
   if (imageCount === 2) {
-    return { phoneRatio: 0.54, tabletRatio: 0.42, phoneMinHeight: 180 };
+    return { phoneRatio: 0.4, tabletRatio: 0.34, phoneMinHeight: 140 };
   }
   if (imageCount === 3) {
-    return { phoneRatio: 0.74, tabletRatio: 0.54, phoneMinHeight: 210 };
+    return { phoneRatio: 0.62, tabletRatio: 0.48, phoneMinHeight: 188 };
   }
-  return { phoneRatio: 0.62, tabletRatio: 0.5, phoneMinHeight: 190 };
+  return { phoneRatio: 0.5, tabletRatio: 0.38, phoneMinHeight: 148 };
 }
 
 function normalizeAvatarUri(uri?: string | null) {
@@ -413,6 +414,7 @@ type HomeRoute = RouteProp<TabsParamList, "HomeScreen">;
 export const HomeScreen: React.FC = () => {
   const HOME_TAG = "HOME";
   const { width: windowWidth } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const isTablet =
     Platform.OS === "ios"
       ? // Avoid iPhone landscape being treated as iPad.
@@ -478,6 +480,14 @@ export const HomeScreen: React.FC = () => {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute<HomeRoute>();
+  const feedContentStyle = useMemo(
+    () => ({
+      paddingHorizontal: 0,
+      paddingTop: 0,
+      paddingBottom: Math.max(56, insets.bottom + 116),
+    }),
+    [insets.bottom]
+  );
 
   // ✅ sheets refs
   const blockSheetRef = useRef<BottomSheetBlockReportModalRef>(null);
@@ -506,6 +516,19 @@ export const HomeScreen: React.FC = () => {
       Alert.alert("เปิดลิงก์ไม่ได้", url);
     }
   }, []);
+
+  const openHomeQuickActions = useCallback(() => {
+    if (!isLoggedIn) {
+      navigation.navigate("SignIn");
+      return;
+    }
+
+    Alert.alert("Quick Actions", undefined, [
+      { text: "Create Post", onPress: () => navigation.navigate("PostForm") },
+      { text: "Messages", onPress: () => navigation.navigate("Chat") },
+      { text: "Cancel", style: "cancel" },
+    ]);
+  }, [isLoggedIn, navigation]);
 
   // ====== load/save blocked tel ======
   const loadBlocked = useCallback(async () => {
@@ -1355,16 +1378,16 @@ export const HomeScreen: React.FC = () => {
       const imageCount = Array.isArray(item.images) ? item.images.length : 0;
 
       // ===== media sizing (tablet-friendly) =====
-      // FlatList paddingHorizontal=12 and card padding=10 => preserve existing base math.
-      const baseMediaWidth = Math.max(0, windowWidth - 24 - 20);
+      // Feed is edge-to-edge; media width follows card inner padding only.
+      const baseMediaWidth = Math.max(0, windowWidth - 32);
       const mediaWidth = isTablet ? Math.min(baseMediaWidth, 760) : baseMediaWidth;
 
       const { phoneRatio, tabletRatio, phoneMinHeight } = getPostMediaSizing(imageCount);
       const mediaHeight = isTablet
-        ? clampNumber(Math.round(mediaWidth * tabletRatio), 260, 360)
-        : clampNumber(Math.round(mediaWidth * phoneRatio), phoneMinHeight, 320);
-      const mediaRadius = isTablet ? 14 : 12;
-      const mediaGap = isTablet ? 8 : 6;
+        ? clampNumber(Math.round(mediaWidth * tabletRatio), 200, 288)
+        : clampNumber(Math.round(mediaWidth * phoneRatio), phoneMinHeight, 232);
+      const mediaRadius = isTablet ? 10 : 8;
+      const mediaGap = isTablet ? 5 : 3;
 
       return (
         <Pressable
@@ -1372,16 +1395,11 @@ export const HomeScreen: React.FC = () => {
           android_ripple={{ color: "#222" }}
           style={({ pressed }) => [styles.card, pressed && { opacity: 0.85 }]}
         >
-          {/* TOP */}
-          <View style={styles.cardTop}>
-            <Text style={styles.title} numberOfLines={2}>
-              {item.title || "-"}
-            </Text>
-
+          <View style={styles.cardHeader}>
             {hasAuthor ? (
               <Pressable
                 onPress={(e) => onOpenProfile(e, item.author?.id)}
-                style={({ pressed }) => [styles.authorChip, pressed && { opacity: 0.8 }]}
+                style={({ pressed }) => [styles.authorBlock, pressed && { opacity: 0.84 }]}
                 hitSlop={10}
               >
                 <View style={styles.authorAvatarWrap}>
@@ -1396,13 +1414,35 @@ export const HomeScreen: React.FC = () => {
                     />
                   ) : null}
                 </View>
-                <Text style={styles.authorName} numberOfLines={1}>
-                  {authorName}
-                </Text>
-                <Ionicons name="chevron-forward" size={14} color="#9ca3af" />
+                <View style={styles.authorTextWrap}>
+                  <Text style={styles.authorName} numberOfLines={1}>
+                    {authorName}
+                  </Text>
+                  <Text style={styles.authorMeta} numberOfLines={1}>
+                    {ts}
+                  </Text>
+                </View>
               </Pressable>
-            ) : status && !isPublicStatus ? (
-              <View style={[styles.tag, { backgroundColor: sc.bg }]}>
+            ) : (
+              <View style={styles.authorBlock}>
+                <View style={styles.authorAvatarWrap}>
+                  <View style={styles.authorAvatarFallback}>
+                    <Text style={styles.authorAvatarText}>{authorInitial}</Text>
+                  </View>
+                </View>
+                <View style={styles.authorTextWrap}>
+                  <Text style={styles.authorName} numberOfLines={1}>
+                    {authorName}
+                  </Text>
+                  <Text style={styles.authorMeta} numberOfLines={1}>
+                    {ts}
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {status && !isPublicStatus ? (
+              <View style={[styles.tag, { backgroundColor: sc.bg }]}> 
                 <Text style={[styles.tagText, { color: sc.fg }]}>
                   {String(status).toUpperCase()}
                 </Text>
@@ -1410,36 +1450,31 @@ export const HomeScreen: React.FC = () => {
             ) : null}
           </View>
 
-          {/* META + AUTHOR */}
-          <View style={styles.metaRow}>
-            <Text style={styles.meta} numberOfLines={1}>
-              {ts}
-            </Text>
+          <View style={styles.contentBlock}>
+            {!!item.title ? (
+              <Text style={styles.title} numberOfLines={2}>
+                {item.title}
+              </Text>
+            ) : null}
 
-            {!hasAuthor ? (
-              <Text style={[styles.meta, { marginLeft: 8 }]} numberOfLines={1}>
-                • by {authorName}
+            {item.detail ? (
+              <Text style={styles.detail} numberOfLines={3}>
+                {item.detail}
               </Text>
             ) : null}
           </View>
 
-          {/* THUMB GRID */}
-          <View style={[styles.mediaWrap, isTablet && styles.mediaWrapTablet]}>
-            <ThumbGrid
-              images={(item.images || []) as any}
-              width={mediaWidth}
-              height={mediaHeight}
-              radius={mediaRadius}
-              gap={mediaGap}
-              layout={isTablet ? "tablet" : "default"}
-            />
-          </View>
-
-          {/* DETAIL */}
-          {item.detail ? (
-            <Text style={styles.detail} numberOfLines={4}>
-              {item.detail}
-            </Text>
+          {imageCount > 0 ? (
+            <View style={[styles.mediaWrap, isTablet && styles.mediaWrapTablet]}>
+              <ThumbGrid
+                images={(item.images || []) as any}
+                width={mediaWidth}
+                height={mediaHeight}
+                radius={mediaRadius}
+                gap={mediaGap}
+                layout={isTablet ? "tablet" : "default"}
+              />
+            </View>
           ) : null}
 
           {/* TEL + BANK (premium info section) */}
@@ -1740,11 +1775,14 @@ export const HomeScreen: React.FC = () => {
         data={items}
         keyExtractor={(it) => String(it.id)}
         renderItem={renderPostItem}
-        contentContainerStyle={{ padding: 12, paddingBottom: 24 }}
+        contentContainerStyle={feedContentStyle}
         onScroll={(e) => {
           scrollOffsetRef.current = e.nativeEvent.contentOffset?.y || 0;
         }}
         scrollEventThrottle={16}
+        removeClippedSubviews={Platform.OS === "android"}
+        initialNumToRender={6}
+        windowSize={7}
         refreshControl={
           <RefreshControl
             refreshing={loading && page === 1}
@@ -1763,7 +1801,6 @@ export const HomeScreen: React.FC = () => {
         }
         ListFooterComponent={footer}
       />
-
       {/* ===== MODAL: show all tels ===== */}
       <Modal
         visible={telModalVisible}
@@ -1963,132 +2000,140 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0b0b0f" },
 
   card: {
-    backgroundColor: "#111116",
-    borderRadius: 14,
-    padding: 10,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: "#1f1f26",
+    backgroundColor: "#111827",
+    width: "100%",
+    alignSelf: "stretch",
+    borderRadius: 0,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: "#162033",
   },
-  cardTop: { flexDirection: "row", alignItems: "center", gap: 8 },
-  title: { flex: 1, color: "#fff", fontSize: 14, fontWeight: "900" },
+  cardHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 8 },
+  contentBlock: { marginTop: 8, gap: 4 },
+  title: { color: "#f8fafc", fontSize: 15, lineHeight: 19, fontWeight: "800" },
 
   tag: {
     paddingHorizontal: 8,
-    paddingVertical: 3,
+    paddingVertical: 4,
     borderRadius: 999,
     alignSelf: "flex-start",
   },
-  tagText: { fontSize: 10, fontWeight: "900" },
+  tagText: { fontSize: 10, fontWeight: "900", letterSpacing: 0.3 },
 
-  metaRow: { marginTop: 6, flexDirection: "row", alignItems: "center", gap: 8 },
-  meta: { color: "#9ca3af", fontSize: 11, flex: 1 },
-
-  mediaWrap: { marginTop: 10 },
+  mediaWrap: {
+    marginTop: 8,
+    width: "100%",
+    alignSelf: "stretch",
+    borderRadius: 0,
+    overflow: "visible",
+  },
   mediaWrapTablet: {
-    marginTop: 12,
-    alignSelf: "center",
+    marginTop: 8,
+    alignSelf: "stretch",
   },
 
-  authorChip: {
+  authorBlock: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
-    backgroundColor: "#1d1d25",
-    borderWidth: 1,
-    borderColor: "#2a2a35",
-    maxWidth: 180,
+    gap: 8,
+    flex: 1,
+    minWidth: 0,
   },
   authorAvatarWrap: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     overflow: "hidden",
-    backgroundColor: "#111",
+    backgroundColor: "#0f172a",
+    borderWidth: 1,
+    borderColor: "#243047",
   },
   authorAvatarImg: { width: "100%", height: "100%" },
   authorAvatarFallback: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "#2a2a35",
+    backgroundColor: "#1f2937",
     alignItems: "center",
     justifyContent: "center",
   },
-  authorAvatarText: { color: "#fff", fontSize: 10, fontWeight: "900" },
-  authorName: { color: "#e5e7eb", fontSize: 11, fontWeight: "800" },
+  authorAvatarText: { color: "#fff", fontSize: 11, fontWeight: "900" },
+  authorTextWrap: { flex: 1, minWidth: 0, gap: 1 },
+  authorName: { color: "#f8fafc", fontSize: 13, fontWeight: "800" },
+  authorMeta: { color: "#94a3b8", fontSize: 10 },
 
-  detail: { marginTop: 10, color: "#e5e7eb", fontSize: 12, lineHeight: 16 },
+  detail: { color: "#d1d5db", fontSize: 12, lineHeight: 17 },
 
   infoSection: {
-    marginTop: 10,
-    padding: 10,
-    borderRadius: 14,
-    backgroundColor: "#15151c",
+    marginTop: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 7,
+    borderRadius: 10,
+    backgroundColor: "rgba(15, 23, 42, 0.72)",
     borderWidth: 1,
-    borderColor: "#1f1f26",
+    borderColor: "rgba(27, 37, 56, 0.75)",
   },
   infoSectionTablet: {
-    padding: 12,
+    paddingHorizontal: 9,
+    paddingVertical: 8,
   },
-  infoRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  infoRowTablet: { gap: 12 },
-  infoRowLeft: { width: 62, flexDirection: "row", alignItems: "center", gap: 8 },
-  infoRowLeftTablet: { width: 70 },
+  infoRow: { flexDirection: "row", alignItems: "flex-start", gap: 7 },
+  infoRowTablet: { gap: 8 },
+  infoRowLeft: { width: 48, flexDirection: "row", alignItems: "center", gap: 5 },
+  infoRowLeftTablet: { width: 54 },
   infoRowIcon: {
-    width: 22,
-    height: 22,
-    borderRadius: 8,
+    width: 18,
+    height: 18,
+    borderRadius: 5,
     backgroundColor: "rgba(255,255,255,0.04)",
     borderWidth: 1,
-    borderColor: "#1f1f26",
+    borderColor: "rgba(36, 48, 71, 0.8)",
     alignItems: "center",
     justifyContent: "center",
   },
   infoRowIconTablet: {
-    width: 24,
-    height: 24,
+    width: 20,
+    height: 20,
   },
   infoLabel: {
-    color: "#9ca3af",
-    fontSize: 11,
+    color: "#94a3b8",
+    fontSize: 10,
     fontWeight: "900",
-    letterSpacing: 0.8,
+    letterSpacing: 0.4,
   },
-  infoLabelTablet: { fontSize: 12 },
-  infoEmptyText: { flex: 1, color: "#6b7280", fontSize: 12, fontWeight: "800" },
-  infoDivider: { height: 1, backgroundColor: "#1f1f26", opacity: 0.65, marginVertical: 10 },
-  infoDividerTablet: { marginVertical: 12 },
+  infoLabelTablet: { fontSize: 11 },
+  infoEmptyText: { flex: 1, color: "#64748b", fontSize: 10, fontWeight: "800" },
+  infoDivider: { height: 1, backgroundColor: "rgba(27, 37, 56, 0.8)", opacity: 0.9, marginVertical: 6 },
+  infoDividerTablet: { marginVertical: 7 },
 
   chipsWrap: {
     flex: 1,
     minWidth: 0,
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
+    gap: 5,
     alignItems: "center",
   },
   chipsWrapTablet: {
     maxWidth: 560,
-    gap: 10,
+    gap: 6,
   },
 
   valuePill: {
     maxWidth: "100%",
-    minHeight: 34,
+    minHeight: 28,
     flexDirection: "row",
     alignItems: "center",
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.04)",
+    backgroundColor: "rgba(255,255,255,0.05)",
     borderWidth: 1,
-    borderColor: "#2a2a35",
-    paddingLeft: 12,
-    paddingRight: 4,
+    borderColor: "rgba(36, 48, 71, 0.85)",
+    paddingLeft: 9,
+    paddingRight: 3,
   },
   valuePillTablet: {
-    minHeight: 32,
-    paddingLeft: 10,
+    minHeight: 28,
+    paddingLeft: 8,
     paddingRight: 3,
     alignSelf: "flex-start",
   },
@@ -2106,8 +2151,8 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     color: "#e5e7eb",
-    fontSize: 12,
-    fontWeight: "900",
+    fontSize: 10,
+    fontWeight: "800",
   },
   valueTextTablet: {
     flex: 0,
@@ -2116,33 +2161,41 @@ const styles = StyleSheet.create({
   valueTextMuted: { color: "#9ca3af", fontWeight: "900" },
 
   pillAction: {
-    width: 30,
-    height: 30,
+    width: 20,
+    height: 20,
     borderRadius: 999,
-    marginLeft: 10,
+    marginLeft: 6,
     alignItems: "center",
     justifyContent: "center",
   },
   pillActionTablet: {
-    width: 28,
-    height: 28,
-    marginLeft: 8,
+    width: 20,
+    height: 20,
+    marginLeft: 5,
   },
   pillActionNeutral: { backgroundColor: "rgba(255,255,255,0.06)" },
   pillActionDanger: { backgroundColor: "rgba(239,68,68,0.22)" },
 
-  actionsRow: { marginTop: 12, flexDirection: "row", alignItems: "center", gap: 10 },
+  actionsRow: {
+    marginTop: 8,
+    paddingTop: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderTopWidth: 1,
+    borderTopColor: "#162033",
+  },
   iconBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 10,
-    backgroundColor: "#1d1d25",
+    width: 32,
+    height: 32,
+    borderRadius: 9,
+    backgroundColor: "#182133",
     borderWidth: 1,
-    borderColor: "#2a2a35",
+    borderColor: "#243047",
     alignItems: "center",
     justifyContent: "center",
   },
-  iconBtnActive: { borderColor: "#3b82f6", backgroundColor: "rgba(59,130,246,0.18)" },
+  iconBtnActive: { borderColor: "#3b82f6", backgroundColor: "rgba(59,130,246,0.14)" },
 
   badge: {
     position: "absolute",
@@ -2163,8 +2216,25 @@ const styles = StyleSheet.create({
   empty: { alignItems: "center", justifyContent: "center", paddingTop: 60, gap: 8 },
   emptyText: { color: "#6b7280", fontSize: 14 },
 
-  footer: { paddingVertical: 16, alignItems: "center", gap: 8 },
+  footer: { paddingVertical: 10, alignItems: "center", gap: 4 },
   footerText: { color: "#9ca3af", fontSize: 12 },
+  fab: {
+    position: "absolute",
+    right: 18,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#f3f4f6",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    shadowColor: "#000",
+    shadowOpacity: 0.24,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
+  },
 
   // Modals
   modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", padding: 16, justifyContent: "center" },

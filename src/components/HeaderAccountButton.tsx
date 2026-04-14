@@ -24,10 +24,22 @@ function normalizeAvatarUri(uri?: string | null) {
   return value;
 }
 
-export const HeaderAccountButton = () => {
+type HeaderAccountButtonProps = {
+  size?: number;
+  variant?: "default" | "compact";
+};
+
+export const HeaderAccountButton = ({ size = 34, variant = "default" }: HeaderAccountButtonProps) => {
   const navigation = useNavigation<any>();
   const { isLoggedIn, user } = useAuth();
   const [avatarLoadFailed, setAvatarLoadFailed] = useState(false);
+
+  const radius = size / 2;
+  const iconSize = size <= 34 ? 16 : 18;
+  const labelFontSize = size <= 34 ? 12 : 13;
+  const statusSize = size <= 34 ? 7 : 9;
+  const statusRadius = statusSize / 2;
+  const compact = variant === "compact";
 
   const badgeColor = isLoggedIn ? "#34c759" : "#ff3b30"; // เขียว / แดง
   const label = (user?.name || "").trim().charAt(0).toUpperCase() || "U";
@@ -49,17 +61,18 @@ export const HeaderAccountButton = () => {
         }
         navigation.navigate("Setting");
       }}
-      style={{ marginRight: 14 }}
+      style={{ alignItems: "center", justifyContent: "center" }}
     >
       <View>
-        {/* icon / avatar */}
         {isLoggedIn ? (
           <View
             style={{
-              width: 28,
-              height: 28,
-              borderRadius: 14,
-              backgroundColor: "#1e90ff",
+              width: size,
+              height: size,
+              borderRadius: radius,
+              backgroundColor: compact ? "#141c2a" : "#111827",
+              borderWidth: 1,
+              borderColor: compact ? "#243047" : "#1B2538",
               alignItems: "center",
               justifyContent: "center",
               overflow: "hidden",
@@ -68,30 +81,42 @@ export const HeaderAccountButton = () => {
             {shouldShowImage ? (
               <Image
                 source={{ uri: avatarUri }}
-                style={{ width: 28, height: 28, borderRadius: 14 }}
+                style={{ width: size, height: size, borderRadius: radius }}
                 resizeMode="cover"
                 onError={() => setAvatarLoadFailed(true)}
               />
             ) : (
-              <Text style={{ color: "#fff", fontWeight: "900" }}>{label}</Text>
+              <Text style={{ color: "#fff", fontWeight: "900", fontSize: labelFontSize }}>{label}</Text>
             )}
           </View>
         ) : (
-          <Ionicons name="person-circle-outline" size={30} color="#fff" />
+          <View
+            style={{
+              width: size,
+              height: size,
+              borderRadius: radius,
+              backgroundColor: compact ? "#141c2a" : "#111827",
+              borderWidth: 1,
+              borderColor: compact ? "#243047" : "#1B2538",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Ionicons name="person-outline" size={iconSize} color="#F8FAFC" />
+          </View>
         )}
 
-        {/* badge */}
         <View
           style={{
             position: "absolute",
-            right: -2,
-            top: -2,
-            width: 10,
-            height: 10,
-            borderRadius: 5,
+            right: -1,
+            top: -1,
+            width: statusSize,
+            height: statusSize,
+            borderRadius: statusRadius,
             backgroundColor: badgeColor,
             borderWidth: 1,
-            borderColor: "#111",
+            borderColor: "#0b0f19",
           }}
         />
       </View>

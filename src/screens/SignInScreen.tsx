@@ -118,7 +118,7 @@ export default function SignInScreen({
             // ปิด modal
             navigation.goBack();
         } catch (e: any) {
-          setError(e?.message || t("auth.sign_in_failed"));
+          setError(e?.message || t("auth.google_sign_in_failed"));
         } finally {
             setSubmitting(false);
         }
@@ -137,6 +137,7 @@ export default function SignInScreen({
                 </View>
                 <Pressable
                 accessibilityRole="button"
+                accessibilityLabel={t("common.close")}
                 style={styles.closeBtn}
                 onPress={() => {
                     navigation.goBack();
@@ -163,6 +164,8 @@ export default function SignInScreen({
                 style={[styles.socialBtn, styles.googleBtn]}
                 onPress={handleGoogle}
                 disabled={submitting}
+              accessibilityRole="button"
+              accessibilityLabel={t("auth.continue_with_google")}
             >
                 <Text style={[styles.socialText, styles.googleText]}>
                 {t("auth.continue_with_google")}
@@ -179,7 +182,7 @@ export default function SignInScreen({
             <TextInput
                 value={email}
                 onChangeText={setEmail}
-                placeholder="you@example.com"
+              placeholder={t("auth.email_placeholder")}
                 placeholderTextColor="rgba(255,255,255,0.35)"
                 autoCapitalize="none"
                 keyboardType="email-address"
@@ -191,7 +194,7 @@ export default function SignInScreen({
             <TextInput
                 value={password}
                 onChangeText={setPassword}
-                placeholder="••••••••"
+              placeholder={t("auth.password_placeholder")}
                 placeholderTextColor="rgba(255,255,255,0.35)"
                 secureTextEntry
                 style={styles.input}
@@ -204,6 +207,8 @@ export default function SignInScreen({
                 style={[styles.primaryBtn, !canSubmit && styles.primaryBtnDisabled]}
                 onPress={handleSignIn}
                 disabled={!canSubmit}
+              accessibilityRole="button"
+              accessibilityLabel={t("auth.sign_in")}
             >
                 {submitting ? (
                 <ActivityIndicator />

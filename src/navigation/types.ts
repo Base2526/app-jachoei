@@ -13,6 +13,9 @@ export type RootStackParamList = {
   // Modals / stack screens
   SignIn: undefined;
   BlockedLogsSearch: undefined;
+  EntityDetail:
+    | { entityType: "PHONE"; phone: string }
+    | { entityType: "BANK"; bankCode: string; accountNo: string; bankName?: string };
 
   PostView: { id: string; currentUserId?: string };
   Profile: { id: string };

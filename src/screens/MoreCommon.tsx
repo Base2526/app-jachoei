@@ -228,7 +228,7 @@ export const moreCommonStyles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 10,
-    padding: 16,
+    padding: 12,
   },
   chip: {
     minWidth: "47%",
@@ -252,15 +252,18 @@ const styles = StyleSheet.create({
     backgroundColor: morePalette.background,
   },
   content: {
-    padding: 16,
+    paddingHorizontal: 0,
+    paddingTop: 16,
     paddingBottom: 28,
   },
   introCard: {
     backgroundColor: morePalette.card,
-    borderRadius: 22,
+    width: "100%",
+    alignSelf: "stretch",
+    borderRadius: 0,
     borderWidth: 1,
     borderColor: morePalette.border,
-    padding: 18,
+    padding: 12,
     marginBottom: 18,
   },
   eyebrow: {
@@ -284,6 +287,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   sectionHeader: {
+    paddingHorizontal: 12,
     marginBottom: 10,
   },
   sectionTitle: {
@@ -299,15 +303,17 @@ const styles = StyleSheet.create({
   },
   card: {
     backgroundColor: morePalette.card,
-    borderRadius: 18,
+    width: "100%",
+    alignSelf: "stretch",
+    borderRadius: 0,
     borderWidth: 1,
     borderColor: morePalette.border,
-    overflow: "hidden",
+    overflow: "visible",
     marginBottom: 18,
   },
   actionRow: {
     minHeight: 76,
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
     paddingVertical: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: morePalette.border,
@@ -367,7 +373,7 @@ const styles = StyleSheet.create({
   buttonRow: {
     flexDirection: "row",
     gap: 10,
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
     paddingTop: 12,
     paddingBottom: 16,
   },
@@ -407,14 +413,14 @@ const styles = StyleSheet.create({
   infoRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
     paddingVertical: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: morePalette.border,
   },
   metaRow: {
     minHeight: 48,
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: morePalette.border,

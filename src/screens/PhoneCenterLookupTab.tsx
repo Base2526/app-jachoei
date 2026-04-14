@@ -1,5 +1,5 @@
 // src/screens/PhoneCenterLookupTab.tsx
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -12,14 +12,15 @@ import {
   Keyboard,
   Platform,
   Dimensions,
+  RefreshControl,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Ionicons from "react-native-vector-icons/Ionicons";
 import { gql } from "@apollo/client";
 import { client } from "../apollo/client";
-import { checkScamPhoneWithFallback } from "../lib/syncScamPhones";
 import { RouteProp, useNavigation, useRoute } from "@react-navigation/native";
 import { useHeaderHeight } from "@react-navigation/elements";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "../auth/AuthProvider";
 import { useI18n } from "../i18n";
 import {
@@ -29,69 +30,116 @@ import {
 } from "../hooks/useJachoeiStatusKeys";
 import type { TabsParamList } from "../navigation/types";
 
-import { addBlockedNumber } from "../native/CallBlocker";
+import { FloatingActionButton } from "../components/FloatingActionButton";
+import { HeaderSearchInput } from "../components/HeaderSearchInput";
+import { PhoneCard } from "../components/PhoneCard";
 import { SpamContactPrompt } from "../components/SpamContactPrompt";
+import {
+  BlockReportBottomSheet,
+  type BlockReportBottomSheetRef,
+} from "../components/BlockReportBottomSheet";
+import { usePhoneActions } from "../hooks/usePhoneActions";
 import { useSpamContactPrompt } from "../hooks/useSpamContactPrompt";
-import { promptCallScreeningIfNeededWithOptions } from "../utils/callScreening";
 
 // ======================================================
 // GraphQL (PHONE)
 // ======================================================
-const SEARCH_SCAM_PHONES = gql`
-  query SearchScamPhones($q: String!, $limit: Int!) {
-    searchScamPhones(q: $q, limit: $limit) {
+const PHONE_CENTER_SEARCH = gql`
+  query PhoneCenterSearch($q: String, $filter: PhoneCenterFilter!, $limit: Int!, $offset: Int!) {
+    phoneCenterSearch(q: $q, filter: $filter, limit: $limit, offset: $offset) {
       phone
+      phone_normalized
+      my_blocked
+      my_blocked_at
+      my_reported
+      my_reported_at
+      in_history
+      last_history_at
       report_count
       last_report_at
       risk_level
-      tags
       updated_at
-      is_deleted
+      post_count
+      latest_post_id
       post_ids
-      ctx
+      filters
     }
   }
 `;
 
-const REPORT_SCAM_PHONE = gql`
-  mutation ReportScamPhone($input: ReportScamPhoneInput!) {
-    reportScamPhone(input: $input) {
-      phone
-      report_count
-      last_report_at
-      risk_level
-      tags
-      updated_at
-      is_deleted
-      post_ids
-      ctx
-    }
-  }
-`;
-
-const BLOCK_PHONE = gql`
-  mutation BlockPhone($input: BlockPhoneInput!) {
-    blockPhone(input: $input) {
+const REPORT_NUMBER = gql`
+  mutation ReportNumber($phoneNumber: String!, $category: ScamPhoneReportCategory, $note: String) {
+    reportNumber(phoneNumber: $phoneNumber, category: $category, note: $note) {
       ok
-      status {
+      item {
         phone
         phone_normalized
         my_blocked
         my_blocked_at
+        my_reported
+        my_reported_at
+        in_history
+        last_history_at
+        report_count
+        last_report_at
+        risk_level
+        updated_at
+        post_count
+        latest_post_id
+        post_ids
+        filters
       }
     }
   }
 `;
 
-const UNBLOCK_PHONE = gql`
-  mutation UnblockPhone($input: UnblockPhoneInput!) {
-    unblockPhone(input: $input) {
+const BLOCK_NUMBER = gql`
+  mutation BlockNumber($phoneNumber: String!) {
+    blockNumber(phoneNumber: $phoneNumber) {
       ok
-      status {
+      item {
         phone
         phone_normalized
         my_blocked
         my_blocked_at
+        my_reported
+        my_reported_at
+        in_history
+        last_history_at
+        report_count
+        last_report_at
+        risk_level
+        updated_at
+        post_count
+        latest_post_id
+        post_ids
+        filters
+      }
+    }
+  }
+`;
+
+const UNBLOCK_NUMBER = gql`
+  mutation UnblockNumber($phoneNumber: String!) {
+    unblockNumber(phoneNumber: $phoneNumber) {
+      ok
+      item {
+        phone
+        phone_normalized
+        my_blocked
+        my_blocked_at
+        my_reported
+        my_reported_at
+        in_history
+        last_history_at
+        report_count
+        last_report_at
+        risk_level
+        updated_at
+        post_count
+        latest_post_id
+        post_ids
+        filters
       }
     }
   }
@@ -112,6 +160,8 @@ const SEARCH_SCAM_BANK_ACCOUNTS = gql`
       updated_at
       is_deleted
       post_ids
+      post_count
+      latest_post_id
       ctx
     }
   }
@@ -139,6 +189,32 @@ const REPORT_SCAM_BANK_ACCOUNT = gql`
 // =======================
 type LookupType = "PHONE" | "BANK";
 
+type PhoneCenterFilter = "ALL" | "BLOCKED" | "REPORTS" | "HISTORY";
+
+type PhoneCenterItem = {
+  phone: string;
+  phone_normalized: string;
+  my_blocked: boolean;
+  my_blocked_at: string | null;
+  my_reported: boolean;
+  my_reported_at: string | null;
+  in_history: boolean;
+  last_history_at: string | null;
+  report_count: number;
+  last_report_at: string | null;
+  risk_level: number;
+  updated_at: string;
+  post_count: number;
+  latest_post_id: string | null;
+  post_ids: string[];
+  filters: string[];
+};
+
+type PhoneCenterActionPayload = {
+  ok: boolean;
+  item: PhoneCenterItem;
+};
+
 type ScamPhone = {
   __typename?: string;
   phone: string;
@@ -149,6 +225,8 @@ type ScamPhone = {
   updated_at: string;
   is_deleted: boolean;
   post_ids: string[];
+  post_count: number;
+  latest_post_id: string | null;
   ctx?: any;
 };
 
@@ -163,6 +241,8 @@ type ScamBank = {
   updated_at: string;
   is_deleted: boolean;
   post_ids: string[];
+  post_count: number;
+  latest_post_id: string | null;
   ctx?: any;
 };
 
@@ -170,6 +250,9 @@ type CheckResult = {
   found: boolean;
   risk: number;
   reportCount: number;
+  blocked: boolean;
+  reported: boolean;
+  inHistory: boolean;
 };
 
 export type ReportCategory = "SPAM" | "SCAM" | "SALES" | "HARASS" | "OTHER";
@@ -258,6 +341,17 @@ function toneStyle(tone: "danger" | "warn" | "muted") {
   }
 }
 
+function matchesPhoneCenterFilter(item: PhoneCenterItem, filter: PhoneCenterFilter) {
+  if (filter === "BLOCKED") return item.my_blocked;
+  if (filter === "REPORTS") return item.my_reported || item.report_count > 0;
+  if (filter === "HISTORY") return item.in_history;
+  return true;
+}
+
+function requiresAuthForPhoneCenterFilter(filter: PhoneCenterFilter) {
+  return filter === "BLOCKED" || filter === "HISTORY";
+}
+
 // =======================
 // Storage keys
 // =======================
@@ -320,9 +414,9 @@ function addToHistory(list: string[], value: string) {
 }
 
 // =======================
-// Header SearchBar (Nav Title)
+// Navigation Header Search Wrapper (FULL WIDTH with history inside)
 // =======================
-function HeaderSearchBar(props: {
+function HeaderSearchWrapper(props: {
   value: string;
   onChangeText: (t: string) => void;
   onSubmit: () => void;
@@ -330,105 +424,105 @@ function HeaderSearchBar(props: {
   onBlur: () => void;
   onClearInput: () => void;
   loading?: boolean;
-
+  placeholder?: string;
+  hasHistory: boolean;
   historyOpen: boolean;
   onToggleHistory: () => void;
-
-  placeholder?: string;
 }) {
-  const { value, onChangeText, onSubmit, onFocus, onBlur, onClearInput, loading, historyOpen, onToggleHistory, placeholder } =
-    props;
+  const { value, onChangeText, onSubmit, onFocus, onBlur, onClearInput, loading, placeholder, hasHistory, historyOpen, onToggleHistory } = props;
+
+  // 🔍 DEBUG: Verify this component renders on real device
+  useEffect(() => {
+    console.log("[HeaderSearchWrapper] 🎯 RENDERED - in-screen search (NOT header slot)");
+  }, []);
 
   return (
-    <View style={nav.headerOuter}>
-      <View style={nav.headerPill}>
-        <Ionicons name="search-outline" size={18} color="#9ca3af" />
-
-        <TextInput
+    <View style={searchStyles.headerSearchContainer}>
+      <View style={searchStyles.searchInputWrapper}>
+        <HeaderSearchInput
           value={value}
           onChangeText={onChangeText}
-          placeholder={placeholder || "ค้นหา..."}
-          placeholderTextColor="#6b7280"
-          style={nav.input}
-          returnKeyType="search"
-          keyboardType="default"
-          onSubmitEditing={onSubmit}
+          onClear={onClearInput}
           onFocus={onFocus}
           onBlur={onBlur}
+          showHistoryIcon={false}
+          loading={loading}
+          placeholder={placeholder || "ค้นหา..."}
+          autoFocus={false}
+          onSubmit={onSubmit}
         />
-
-        {value?.length ? (
-          <Pressable onPress={onClearInput} hitSlop={10} style={nav.iconBtn}>
-            <Ionicons name="close-circle" size={18} color="#94a3b8" />
-          </Pressable>
-        ) : (
-          <View style={nav.iconBtn} />
-        )}
-
-        <Pressable onPress={onToggleHistory} hitSlop={10} style={[nav.iconBtn, historyOpen && nav.iconBtnActive]}>
-          <Ionicons name="time-outline" size={18} color={historyOpen ? "#111" : "#cbd5e1"} />
-        </Pressable>
-
-        {loading ? (
-          <View style={nav.miniLoader}>
-            <ActivityIndicator />
-          </View>
-        ) : null}
       </View>
+      
+      {hasHistory && (
+        <Pressable 
+          onPress={onToggleHistory}
+          hitSlop={10}
+          style={searchStyles.headerHistoryBtnInline}
+        >
+          <Ionicons 
+            name="time-outline" 
+            size={22} 
+            color={historyOpen ? "#fbbf24" : "#cbd5e1"} 
+          />
+        </Pressable>
+      )}
     </View>
   );
 }
 
 // =======================
-// History panel overlay
+// History Dropdown Panel (renders below header as dropdown)
 // =======================
-function HistoryPanelOverlay(props: {
+function HistoryDropdownPanel(props: {
   visible: boolean;
-  top: number;
-  left: number;
-  right: number;
   items: string[];
   onPick: (v: string) => void;
   onClear: () => void;
   onClose: () => void;
 }) {
-  const { visible, top, left, right, items, onPick, onClear, onClose } = props;
+  const { visible, items, onPick, onClear, onClose } = props;
   if (!visible) return null;
 
-  const maxH = Math.min(240, Math.round(Dimensions.get("window").height * 0.35));
+  const maxH = Math.min(280, Math.round(Dimensions.get("window").height * 0.4));
 
   return (
-    <View style={hp.root} pointerEvents="box-none">
-      <Pressable style={hp.backdrop} onPress={onClose} />
-
-      <View style={[hp.card, { top, left, right, maxHeight: maxH }]}>
-        <View style={hp.cardHead}>
-          <Text style={hp.headTitle}>ประวัติการค้นหา</Text>
-
-          <Pressable onPress={onClear} hitSlop={10} style={hp.clearBtn}>
-            <Text style={hp.clearText}>ล้าง</Text>
-          </Pressable>
+    <>
+      {/* Backdrop to close on outside tap */}
+      <Pressable style={searchStyles.dropdownBackdrop} onPress={onClose} />
+      
+      {/* Dropdown panel */}
+      <View style={[searchStyles.dropdownPanel, { maxHeight: maxH }]}>
+        <View style={searchStyles.dropdownHeader}>
+          <Ionicons name="time-outline" size={18} color="#cbd5e1" />
+          <Text style={searchStyles.dropdownTitle}>ประวัติการค้นหา</Text>
+          
+          {items.length > 0 && (
+            <Pressable onPress={onClear} hitSlop={10} style={searchStyles.dropdownClearBtn}>
+              <Text style={searchStyles.dropdownClearText}>ล้าง</Text>
+            </Pressable>
+          )}
         </View>
 
         {items.length === 0 ? (
-          <Text style={hp.emptyText}>ยังไม่มีประวัติ</Text>
+          <Text style={searchStyles.dropdownEmpty}>ยังไม่มีประวัติการค้นหา</Text>
         ) : (
           <FlatList
             data={items}
             keyExtractor={(x) => x}
             keyboardShouldPersistTaps="handled"
-            renderItem={({ item, index }) => (
-              <Pressable onPress={() => onPick(item)} style={[hp.row, index === 0 ? { borderTopWidth: 0 } : null]}>
-                <Ionicons name="time-outline" size={18} color="#9ca3af" />
-                <Text style={hp.rowText} numberOfLines={1}>
+            renderItem={({ item }) => (
+              <Pressable onPress={() => onPick(item)} style={searchStyles.historyItem}>
+                <Ionicons name="search-outline" size={16} color="#6b7280" />
+                <Text style={searchStyles.historyItemText} numberOfLines={1}>
                   {item}
                 </Text>
+                <Ionicons name="arrow-forward" size={14} color="#4b5563" />
               </Pressable>
             )}
           />
         )}
       </View>
-    </View>
+    </>
   );
 }
 
@@ -894,18 +988,68 @@ function BankReportInlineForm(props: {
   );
 }
 
+function BankResultIconButton(props: {
+  icon: string;
+  tone: "neutral" | "warning";
+  onPress: () => void;
+  disabled?: boolean;
+  accessibilityLabel: string;
+}) {
+  const { icon, tone, onPress, disabled, accessibilityLabel } = props;
+  const iconColor = tone === "warning" ? "#f59e0b" : "#e5e7eb";
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      onPress={(event) => {
+        event.stopPropagation?.();
+        onPress();
+      }}
+      disabled={disabled}
+      hitSlop={8}
+      style={({ pressed }) => [
+        styles.bankIconButton,
+        tone === "warning" ? styles.bankIconButtonWarning : styles.bankIconButtonNeutral,
+        disabled && styles.bankIconButtonDisabled,
+        pressed && !disabled ? styles.bankIconButtonPressed : null,
+      ]}
+    >
+      <Ionicons name={icon as any} size={20} color={iconColor} />
+    </Pressable>
+  );
+}
+
 // =======================
 // Screen
 // =======================
 export default function PhoneCenterLookupTab() {
   const navigation = useNavigation<any>();
   const route = useRoute<RouteProp<TabsParamList, "CheckPhone">>();
-  useHeaderHeight();
+  const headerHeight = useHeaderHeight();
+  const insets = useSafeAreaInsets();
+  const actionSheetRef = useRef<BlockReportBottomSheetRef>(null);
+  const phoneListRef = useRef<FlatList<PhoneCenterItem> | null>(null);
+  const bankListRef = useRef<FlatList<ScamBank> | null>(null);
+  const phoneScrollOffsetRef = useRef(0);
+  const bankScrollOffsetRef = useRef(0);
+
+  // 🔍 DEBUG: Real device verification logs
+  useEffect(() => {
+    console.log("[PhoneCenterLookup] 🚀 SCREEN MOUNTED");
+    console.log("[PhoneCenterLookup] Platform:", Platform.OS, Platform.Version);
+    console.log("[PhoneCenterLookup] Screen dimensions:", Dimensions.get("window"));
+    console.log("[PhoneCenterLookup] Safe area insets:", insets);
+    console.log("[PhoneCenterLookup] Header height:", headerHeight);
+    console.log("[PhoneCenterLookup] ✅ RENDER PATH: screen-content (in-screen search, NO headerTitle)");
+  }, []);
 
   // ✅ Auth
   const { user, isLoggedIn } = useAuth();
+  const { t } = useI18n();
   const userId = String(user?.id ?? "guest");
   const { isBlockedTel: isBlockedTelServer } = useJachoeiStatusKeys({ enabled: isLoggedIn });
+  const { blockPhone, unblockPhone, reportPhone } = usePhoneActions();
 
   // ✅ helper ตามที่คุณต้องการใช้
   const goStack = useCallback(
@@ -915,21 +1059,56 @@ export default function PhoneCenterLookupTab() {
     [navigation]
   );
 
+  const openPhoneDetail = useCallback(
+    (item: PhoneCenterItem) => {
+      goStack("EntityDetail", { entityType: "PHONE", phone: item.phone_normalized || item.phone });
+    },
+    [goStack]
+  );
+
+  const openBankDetail = useCallback(
+    (item: ScamBank) => {
+      goStack("EntityDetail", {
+        entityType: "BANK",
+        bankCode: item.bank_name || "UNKNOWN",
+        accountNo: normalizeBankAccount(item.account),
+        bankName: item.bank_name || "UNKNOWN",
+      });
+    },
+    [goStack]
+  );
+
+  const openLinkedPosts = useCallback(
+    (postCount: number, latestPostId?: string | null, fallback?: () => void) => {
+      if (postCount === 1 && latestPostId) {
+        goStack("PostView", { id: String(latestPostId), currentUserId: user?.id });
+        return;
+      }
+      fallback?.();
+    },
+    [goStack, user?.id]
+  );
+
   const [lookupType, setLookupType] = useState<LookupType>("PHONE");
 
-  const [q, setQ] = useState("");
+  const [phoneQuery, setPhoneQuery] = useState("");
+  const [bankQuery, setBankQuery] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
 
-  const [history, setHistory] = useState<string[]>([]);
+  const [phoneHistory, setPhoneHistory] = useState<string[]>([]);
+  const [bankHistory, setBankHistory] = useState<string[]>([]);
   const [loadingSearch, setLoadingSearch] = useState(false);
 
   // PHONE
-  const [items, setItems] = useState<ScamPhone[]>([]);
+  const [phoneCenterItems, setPhoneCenterItems] = useState<PhoneCenterItem[]>([]);
   const [expandedTel, setExpandedTel] = useState<string | null>(null);
-  const [loadingCheck, setLoadingCheck] = useState(false);
-  const [checkResult, setCheckResult] = useState<CheckResult | null>(null);
+  const [phoneCenterLoading, setPhoneCenterLoading] = useState(false);
+  const [phoneCenterRefreshing, setPhoneCenterRefreshing] = useState(false);
+  const [phoneCenterFilter, setPhoneCenterFilter] = useState<PhoneCenterFilter>("ALL");
+  const [phoneActionBusy, setPhoneActionBusy] = useState<Record<string, "block" | "unblock" | "report" | null>>({});
   const [phoneSearched, setPhoneSearched] = useState(false);
   const [lastPhoneTerm, setLastPhoneTerm] = useState<string>("");
+  const phoneFilterNeedsLogin = !isLoggedIn && requiresAuthForPhoneCenterFilter(phoneCenterFilter);
 
   // BANK
   const [bankItems, setBankItems] = useState<ScamBank[]>([]);
@@ -939,87 +1118,216 @@ export default function PhoneCenterLookupTab() {
 
   const blurTimer = useRef<any>(null);
 
-  const resetLookupState = useCallback((nextType: LookupType) => {
+  const switchLookupType = useCallback((nextType: LookupType) => {
     setLookupType(nextType);
-    setQ("");
-    setItems([]);
-    setBankItems([]);
-    setExpandedTel(null);
-    setExpandedAcc(null);
-    setCheckResult(null);
-    setPhoneSearched(false);
-    setBankSearched(false);
-    setLastPhoneTerm("");
-    setLastBankTerm("");
     setHistoryOpen(false);
   }, []);
 
+  const currentQuery = lookupType === "PHONE" ? phoneQuery : bankQuery;
+  const currentHistory = lookupType === "PHONE" ? phoneHistory : bankHistory;
+
+  const setActiveQuery = useCallback((value: string) => {
+    if (lookupType === "PHONE") {
+      setPhoneQuery(value);
+      return;
+    }
+    setBankQuery(value);
+  }, [lookupType]);
+
   useEffect(() => {
     (async () => {
-      const h = await loadHistory(userId, lookupType);
-      setHistory(h);
+      const [phoneSaved, bankSaved] = await Promise.all([
+        loadHistory(userId, "PHONE"),
+        loadHistory(userId, "BANK"),
+      ]);
+      setPhoneHistory(phoneSaved);
+      setBankHistory(bankSaved);
     })();
-  }, [userId, lookupType]);
+  }, [userId]);
 
   useEffect(() => {
     const nextType = route.params?.initialLookupType;
     if (!nextType) return;
 
-    resetLookupState(nextType);
+    switchLookupType(nextType);
     navigation.setParams?.({ initialLookupType: undefined });
-  }, [navigation, resetLookupState, route.params?.initialLookupType]);
+  }, [navigation, route.params?.initialLookupType, switchLookupType]);
 
-  const isBlocked = useCallback((telNormalized: string) => isBlockedTelServer(telNormalized), [isBlockedTelServer]);
+  const sortPhoneCenterItems = useCallback(
+    (list: PhoneCenterItem[], explicitTerm?: string) => {
+      const exactTerm = normalizeTel(explicitTerm ?? lastPhoneTerm);
+      return [...list].sort((a, b) => {
+        const aExact = exactTerm && a.phone_normalized === exactTerm ? 1 : 0;
+        const bExact = exactTerm && b.phone_normalized === exactTerm ? 1 : 0;
+        if (aExact !== bExact) return bExact - aExact;
+
+        const aTime = new Date(a.updated_at || a.last_history_at || a.my_reported_at || a.my_blocked_at || 0).getTime();
+        const bTime = new Date(b.updated_at || b.last_history_at || b.my_reported_at || b.my_blocked_at || 0).getTime();
+        if (aTime !== bTime) return bTime - aTime;
+        if (a.risk_level !== b.risk_level) return b.risk_level - a.risk_level;
+        if (a.report_count !== b.report_count) return b.report_count - a.report_count;
+        return a.phone_normalized.localeCompare(b.phone_normalized);
+      });
+    },
+    [lastPhoneTerm]
+  );
+
+  const isBlocked = useCallback(
+    (telNormalized: string) => {
+      const local = phoneCenterItems.find((item) => item.phone_normalized === telNormalized);
+      if (local) return !!local.my_blocked;
+      return isBlockedTelServer(telNormalized);
+    },
+    [isBlockedTelServer, phoneCenterItems]
+  );
+
+  const upsertPhoneCenterItem = useCallback(
+    (item: PhoneCenterItem, explicitTerm?: string) => {
+      const normalized = normalizeTel(item.phone_normalized || item.phone);
+      if (!normalized) return;
+
+      setPhoneCenterItems((prev) => {
+        const remaining = prev.filter((entry) => normalizeTel(entry.phone_normalized || entry.phone) !== normalized);
+        if (!matchesPhoneCenterFilter(item, phoneCenterFilter)) {
+          return sortPhoneCenterItems(remaining, explicitTerm);
+        }
+        return sortPhoneCenterItems([{ ...item, phone_normalized: normalized }, ...remaining], explicitTerm);
+      });
+
+      setExpandedTel(normalized);
+    },
+    [phoneCenterFilter, sortPhoneCenterItems]
+  );
+
+  const fetchPhoneCenter = useCallback(
+    async (term: string, mode: "load" | "refresh" = "load") => {
+      if (!isLoggedIn && requiresAuthForPhoneCenterFilter(phoneCenterFilter)) {
+        setPhoneCenterItems([]);
+        setExpandedTel(null);
+        setPhoneCenterRefreshing(false);
+        setPhoneCenterLoading(false);
+        return;
+      }
+
+      if (mode === "refresh") setPhoneCenterRefreshing(true);
+      else setPhoneCenterLoading(true);
+
+      try {
+        const trimmed = String(term || "").trim();
+        const normalized = normalizeTel(trimmed) || trimmed;
+        const res = await client.query<{ phoneCenterSearch: PhoneCenterItem[] }>({
+          query: PHONE_CENTER_SEARCH,
+          variables: {
+            q: normalized || null,
+            filter: phoneCenterFilter,
+            limit: 40,
+            offset: 0,
+          },
+          fetchPolicy: "network-only",
+        });
+
+        const list = (res.data?.phoneCenterSearch ?? []).map((item) => ({
+          ...item,
+          phone_normalized: normalizeTel(item.phone_normalized || item.phone),
+        }));
+
+        setPhoneCenterItems(sortPhoneCenterItems(list, normalized));
+
+        if (list.length > 0) {
+          const exact = list.find((item) => item.phone_normalized === normalizeTel(normalized)) || list[0];
+          setExpandedTel(exact.phone_normalized || normalizeTel(exact.phone));
+        } else {
+          setExpandedTel(null);
+        }
+      } catch (e: any) {
+        console.warn("[PhoneCenterLookup][phoneCenterSearch] error =", e?.message ?? e);
+        Alert.alert("ผิดพลาด", "โหลด Phone Center ไม่สำเร็จ ลองใหม่อีกครั้ง");
+      } finally {
+        if (mode === "refresh") setPhoneCenterRefreshing(false);
+        else setPhoneCenterLoading(false);
+      }
+    },
+    [isLoggedIn, phoneCenterFilter, sortPhoneCenterItems]
+  );
+
+  const checkResult = useMemo<CheckResult | null>(() => {
+    if (!phoneSearched) return null;
+
+    const exact = phoneCenterItems.find((item) => item.phone_normalized === normalizeTel(lastPhoneTerm));
+    if (!exact) {
+      return {
+        found: false,
+        risk: 0,
+        reportCount: 0,
+        blocked: false,
+        reported: false,
+        inHistory: false,
+      };
+    }
+
+    return {
+      found: exact.report_count > 0 || exact.my_blocked || exact.my_reported || exact.in_history,
+      risk: exact.risk_level,
+      reportCount: exact.report_count,
+      blocked: exact.my_blocked,
+      reported: exact.my_reported,
+      inHistory: exact.in_history,
+    };
+  }, [lastPhoneTerm, phoneCenterItems, phoneSearched]);
+
+  useEffect(() => {
+    if (lookupType !== "PHONE") return;
+    void fetchPhoneCenter(phoneSearched ? lastPhoneTerm : "");
+  }, [fetchPhoneCenter, isLoggedIn, lastPhoneTerm, phoneCenterFilter, phoneSearched, lookupType]);
+
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      if (lookupType === "PHONE") {
+        phoneListRef.current?.scrollToOffset({ offset: phoneScrollOffsetRef.current, animated: false });
+        return;
+      }
+      bankListRef.current?.scrollToOffset({ offset: bankScrollOffsetRef.current, animated: false });
+    });
+  }, [lookupType]);
 
   const onBlock = useCallback(
     async (telNormalized: string) => {
       const tel = normalizeTel(telNormalized);
       if (!tel) return;
-
-      // ✅ เพิ่ม guard อีกชั้น (เผื่อถูกเรียกตรง ๆ)
-      if (!isLoggedIn) {
-        goStack("SignIn");
-        return;
-      }
-
-      await client.mutate({
-        mutation: BLOCK_PHONE,
-        variables: { input: { phone: tel } },
-        refetchQueries: [{ query: Q_MY_BLOCKED_PHONE_KEYS }],
-        awaitRefetchQueries: true,
-      });
-
-      // Update native/local DB (Android) for offline screening + notification
-      if (Platform.OS === "android") {
-        try {
-          await promptCallScreeningIfNeededWithOptions({ cooldownMs: 30_000 });
-          await addBlockedNumber(tel);
-        } catch {
-          // best-effort only
-        }
+      setPhoneActionBusy((prev) => ({ ...prev, [tel]: "block" }));
+      try {
+        const updated = await blockPhone({
+          phone: tel,
+          source: "phone_center_card",
+          rawPhone: tel,
+          syncServer: isLoggedIn,
+        });
+        upsertPhoneCenterItem(updated as any, tel);
+      } finally {
+        setPhoneActionBusy((prev) => ({ ...prev, [tel]: null }));
       }
     },
-    [isLoggedIn, goStack]
+    [blockPhone, isLoggedIn, upsertPhoneCenterItem]
   );
 
   const onUnblock = useCallback(
     async (telNormalized: string) => {
       const tel = normalizeTel(telNormalized);
       if (!tel) return;
-
-      if (!isLoggedIn) {
-        goStack("SignIn");
-        return;
+      setPhoneActionBusy((prev) => ({ ...prev, [tel]: "unblock" }));
+      try {
+        const updated = await unblockPhone({
+          phone: tel,
+          source: "phone_center_card",
+          rawPhone: tel,
+          syncServer: isLoggedIn,
+        });
+        upsertPhoneCenterItem(updated as any, tel);
+      } finally {
+        setPhoneActionBusy((prev) => ({ ...prev, [tel]: null }));
       }
-
-      await client.mutate({
-        mutation: UNBLOCK_PHONE,
-        variables: { input: { phone: tel } },
-        refetchQueries: [{ query: Q_MY_BLOCKED_PHONE_KEYS }],
-        awaitRefetchQueries: true,
-      });
     },
-    [isLoggedIn, goStack]
+    [isLoggedIn, unblockPhone, upsertPhoneCenterItem]
   );
 
   const onReportPhone = useCallback(
@@ -1033,35 +1341,21 @@ export default function PhoneCenterLookupTab() {
       const tel = normalizeTel(data.tel);
       if (!tel) return;
 
-      const input = {
-        phone: tel,
-        note: data.note?.trim() ? data.note.trim() : null,
-        local_blocked: isBlocked(tel),
-        client_id: genClientId(),
-        device_model: null,
-        os_version: `${Platform.OS} ${Platform.Version}`,
-        app_version: null,
-      };
-
-      const res = await client.mutate<{ reportScamPhone: ScamPhone }>({
-        mutation: REPORT_SCAM_PHONE,
-        variables: { input },
-        refetchQueries: [{ query: Q_MY_BLOCKED_PHONE_KEYS }],
-        awaitRefetchQueries: true,
-      });
-
-      const updated = res.data?.reportScamPhone;
-      if (updated) {
-        const norm = normalizeTel(updated.phone);
-        setItems((prev) => {
-          const next = prev.map((x) => (normalizeTel(x.phone) === norm ? updated : x));
-          if (!next.some((x) => normalizeTel(x.phone) === norm)) next.unshift(updated);
-          return next;
+      setPhoneActionBusy((prev) => ({ ...prev, [tel]: "report" }));
+      try {
+        const updated = await reportPhone({
+          phone: tel,
+          category: data.category,
+          note: data.note,
+          source: "phone_center_card",
+          rawPhone: tel,
         });
-        setExpandedTel(norm);
+        upsertPhoneCenterItem(updated as any, tel);
+      } finally {
+        setPhoneActionBusy((prev) => ({ ...prev, [tel]: null }));
       }
     },
-    [isLoggedIn, goStack, isBlocked]
+    [goStack, isLoggedIn, reportPhone, upsertPhoneCenterItem]
   );
 
   const onReportBank = useCallback(
@@ -1115,9 +1409,18 @@ export default function PhoneCenterLookupTab() {
 
   const commitHistory = useCallback(
     async (term: string) => {
-      setHistory((prev) => {
+      if (lookupType === "PHONE") {
+        setPhoneHistory((prev) => {
+          const next = addToHistory(prev, term);
+          void persistHistory(userId, "PHONE", next);
+          return next;
+        });
+        return;
+      }
+
+      setBankHistory((prev) => {
         const next = addToHistory(prev, term);
-        persistHistory(userId, lookupType, next);
+        void persistHistory(userId, "BANK", next);
         return next;
       });
     },
@@ -1125,12 +1428,18 @@ export default function PhoneCenterLookupTab() {
   );
 
   const clearHistory = useCallback(async () => {
-    setHistory([]);
-    await persistHistory(userId, lookupType, []);
+    if (lookupType === "PHONE") {
+      setPhoneHistory([]);
+      await persistHistory(userId, "PHONE", []);
+      return;
+    }
+
+    setBankHistory([]);
+    await persistHistory(userId, "BANK", []);
   }, [userId, lookupType]);
 
   const doSearch = useCallback(async () => {
-    const raw = q.trim();
+    const raw = currentQuery.trim();
     if (!raw) return;
 
     Keyboard.dismiss();
@@ -1143,36 +1452,11 @@ export default function PhoneCenterLookupTab() {
 
         setPhoneSearched(true);
         setLastPhoneTerm(term);
-
-        setCheckResult(null);
         setExpandedTel(null);
-        setItems([]);
+        setPhoneCenterItems([]);
 
         await commitHistory(term);
-
-        const res = await client.query<{ searchScamPhones: ScamPhone[] }>({
-          query: SEARCH_SCAM_PHONES,
-          variables: { q: term, limit: 30 },
-          fetchPolicy: "network-only",
-        });
-
-        const list = res.data?.searchScamPhones ?? [];
-        setItems(list);
-
-        setLoadingCheck(true);
-        try {
-          const chk = await checkScamPhoneWithFallback(client, term);
-          setCheckResult(chk);
-        } finally {
-          setLoadingCheck(false);
-        }
-
-        if (list.length > 0) {
-          const exact = list.find((x) => normalizeTel(x.phone) === normalizeTel(term)) || list[0];
-          setExpandedTel(normalizeTel(exact.phone));
-        } else {
-          setExpandedTel(null);
-        }
+        await fetchPhoneCenter(term);
       } else {
         const term = normalizeBankAccount(raw) || raw;
 
@@ -1206,244 +1490,291 @@ export default function PhoneCenterLookupTab() {
     } finally {
       setLoadingSearch(false);
     }
-  }, [q, lookupType, commitHistory]);
+  }, [currentQuery, lookupType, commitHistory, fetchPhoneCenter]);
 
-  useLayoutEffect(() => {
-    navigation.setOptions?.({
-      headerTitle: () => (
-        <HeaderSearchBar
-          value={q}
-          onChangeText={(t) => setQ(t)}
-          onSubmit={doSearch}
-          onFocus={() => {
-            if (blurTimer.current) clearTimeout(blurTimer.current);
-            setHistoryOpen(true);
-          }}
-          onBlur={() => {
-            blurTimer.current = setTimeout(() => {}, 120);
-          }}
-          onClearInput={() => setQ("")}
-          loading={loadingSearch}
-          historyOpen={historyOpen}
-          onToggleHistory={() => {
-            if (blurTimer.current) clearTimeout(blurTimer.current);
-            setHistoryOpen((v) => !v);
-          }}
-          placeholder={lookupType === "PHONE" ? "ค้นหาเบอร์..." : "ค้นหาเลขบัญชี..."}
-        />
-      ),
-      headerTitleAlign: "center",
-      headerTitleContainerStyle: { width: "100%", left: 0, right: 0, marginHorizontal: 0, paddingHorizontal: 0 },
-      headerRight: () => null,
-      headerShadowVisible: false,
-      headerStyle: { backgroundColor: "#0b0f19" },
-    });
-  }, [navigation, q, doSearch, loadingSearch, historyOpen, lookupType]);
+  // ✅ headerShown: false is now set at screen registration (ScamProtectTabs.tsx)
+  // This prevents race condition where header appears briefly before being hidden
+  // No longer need useLayoutEffect - header is never shown in the first place
 
   const filteredHistory = useMemo(() => {
-    const term = q.trim();
-    if (!term) return history;
+    const term = currentQuery.trim();
+    if (!term) return currentHistory;
     const t = term.toLowerCase();
-    return history.filter((x) => String(x).toLowerCase().includes(t));
-  }, [history, q]);
+    return currentHistory.filter((x) => String(x).toLowerCase().includes(t));
+  }, [currentHistory, currentQuery]);
 
   const HeaderList = useMemo(() => {
     const title = lookupType === "PHONE" ? "Phone Center" : "Bank Center";
-    const sub = lookupType === "PHONE" ? "Lookup • Expand = Block/Report Panel" : "Lookup • Expand = Report Panel";
-    const count = lookupType === "PHONE" ? items.length : bankItems.length;
+    const sub = lookupType === "PHONE" ? "Search • Filter • Block / Unblock / Report" : "Lookup • Expand = Report Panel";
+    const count = lookupType === "PHONE" ? phoneCenterItems.length : bankItems.length;
 
     return (
-      <View style={{ paddingTop: 10, paddingBottom: 10 }}>
-        <View style={topTabs.wrap}>
-          <View style={topTabs.pill}>
-            <Pressable
-              onPress={() => resetLookupState("PHONE")}
-              style={[topTabs.btn, lookupType === "PHONE" && topTabs.btnOn]}
-            >
-              <Ionicons name="call-outline" size={16} color={lookupType === "PHONE" ? "#111" : "#cbd5e1"} />
-              <Text style={[topTabs.text, lookupType === "PHONE" && { color: "#111" }]}>เบอร์</Text>
-            </Pressable>
+      <View style={styles.headerSection}>
+        <View style={styles.headerInner}>
+          {/* Type tabs row (เบอร์ / บัญชี) */}
+          <View style={topTabs.wrap}>
+            <View style={topTabs.pill}>
+              <Pressable
+                onPress={() => switchLookupType("PHONE")}
+                style={[topTabs.btn, lookupType === "PHONE" && topTabs.btnOn]}
+              >
+                <Ionicons name="call-outline" size={15} color={lookupType === "PHONE" ? "#111" : "#cbd5e1"} />
+                <Text style={[topTabs.text, lookupType === "PHONE" && { color: "#111" }]}>เบอร์</Text>
+              </Pressable>
 
-            <Pressable
-              onPress={() => resetLookupState("BANK")}
-              style={[topTabs.btn, lookupType === "BANK" && topTabs.btnOn]}
-            >
-              <Ionicons name="card-outline" size={16} color={lookupType === "BANK" ? "#111" : "#cbd5e1"} />
-              <Text style={[topTabs.text, lookupType === "BANK" && { color: "#111" }]}>บัญชี</Text>
-            </Pressable>
+              <Pressable
+                onPress={() => switchLookupType("BANK")}
+                style={[topTabs.btn, lookupType === "BANK" && topTabs.btnOn]}
+              >
+                <Ionicons name="card-outline" size={15} color={lookupType === "BANK" ? "#111" : "#cbd5e1"} />
+                <Text style={[topTabs.text, lookupType === "BANK" && { color: "#111" }]}>บัญชี</Text>
+              </Pressable>
+            </View>
           </View>
-        </View>
 
-        <Text style={styles.heroTitle}>{title}</Text>
-        <Text style={styles.heroSub}>{sub}</Text>
+          <Text style={styles.heroTitle}>{title}</Text>
+          <Text style={styles.heroSub}>{sub}</Text>
 
-        {lookupType === "PHONE" ? (
-          <>
-            {!!checkResult ? (
-              <View style={styles.card}>
+          {lookupType === "PHONE" ? (
+            <>
+              <View style={styles.filterPillsRow}>
+                {(["ALL", "BLOCKED", "REPORTS", "HISTORY"] as PhoneCenterFilter[]).map((filterKey) => {
+                  const active = phoneCenterFilter === filterKey;
+                  const icon =
+                    filterKey === "BLOCKED"
+                      ? "lock-closed-outline"
+                      : filterKey === "REPORTS"
+                      ? "megaphone-outline"
+                      : filterKey === "HISTORY"
+                      ? "time-outline"
+                      : "albums-outline";
+
+                  return (
+                    <Pressable
+                      key={filterKey}
+                      onPress={() => setPhoneCenterFilter(filterKey)}
+                      style={[styles.filterPill, active && styles.filterPillOn]}
+                    >
+                      <Ionicons name={icon as any} size={14} color={active ? "#111" : "#cbd5e1"} />
+                      <Text style={[styles.filterPillText, active && styles.filterPillTextOn]}>{filterKey}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              {!!checkResult ? (
+                !phoneFilterNeedsLogin ? (
+                  <View style={styles.summarySectionFlat}>
+                    <View style={styles.rowBetween}>
+                      <Text style={styles.cardTitle}>Summary</Text>
+                      <Text style={styles.muted}>{count} results</Text>
+                    </View>
+
+                    {phoneCenterLoading ? (
+                      <View style={{ paddingTop: 10 }}>
+                        <ActivityIndicator />
+                      </View>
+                    ) : (
+                      <View style={{ paddingTop: 10 }}>
+                        <View style={styles.summaryRow}>
+                          <View style={styles.summaryStat}>
+                            <Text style={styles.statLabel}>Found</Text>
+                            <Text style={styles.statValue}>{checkResult.found ? "YES" : "NO"}</Text>
+                          </View>
+                          <View style={styles.summaryStat}>
+                            <Text style={styles.statLabel}>Risk</Text>
+                            <Text style={styles.statValue}>{checkResult.risk}</Text>
+                          </View>
+                          <View style={styles.summaryStat}>
+                            <Text style={styles.statLabel}>State</Text>
+                            <Text style={styles.statValue}>
+                              {checkResult.blocked ? "BLOCKED" : checkResult.reported ? "REPORTED" : checkResult.inHistory ? "HISTORY" : checkResult.reportCount}
+                            </Text>
+                          </View>
+                        </View>
+
+                        <Text style={[styles.muted, { marginTop: 10 }]}> 
+                          {checkResult.found
+                            ? `${riskText(checkResult.risk)} • reports ${checkResult.reportCount}`
+                            : "ไม่พบในระบบ แต่ยัง Block/Report ได้"}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                ) : null
+              ) : (
+                !phoneFilterNeedsLogin ? (
+                  <Text style={[styles.muted, { marginTop: 10 }]}>พิมพ์เบอร์ด้านบน หรือใช้ filter เพื่อดู Blocked / Reports / History</Text>
+                ) : null
+              )}
+
+              {!phoneFilterNeedsLogin ? <Text style={styles.sectionTitle}>Phone Center List (tap to open details)</Text> : null}
+            </>
+          ) : (
+            <>
+              <View style={styles.bankSummarySection}>
                 <View style={styles.rowBetween}>
                   <Text style={styles.cardTitle}>Summary</Text>
                   <Text style={styles.muted}>{count} results</Text>
                 </View>
-
-                {loadingCheck ? (
-                  <View style={{ paddingTop: 10 }}>
-                    <ActivityIndicator />
-                  </View>
-                ) : (
-                  <View style={{ paddingTop: 10 }}>
-                    <View style={styles.summaryRow}>
-                      <View style={styles.summaryStat}>
-                        <Text style={styles.statLabel}>Found</Text>
-                        <Text style={styles.statValue}>{checkResult.found ? "YES" : "NO"}</Text>
-                      </View>
-                      <View style={styles.summaryStat}>
-                        <Text style={styles.statLabel}>Risk</Text>
-                        <Text style={styles.statValue}>{checkResult.risk}</Text>
-                      </View>
-                      <View style={styles.summaryStat}>
-                        <Text style={styles.statLabel}>Reports</Text>
-                        <Text style={styles.statValue}>{checkResult.reportCount}</Text>
-                      </View>
-                    </View>
-
-                    <Text style={[styles.muted, { marginTop: 10 }]}>
-                      {checkResult.found ? riskText(checkResult.risk) : "ไม่พบในระบบ แต่ยัง Block/Report ได้"}
-                    </Text>
-                  </View>
-                )}
+                <Text style={styles.bankSummaryHint}>พิมพ์เลขบัญชีด้านบน แล้วกดค้นหา</Text>
               </View>
-            ) : (
-              <Text style={[styles.muted, { marginTop: 10 }]}>พิมพ์เบอร์ด้านบน แล้วกดค้นหา</Text>
-            )}
 
-            <Text style={styles.sectionTitle}>Results (tap to expand)</Text>
-          </>
-        ) : (
-          <>
-            <View style={styles.card}>
-              <View style={styles.rowBetween}>
-                <Text style={styles.cardTitle}>Summary</Text>
-                <Text style={styles.muted}>{count} results</Text>
-              </View>
-              <Text style={[styles.muted, { marginTop: 10 }]}>พิมพ์เลขบัญชีด้านบน แล้วกดค้นหา</Text>
-            </View>
-
-            <Text style={styles.sectionTitle}>Results (tap to expand)</Text>
-          </>
-        )}
+              <Text style={styles.bankResultsTitle}>Results (tap to open details)</Text>
+            </>
+          )}
+        </View>
       </View>
     );
-  }, [lookupType, checkResult, items.length, bankItems.length, loadingCheck]);
+  }, [bankItems.length, checkResult, lookupType, phoneCenterFilter, phoneCenterItems.length, phoneCenterLoading, phoneFilterNeedsLogin, switchLookupType]);
 
   return (
     <View style={styles.container}>
-      <HistoryPanelOverlay
-        visible={historyOpen}
-        top={0}
-        left={14}
-        right={14}
-        items={filteredHistory.slice(0, 8)}
-        onPick={(v) => {
-          setQ(v);
-          setHistoryOpen(false);
-          setTimeout(() => doSearch(), 0);
-        }}
-        onClear={clearHistory}
-        onClose={() => setHistoryOpen(false)}
-      />
+      {/* Search area wrapper with dropdown positioning context */}
+      <View style={searchStyles.searchAreaWrapper}>
+        {/* Search bar moved to content (no longer in navigation header) */}
+        <View style={[searchStyles.inContentSearchWrapper, { paddingTop: insets.top + 6 }]}>
+          <View style={searchStyles.searchRow}>
+            <HeaderSearchWrapper
+              value={currentQuery}
+              onChangeText={setActiveQuery}
+              onSubmit={doSearch}
+              onFocus={() => {
+                if (blurTimer.current) clearTimeout(blurTimer.current);
+                if (currentHistory.length > 0) {
+                  setHistoryOpen(true);
+                }
+              }}
+              onBlur={() => {
+                blurTimer.current = setTimeout(() => {
+                  setHistoryOpen(false);
+                }, 200);
+              }}
+              onClearInput={() => {
+                if (lookupType === "PHONE") {
+                  setPhoneQuery("");
+                  setPhoneSearched(false);
+                  setLastPhoneTerm("");
+                } else {
+                  setBankQuery("");
+                  setBankSearched(false);
+                  setLastBankTerm("");
+                  setBankItems([]);
+                  setExpandedAcc(null);
+                }
+              }}
+              loading={loadingSearch}
+              placeholder={lookupType === "PHONE" ? "ค้นหาเบอร์..." : "ค้นหาเลขบัญชี..."}
+              hasHistory={true}
+              historyOpen={historyOpen}
+              onToggleHistory={() => {
+                if (blurTimer.current) clearTimeout(blurTimer.current);
+                setHistoryOpen((v) => !v);
+              }}
+            />
+          </View>
+      </View>
+
+      {/* History dropdown panel - positioned relative to search wrapper */}
+      {historyOpen && (
+        <HistoryDropdownPanel
+          visible={historyOpen}
+          items={filteredHistory.slice(0, 10)}
+          onPick={(v) => {
+            setActiveQuery(v);
+            setHistoryOpen(false);
+            setTimeout(() => doSearch(), 0);
+          }}
+          onClear={clearHistory}
+          onClose={() => setHistoryOpen(false)}
+        />
+      )}
+    </View>
 
       {lookupType === "PHONE" ? (
+        phoneFilterNeedsLogin ? (
+          <View style={styles.phoneLockedContainer}>
+            {HeaderList}
+            <View style={styles.authRequiredCenterArea}>
+              <View style={styles.authRequiredCard}>
+                <View style={styles.authRequiredIconWrap}>
+                  <Ionicons name="lock-closed-outline" size={24} color="#fbbf24" />
+                </View>
+                <Text style={styles.authRequiredTitle}>{t("auth.sign_in_to_continue")}</Text>
+                <Text style={styles.authRequiredText}>{t("auth.tab_requires_login")}</Text>
+                <Pressable onPress={() => goStack("SignIn")} style={styles.authRequiredButton}>
+                  <Text style={styles.authRequiredButtonText}>{t("auth.sign_in")}</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        ) : (
         <FlatList
-          data={items}
-          keyExtractor={(it) => normalizeTel(it.phone) || it.phone}
+          ref={phoneListRef}
+          data={phoneCenterItems}
+          keyExtractor={(it) => it.phone_normalized || normalizeTel(it.phone) || it.phone}
           keyboardShouldPersistTaps="handled"
           ListHeaderComponent={HeaderList}
+          contentContainerStyle={styles.phoneListContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={phoneCenterRefreshing}
+              onRefresh={() => {
+                void fetchPhoneCenter(phoneSearched ? lastPhoneTerm : "", "refresh");
+              }}
+              tintColor="#fff"
+            />
+          }
           ListEmptyComponent={
             <View style={styles.emptyBox}>
-              <Text style={styles.muted}>ไม่พบผลลัพธ์</Text>
+              <Text style={styles.muted}>ไม่พบรายการใน Phone Center</Text>
             </View>
           }
+          onScroll={(event) => {
+            phoneScrollOffsetRef.current = event.nativeEvent.contentOffset.y;
+          }}
+          scrollEventThrottle={16}
           renderItem={({ item }) => {
-            const tel = normalizeTel(item.phone);
-            const isExpanded = expandedTel === tel;
-            const riskScore = clamp(Number(item.risk_level || 0), 0, 100);
-            const blocked = isBlocked(tel);
-
-            const riskMeta = computeRiskLabel(item.report_count, riskScore);
-            const pillTone = toneStyle(riskMeta.tone);
-
+            const tel = normalizeTel(item.phone_normalized || item.phone);
             return (
-              <Pressable
-                onPress={() => setExpandedTel((prev) => (prev === tel ? null : tel))}
-                style={[styles.singleCard, isExpanded && styles.singleCardActive]}
-              >
-                <View style={styles.cardHeaderRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.telText}>{tel || item.phone}</Text>
-                    <Text style={styles.subText}>
-                      Risk {riskScore} • {item.report_count} reports • last {fmtTime(item.last_report_at)}
-                    </Text>
-                  </View>
-
-                  <View style={styles.headerRight}>
-                    <View
-                      style={[
-                        styles.riskBadge,
-                        { backgroundColor: blocked ? "#ef4444" : pillTone.bg, borderColor: blocked ? "#ff4d6d" : "#27335f" },
-                      ]}
-                    >
-                      <Text style={[styles.riskBadgeText, { color: blocked ? "#111" : pillTone.fg }]}>
-                        {blocked ? "BLOCKED" : riskMeta.label}
-                      </Text>
-                    </View>
-
-                    <View style={styles.togglePill}>
-                      <Text style={styles.toggleText}>{isExpanded ? "HIDE" : "VIEW"}</Text>
-                    </View>
-                  </View>
-                </View>
-
-                {isExpanded ? (
-                  <View style={styles.expandWrap}>
-                    <View style={styles.metaRow}>
-                      <Text style={styles.metaText}>Updated: {fmtTime(item.updated_at)}</Text>
-                      <Text style={styles.metaText}>Last report: {fmtTime(item.last_report_at)}</Text>
-                    </View>
-
-                    <InlineBlockReportPanel
-                      tel={tel}
-                      postId={item.post_ids?.[0]}
-                      title={undefined}
-                      reportCount={item.report_count}
-                      riskScore={riskScore}
-                      isLoggedIn={!!isLoggedIn}
-                      goStack={goStack}
-                      isBlocked={isBlocked}
-                      onBlock={onBlock}
-                      onUnblock={onUnblock}
-                      onReport={onReportPhone}
-                    />
-                  </View>
-                ) : null}
-              </Pressable>
+              <PhoneCard
+                item={{ ...(item as any), tags: [] }}
+                busyAction={phoneActionBusy[tel] ?? null}
+                onPress={() => openPhoneDetail(item)}
+                onViewPosts={() => openLinkedPosts(item.post_count, item.latest_post_id, () => openPhoneDetail(item))}
+                onBlock={onBlock}
+                onUnblock={onUnblock}
+                onReport={(phone: string) => {
+                  actionSheetRef.current?.open({
+                    mode: "report",
+                    phone,
+                    title: "Report number",
+                  });
+                }}
+              />
             );
           }}
         />
+        )
       ) : (
         <FlatList
+          ref={bankListRef}
           data={bankItems}
           keyExtractor={(it) => normalizeBankAccount(it.account) || it.account}
           keyboardShouldPersistTaps="handled"
           ListHeaderComponent={HeaderList}
+          contentContainerStyle={styles.bankListContent}
           ListEmptyComponent={
-            <View style={styles.emptyBox}>
+            <View style={[styles.bankResultRow, styles.bankEmptyRow]}>
               <Text style={styles.muted}>ไม่พบผลลัพธ์</Text>
             </View>
           }
+          onScroll={(event) => {
+            bankScrollOffsetRef.current = event.nativeEvent.contentOffset.y;
+          }}
+          scrollEventThrottle={16}
           renderItem={({ item }) => {
             const acc = normalizeBankAccount(item.account);
-            const isExpanded = expandedAcc === acc;
 
             const riskScore = clamp(Number(item.risk_level || 0), 0, 100);
             const riskMeta = computeRiskLabel(item.report_count, riskScore);
@@ -1451,11 +1782,11 @@ export default function PhoneCenterLookupTab() {
 
             return (
               <Pressable
-                onPress={() => setExpandedAcc((prev) => (prev === acc ? null : acc))}
-                style={[styles.singleCard, isExpanded && styles.singleCardActive]}
+                onPress={() => openBankDetail(item)}
+                style={styles.bankResultRow}
               >
                 <View style={styles.cardHeaderRow}>
-                  <View style={{ flex: 1 }}>
+                  <View style={styles.bankCardContent}>
                     <Text style={styles.telText}>
                       {item.bank_name ? `${item.bank_name} • ` : ""}
                       {acc || item.account}
@@ -1463,54 +1794,75 @@ export default function PhoneCenterLookupTab() {
                     <Text style={styles.subText}>
                       Risk {riskScore} • {item.report_count} reports • last {fmtTime(item.last_report_at)}
                     </Text>
+                    {item.post_count > 0 ? (
+                      <Text style={styles.linkedPostsText}>
+                        {item.post_count} linked post{item.post_count > 1 ? "s" : ""}
+                      </Text>
+                    ) : null}
                   </View>
 
-                  <View style={styles.headerRight}>
+                  <View style={styles.bankActionColumn}>
                     <View style={[styles.riskBadge, { backgroundColor: pillTone.bg, borderColor: "#27335f" }]}>
                       <Text style={[styles.riskBadgeText, { color: pillTone.fg }]}>{riskMeta.label}</Text>
                     </View>
 
-                    <View style={styles.togglePill}>
-                      <Text style={styles.toggleText}>{isExpanded ? "HIDE" : "VIEW"}</Text>
+                    <View style={styles.bankActionIcons}>
+                      <BankResultIconButton
+                        icon="eye-outline"
+                        tone="neutral"
+                        onPress={() => openLinkedPosts(item.post_count, item.latest_post_id, () => openBankDetail(item))}
+                        disabled={item.post_count <= 0}
+                        accessibilityLabel={item.post_count <= 1 ? "View post" : `View ${item.post_count} posts`}
+                      />
+                      <BankResultIconButton
+                        icon="warning-outline"
+                        tone="warning"
+                        onPress={() =>
+                          void onReportBank({
+                            account: acc,
+                            bankName: item.bank_name ?? null,
+                            category: "SCAM",
+                            note: undefined,
+                            postId: item.post_ids?.[0],
+                          })
+                        }
+                        accessibilityLabel="Report bank account"
+                      />
                     </View>
                   </View>
                 </View>
-
-                {isExpanded ? (
-                  <View style={styles.expandWrap}>
-                    <View style={styles.metaRow}>
-                      <Text style={styles.metaText}>Updated: {fmtTime(item.updated_at)}</Text>
-                      <Text style={styles.metaText}>Last report: {fmtTime(item.last_report_at)}</Text>
-                    </View>
-
-                    <BankReportInlineForm
-                      userId={userId}
-                      account={acc}
-                      bankName={item.bank_name ?? null}
-                      fromPostTitle={null}
-                      isLoggedIn={!!isLoggedIn}
-                      goStack={goStack}
-                      riskLabel={riskMeta.label}
-                      riskTone={pillTone}
-                      onClose={() => setExpandedAcc(null)}
-                      onCancel={() => setExpandedAcc(null)}
-                      onSubmit={async ({ account, bankName, category, note }) => {
-                        await onReportBank({
-                          account,
-                          bankName,
-                          category,
-                          note,
-                          postId: item.post_ids?.[0],
-                        });
-                      }}
-                    />
-                  </View>
-                ) : null}
               </Pressable>
             );
           }}
         />
       )}
+
+      {lookupType === "PHONE" ? (
+        <FloatingActionButton
+          onPress={() => actionSheetRef.current?.open({ mode: "menu", title: "Quick Actions" })}
+          accessibilityLabel="Phone Center quick actions"
+        />
+      ) : null}
+
+      <BlockReportBottomSheet
+        ref={actionSheetRef}
+        onCheck={(phone) => {
+          setPhoneQuery(phone);
+          setHistoryOpen(false);
+          setTimeout(() => {
+            setPhoneQuery(phone);
+            setPhoneSearched(true);
+            setLastPhoneTerm(phone);
+            void fetchPhoneCenter(phone);
+          }, 0);
+        }}
+        onBlock={async (phone) => {
+          await onBlock(phone);
+        }}
+        onReport={async ({ phone, category, note }) => {
+          await onReportPhone({ tel: phone, category, note });
+        }}
+      />
     </View>
   );
 }
@@ -1519,69 +1871,184 @@ export default function PhoneCenterLookupTab() {
 // Styles (Screen)
 // =======================
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#0b0f19", paddingHorizontal: 14 },
+  container: { flex: 1, backgroundColor: "#0b0f19" },
+  phoneLockedContainer: { flex: 1 },
+  headerSection: { paddingTop: 10, paddingBottom: 8 },
+  headerInner: { paddingHorizontal: 16 },
+  phoneListContent: { paddingBottom: 120, paddingHorizontal: 0 },
+  bankListContent: { paddingBottom: 36, paddingHorizontal: 0 },
+  heroTitle: { color: "#F8FAFC", fontSize: 18, fontWeight: "900", marginTop: 0, letterSpacing: 0.2 },
+  heroSub: { color: "#94A3B8", marginTop: 2, lineHeight: 18 },
 
-  heroTitle: { color: "#fff", fontSize: 20, fontWeight: "900", marginTop: 4 },
-  heroSub: { color: "#98a2b3", marginTop: 4 },
+  filterPillsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 14, marginBottom: 6 },
+  filterPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#273244",
+    backgroundColor: "#111827",
+  },
+  filterPillOn: { backgroundColor: "#E2E8F0", borderColor: "#E2E8F0" },
+  filterPillText: { color: "#CBD5E1", fontWeight: "800", fontSize: 11 },
+  filterPillTextOn: { color: "#111" },
 
   sectionTitle: {
-    color: "#e5e7eb",
-    fontWeight: "900",
-    marginTop: 14,
+    color: "#E5E7EB",
+    fontWeight: "800",
+    marginTop: 16,
+    marginBottom: 12,
+    fontSize: 12,
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+  },
+  bankResultsTitle: {
+    color: "#E5E7EB",
+    fontWeight: "800",
+    marginTop: 16,
     marginBottom: 10,
-    fontSize: 13,
+    fontSize: 12,
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
   },
 
   card: {
-    marginTop: 12,
-    padding: 14,
-    borderRadius: 18,
+    marginTop: 14,
+    padding: 16,
+    borderRadius: 0,
     borderWidth: 1,
-    borderColor: "#1a2240",
-    backgroundColor: "#0e1426",
+    borderColor: "#1B2538",
+    backgroundColor: "#111827",
   },
-  cardTitle: { color: "#fff", fontWeight: "900" },
-  muted: { color: "#98a2b3" },
+  cardTitle: { color: "#F8FAFC", fontWeight: "900", fontSize: 15 },
+  muted: { color: "#94A3B8", lineHeight: 18 },
   rowBetween: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  summarySectionFlat: {
+    marginTop: 14,
+    paddingTop: 2,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.06)",
+  },
+  bankSummarySection: {
+    marginTop: 16,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.06)",
+  },
+  bankSummaryHint: {
+    color: "#94A3B8",
+    lineHeight: 18,
+    marginTop: 10,
+  },
 
-  summaryRow: { flexDirection: "row", gap: 10 },
+  summaryRow: { flexDirection: "row", gap: 10, marginTop: 2 },
   summaryStat: {
     flex: 1,
     padding: 12,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "#202a4f",
-    backgroundColor: "#0b1020",
+    borderColor: "#22304A",
+    backgroundColor: "#0D1526",
   },
-  statLabel: { color: "#98a2b3", fontWeight: "700" },
-  statValue: { color: "#fff", fontWeight: "900", fontSize: 16, marginTop: 6 },
+  statLabel: { color: "#94A3B8", fontWeight: "700", fontSize: 12 },
+  statValue: { color: "#F8FAFC", fontWeight: "900", fontSize: 16, marginTop: 6 },
 
   emptyBox: {
-    padding: 14,
+    padding: 16,
+    borderRadius: 0,
+    borderWidth: 1,
+    borderColor: "#182235",
+    backgroundColor: "#0F172A",
+  },
+  authRequiredCenterArea: {
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: 16,
+    paddingBottom: 120,
+  },
+  authRequiredCard: {
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "#141c36",
-    backgroundColor: "#0c1224",
+    borderColor: "#273244",
+    backgroundColor: "#0f172a",
+    paddingVertical: 24,
+    paddingHorizontal: 20,
+    alignItems: "center",
+    gap: 10,
   },
+  authRequiredIconWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#111827",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 4,
+  },
+  authRequiredTitle: { color: "#F8FAFC", fontSize: 17, fontWeight: "900", textAlign: "center" },
+  authRequiredText: { color: "#94A3B8", textAlign: "center", lineHeight: 20 },
+  authRequiredButton: {
+    marginTop: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: "#E2E8F0",
+  },
+  authRequiredButtonText: { color: "#111", fontSize: 14, fontWeight: "900" },
 
   singleCard: {
-    padding: 14,
-    borderRadius: 18,
+    width: "100%",
+    alignSelf: "stretch",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 0,
     borderWidth: 1,
     borderColor: "#141c36",
     backgroundColor: "#0c1224",
     marginBottom: 10,
+  },
+  bankResultRow: {
+    width: "100%",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#1B2538",
+    backgroundColor: "#111827",
+  },
+  bankEmptyRow: {
+    alignItems: "flex-start",
   },
   singleCardActive: {
     borderColor: "#2563eb",
     backgroundColor: "#0f1a39",
   },
 
-  cardHeaderRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  cardHeaderRow: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
+  bankCardContent: { flex: 1, minWidth: 0 },
   telText: { color: "#fff", fontWeight: "950" as any, fontSize: 18 },
   subText: { color: "#98a2b3", marginTop: 4 },
+  linkedPostsText: { color: "#93c5fd", fontSize: 11, fontWeight: "800", marginTop: 6 },
+  metaBadgeRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 },
+  miniMetaBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#27335f",
+    backgroundColor: "#0b1020",
+  },
+  miniMetaBadgeDanger: { backgroundColor: "#ef4444", borderColor: "#ef4444" },
+  miniMetaBadgeWarn: { backgroundColor: "#facc15", borderColor: "#facc15" },
+  miniMetaBadgeText: { color: "#c7d2fe", fontWeight: "900", fontSize: 11 },
+  miniMetaBadgeTextDark: { color: "#111", fontWeight: "900", fontSize: 11 },
 
-  headerRight: { alignItems: "flex-end", gap: 10 },
+  bankActionColumn: { alignItems: "flex-end", gap: 8, marginLeft: 4 },
 
   riskBadge: {
     paddingHorizontal: 12,
@@ -1609,99 +2076,166 @@ const styles = StyleSheet.create({
   },
   metaRow: { gap: 4, marginBottom: 10 },
   metaText: { color: "#98a2b3" },
-});
-
-// =======================
-// Styles (Navigation header search)
-// =======================
-const nav = StyleSheet.create({
-  headerOuter: { flex: 1, width: "100%" },
-  headerPill: {
-    flex: 1,
-    width: "100%",
+  bankActionIcons: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#1a2240",
-    backgroundColor: "#0e1426",
   },
-  input: {
-    flex: 1,
-    color: "#fff",
-    fontSize: 13,
-    paddingVertical: 0,
-  },
-  iconBtn: {
-    width: 30,
-    height: 30,
-    borderRadius: 999,
+  bankIconButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
+    borderWidth: 1,
   },
-  iconBtnActive: { backgroundColor: "#e5e7eb" },
-  miniLoader: { marginLeft: 6 },
+  bankIconButtonNeutral: {
+    backgroundColor: "#161f31",
+    borderColor: "#2a3448",
+  },
+  bankIconButtonWarning: {
+    backgroundColor: "rgba(245, 158, 11, 0.14)",
+    borderColor: "rgba(245, 158, 11, 0.22)",
+  },
+  bankIconButtonDisabled: { opacity: 0.65 },
+  bankIconButtonPressed: { opacity: 0.85 },
 });
 
 // =======================
-// Styles (History panel)
+// Search Styles (In-Content Search + Dropdown History Panel)
 // =======================
-const hp = StyleSheet.create({
-  root: {
-    position: "absolute",
-    left: 0,
-    top: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 999,
-    elevation: 999,
+const searchStyles = StyleSheet.create({
+  // Positioning wrapper for search bar + dropdown
+  searchAreaWrapper: {
+    position: "relative",
+    zIndex: 100,
+    elevation: 12,
+    marginBottom: 12,  // Spacing between search area and content below
   },
-  backdrop: {
+
+  // Wrapper for search bar when rendered in screen content (not header)
+  // Note: paddingTop is applied dynamically with safe area insets to prevent status bar overlap
+  inContentSearchWrapper: {
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    backgroundColor: "#0b0f19",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.05)",
+  },
+
+  searchRow: {
+    minHeight: 44,
+    justifyContent: "center",
+  },
+
+  // Search container (no longer needs flex:1 since it's not in header)
+  headerSearchContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    width: "100%",
+    minHeight: 42,
+    paddingRight: 4,
+  },
+
+  // Search input wrapper (takes remaining space)
+  searchInputWrapper: {
+    flex: 1,
+    minWidth: 0,
+  },
+
+  // Header history button (inline, inside the search container)
+  headerHistoryBtnInline: {
+    width: 38,
+    height: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 6,
+    flexShrink: 0,
+  },
+
+  // Dropdown backdrop
+  dropdownBackdrop: {
     position: "absolute",
-    left: 0,
     top: 0,
+    left: 0,
     right: 0,
     bottom: 0,
     backgroundColor: "transparent",
+    zIndex: 998,
   },
-  card: {
+
+  // Dropdown panel (below in-content search bar)
+  // Positioned absolutely relative to searchAreaWrapper
+  dropdownPanel: {
     position: "absolute",
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
-    backgroundColor: "rgba(18, 21, 30, 0.92)",
-    overflow: "hidden",
+    top: "100%",  // Position directly below the search wrapper
+    left: 16,  // Align with search bar horizontal padding
+    right: 16,  // Align with search bar horizontal padding
+    backgroundColor: "#0f1419",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.08)",
+    zIndex: 999,
     shadowColor: "#000",
-    shadowOpacity: 0.35,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
   },
-  cardHead: {
+
+  // Dropdown header
+  dropdownHeader: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 14,
+    gap: 8,
+    paddingHorizontal: 16,
     paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.06)",
   },
-  headTitle: { color: "#fff", fontSize: 16, fontWeight: "900" },
-  clearBtn: { paddingHorizontal: 8, paddingVertical: 6 },
-  clearText: { color: "#ff4d6d", fontWeight: "900", fontSize: 14 },
 
-  emptyText: { color: "#98a2b3", paddingHorizontal: 14, paddingBottom: 14 },
+  dropdownTitle: {
+    flex: 1,
+    color: "#e5e7eb",
+    fontSize: 14,
+    fontWeight: "700",
+  },
 
-  row: {
+  dropdownClearBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+
+  dropdownClearText: {
+    color: "#ef4444",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+
+  dropdownEmpty: {
+    paddingHorizontal: 16,
+    paddingVertical: 24,
+    color: "#6b7280",
+    fontSize: 14,
+    textAlign: "center",
+  },
+
+  // History item
+  historyItem: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-    paddingHorizontal: 14,
+    paddingHorizontal: 16,
     paddingVertical: 14,
-    borderTopWidth: 1,
-    borderTopColor: "rgba(255,255,255,0.06)",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.04)",
   },
-  rowText: { color: "#fff", fontSize: 20, fontWeight: "900", flex: 1 },
+
+  historyItemText: {
+    flex: 1,
+    color: "#d1d5db",
+    fontSize: 15,
+    fontWeight: "500",
+  },
 });
 
 // =======================
@@ -1829,7 +2363,7 @@ const ui = StyleSheet.create({
 // Styles (Top tabs)
 // =======================
 const topTabs = StyleSheet.create({
-  wrap: { marginBottom: 10, alignItems: "flex-start" },
+  wrap: { marginBottom: 12, alignItems: "flex-start" },
   pill: {
     flexDirection: "row",
     borderRadius: 999,
@@ -1837,10 +2371,20 @@ const topTabs = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#27335f",
     backgroundColor: "#0e1426",
+    padding: 2,
   },
-  btn: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 14, paddingVertical: 10 },
-  btnOn: { backgroundColor: "#e5e7eb" },
-  text: { color: "#cbd5e1", fontWeight: "900", fontSize: 14 },
+  btn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    minHeight: 36,
+    flexShrink: 1,
+  },
+  btnOn: { backgroundColor: "#E2E8F0" },
+  text: { color: "#CBD5E1", fontWeight: "800", fontSize: 13 },
 });
 
 // =======================

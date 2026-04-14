@@ -4,10 +4,10 @@ import { Platform } from "react-native";
 export const ENV = {
     isDev: __DEV__,
     apiBase: __DEV__
-        ? Platform.OS === "android" ? "http://192.168.1.21:3000" : "http://localhost:3000"
+        ? Platform.OS === "android" ? "http://192.168.1.7:3000" : "http://localhost:3000"
         : "https://jachoei.com",
     webBase: __DEV__
-        ? Platform.OS === "android" ? "http://192.168.1.21:3000" : "http://localhost:3000"
+        ? Platform.OS === "android" ? "http://192.168.1.7:3000" : "http://localhost:3000"
         : "https://jachoei.com",
     appName: "jachoei",
     wsUrl: __DEV__
@@ -19,6 +19,6 @@ export const ENV = {
 //   isDev: __DEV__,
 //   apiBase: "https://jachoei.com",
 //   webBase: "https://jachoei.com",
-//   appName: "jachoei",
+//   appName: "jachoei", 
 //   wsUrl: "wss://jachoei.com/graphql",
 // };
