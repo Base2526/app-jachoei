@@ -11,7 +11,10 @@ import {
   TextInput,
   View,
   Platform,
+  KeyboardAvoidingView,
+  useWindowDimensions,
 } from "react-native";
+import Ionicons from "react-native-vector-icons/Ionicons";
 import dayjs from "dayjs";
 import _ from "lodash";
 
@@ -170,6 +173,8 @@ type Props = NativeStackScreenProps<RootStackParamList, "PostForm">;
 
 export default function PostFormScreen({ route, navigation }: Props) {
   const { t } = useI18n();
+  const { width: screenWidth } = useWindowDimensions();
+  const isTablet = screenWidth >= 768;
   const id = route.params?.id ? String(route.params.id) : undefined;
   const isEdit = !!id;
 
@@ -196,6 +201,12 @@ export default function PostFormScreen({ route, navigation }: Props) {
 
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // ===== refs for scrolling to errors =====
+  const scrollViewRef = useRef<ScrollView>(null);
+  const fieldPositions = useRef<Record<string, number>>({});
+  const inputRefs = useRef<Record<string, TextInput | null>>({});
 
   // ===== snapshot for dirty check =====
   const initialSnapshotRef = useRef<any>(null);
@@ -491,27 +502,76 @@ export default function PostFormScreen({ route, navigation }: Props) {
 
   // ====================== submit ======================
 
+  const validateForm = useCallback((): Record<string, string> => {
+    const newErrors: Record<string, string> = {};
+
+    if (!first_last_name.trim()) {
+      newErrors.seller_name = t("postForm.validation_inline.seller_name_required");
+    }
+    if (!postTitle.trim()) {
+      newErrors.product = t("postForm.validation_inline.product_required");
+    }
+    if (!transfer_amount || Number(transfer_amount) <= 0) {
+      if (!transfer_amount) {
+        newErrors.transfer_amount = t("postForm.validation_inline.transfer_amount_required");
+      } else {
+        newErrors.transfer_amount = t("postForm.validation_inline.transfer_amount_invalid");
+      }
+    }
+    if (!transfer_date) {
+      newErrors.transfer_date = t("postForm.validation_inline.transfer_date_required");
+    }
+    if (!province_id) {
+      newErrors.province = t("postForm.validation_inline.province_required");
+    } else if (!isUuid(province_id)) {
+      newErrors.province = t("postForm.validation_inline.province_required");
+    }
+
+    return newErrors;
+  }, [first_last_name, postTitle, transfer_amount, transfer_date, province_id, t]);
+
+  const scrollToFirstError = useCallback((validationErrors: Record<string, string>) => {
+    const fieldOrder = [
+      'seller_name',
+      'product',
+      'transfer_amount',
+      'transfer_date',
+      'province',
+    ];
+
+    const firstErrorField = fieldOrder.find((field) => validationErrors[field]);
+    if (!firstErrorField) return;
+
+    const fieldY = fieldPositions.current[firstErrorField];
+    const inputRef = inputRefs.current[firstErrorField];
+
+    if (fieldY !== undefined) {
+      // Scroll to field position with 20px top padding for visibility
+      const targetY = Math.max(0, fieldY - 20);
+      scrollViewRef.current?.scrollTo({ y: targetY, animated: true });
+      
+      // Try to focus the input after scroll
+      setTimeout(() => {
+        if (inputRef && firstErrorField !== 'transfer_date' && firstErrorField !== 'province') {
+          inputRef.focus();
+        }
+      }, 300);
+    }
+  }, []);
+
   const onSubmit = useCallback(async () => {
     if (saving) return;
 
-    if (!first_last_name.trim()) {
-      return Alert.alert(t("postForm.alerts.validation_title"), t("postForm.validation.seller_name_required"));
-    }
-    if (!postTitle.trim()) {
-      return Alert.alert(t("postForm.alerts.validation_title"), t("postForm.validation.product_required"));
-    }
-    if (!transfer_amount || Number(transfer_amount) <= 0) {
-      return Alert.alert(t("postForm.alerts.validation_title"), t("postForm.validation.transfer_amount_required"));
-    }
-    if (!transfer_date) {
-      return Alert.alert(t("postForm.alerts.select_title"), t("postForm.validation.transfer_date_required"));
-    }
-    if (!province_id) {
-      return Alert.alert(t("postForm.alerts.select_title"), t("postForm.validation.province_required"));
-    }
-    if (!isUuid(province_id)) {
-      if (__DEV__) console.log("[PostForm] invalid province_id (expected UUID):", province_id);
-      return Alert.alert(t("postForm.alerts.select_title"), t("postForm.validation.province_required"));
+    // Clear previous errors
+    setErrors({});
+
+    // Validate form
+    const validationErrors = validateForm();
+    
+    if (Object.keys(validationErrors).length > 0) {
+      setErrors(validationErrors);
+      scrollToFirstError(validationErrors);
+      return;
     }
 
     try {
@@ -545,7 +605,7 @@ export default function PostFormScreen({ route, navigation }: Props) {
           id_card: id_card.trim(),
           title: postTitle.trim(),
           transfer_amount: Number(transfer_amount || 0),
-          transfer_date: transfer_date.toISOString(),
+          transfer_date: transfer_date!.toISOString(),
           website: website.trim(),
           province_id,
           detail,
@@ -621,18 +681,20 @@ export default function PostFormScreen({ route, navigation }: Props) {
     }
   }, [
     saving,
-    first_last_name,
-    postTitle,
-    transfer_amount,
-    transfer_date,
-    province_id,
+    validateForm,
+    scrollToFirstError,
     files,
     telNumbers,
     sellerAccounts,
     isEdit,
     id,
+    first_last_name,
     id_card,
+    postTitle,
+    transfer_amount,
+    transfer_date,
     website,
+    province_id,
     detail,
     status,
     auto_publish,
@@ -641,10 +703,9 @@ export default function PostFormScreen({ route, navigation }: Props) {
     t,
   ]);
 
-  // ====================== header config + Save button ======================
+  // ====================== header config ======================
 
   const headerTitle = isEdit ? t("postForm.title_edit") : t("postForm.title_create");
-  const canSave = dirty && !saving && !initialLoading;
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -653,22 +714,8 @@ export default function PostFormScreen({ route, navigation }: Props) {
       headerStyle: { backgroundColor: "#0b0b0f" },
       headerTintColor: "#fff",
       headerTitleStyle: { color: "#fff", fontWeight: "800" },
-      // headerBackTitleVisible: false,
-
-      headerRight: () => (
-        <Pressable
-          onPress={onSubmit}
-          disabled={!canSave}
-          style={({ pressed }) => [
-            styles.headerBtn,
-            (!canSave || pressed) && { opacity: !canSave ? 0.35 : 0.7 },
-          ]}
-        >
-          {saving ? <ActivityIndicator /> : <Text style={styles.headerBtnText}>{t("common.save")}</Text>}
-        </Pressable>
-      ),
     });
-  }, [navigation, headerTitle, canSave, saving, dirty, initialLoading, onSubmit, t]);
+  }, [navigation, headerTitle]);
 
   // ✅ เตือนก่อนออก ถ้า dirty
   useEffect(() => {
@@ -716,85 +763,166 @@ export default function PostFormScreen({ route, navigation }: Props) {
   }
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.container}>
-      <Field label={t("postForm.fields.seller_name")}> 
-        <TextInput
-          value={first_last_name}
-          onChangeText={setFirstLastName}
-          placeholder={t("postForm.fields.seller_name_placeholder")}
-          placeholderTextColor="rgba(255,255,255,0.35)"
-          style={styles.input}
-        />
-      </Field>
+    <KeyboardAvoidingView 
+      style={{ flex: 1 }} 
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
+    >
+      <ScrollView 
+        ref={scrollViewRef}
+        style={styles.screen} 
+        contentContainerStyle={styles.container}
+        showsVerticalScrollIndicator={false}
+      >
+      <SectionHeader 
+        title={t("postForm.sections.seller_info")} 
+        subtitle={t("postForm.sections.seller_info_desc")} 
+      />
 
-      <Field label={t("postForm.fields.id_card")}> 
-        <TextInput
-          value={id_card}
-          onChangeText={setIdCard}
-          placeholder={t("postForm.fields.id_card_placeholder")}
-          placeholderTextColor="rgba(255,255,255,0.35)"
-          style={styles.input}
-          maxLength={13}
-          keyboardType="number-pad"
-        />
-      </Field>
-
-      <Field label={t("postForm.fields.product")}> 
-        <TextInput
-          value={postTitle}
-          onChangeText={setPostTitle}
-          placeholder={t("postForm.fields.product_placeholder")}
-          placeholderTextColor="rgba(255,255,255,0.35)"
-          style={styles.input}
-        />
-      </Field>
-
-      <Field label={t("postForm.fields.transfer_amount")}> 
-        <TextInput
-          value={transfer_amount}
-          onChangeText={setTransferAmount}
-          placeholder={t("postForm.fields.transfer_amount_placeholder")}
-          placeholderTextColor="rgba(255,255,255,0.35)"
-          style={styles.input}
-          keyboardType="numeric"
-        />
-      </Field>
-
-      <Field label={t("postForm.fields.transfer_date")}> 
-        <Pressable style={styles.dateBtn} onPress={() => setShowDatePicker(true)}>
-          <Text style={styles.dateText}>{showTransferDateLabel}</Text>
-        </Pressable>
-
-        {showDatePicker && (
-          <DateTimePicker
-            value={transfer_date ?? new Date()}
-            mode="date"
-            display={Platform.OS === "ios" ? "spinner" : "default"}
-            onChange={(event, date) => {
-              if (Platform.OS !== "ios") setShowDatePicker(false);
-              if (date) setTransferDate(date);
+      <View style={isTablet ? styles.rowTablet : undefined}>
+        <Field 
+          label={t("postForm.fields.seller_name")} 
+          style={isTablet && styles.halfField}
+          error={errors.seller_name}
+          onLayout={(e) => {
+            fieldPositions.current.seller_name = e.nativeEvent.layout.y;
+          }}
+        >
+          <TextInput
+            ref={(ref) => { inputRefs.current.seller_name = ref; }}
+            value={first_last_name}
+            onChangeText={(v) => {
+              setFirstLastName(v);
+              if (errors.seller_name) setErrors((prev) => ({ ...prev, seller_name: '' }));
             }}
+            placeholder={t("postForm.fields.seller_name_placeholder")}
+            placeholderTextColor="rgba(255,255,255,0.35)"
+            style={[styles.input, errors.seller_name && styles.inputError]}
           />
-        )}
+        </Field>
 
-        {Platform.OS === "ios" && showDatePicker && (
-          <Pressable style={styles.smallBtn} onPress={() => setShowDatePicker(false)}>
-            <Text style={styles.smallBtnText}>{t("postForm.done")}</Text>
+        <Field label={t("postForm.fields.id_card")} style={isTablet && styles.halfField}>
+          <TextInput
+            value={id_card}
+            onChangeText={setIdCard}
+            placeholder={t("postForm.fields.id_card_placeholder")}
+            placeholderTextColor="rgba(255,255,255,0.35)"
+            style={styles.input}
+            maxLength={13}
+            keyboardType="number-pad"
+          />
+        </Field>
+      </View>
+
+      <SectionHeader 
+        title={t("postForm.sections.transaction_info")} 
+        subtitle={t("postForm.sections.transaction_info_desc")} 
+      />
+
+      <View style={isTablet ? styles.rowTablet : undefined}>
+        <Field 
+          label={t("postForm.fields.product")} 
+          style={isTablet && styles.halfField}
+          error={errors.product}
+          onLayout={(e) => {
+            fieldPositions.current.product = e.nativeEvent.layout.y;
+          }}
+        >
+          <TextInput
+            ref={(ref) => { inputRefs.current.product = ref; }}
+            value={postTitle}
+            onChangeText={(v) => {
+              setPostTitle(v);
+              if (errors.product) setErrors((prev) => ({ ...prev, product: '' }));
+            }}
+            placeholder={t("postForm.fields.product_placeholder")}
+            placeholderTextColor="rgba(255,255,255,0.35)"
+            style={[styles.input, errors.product && styles.inputError]}
+          />
+        </Field>
+
+        <Field 
+          label={t("postForm.fields.transfer_amount")} 
+          style={isTablet && styles.halfField}
+          error={errors.transfer_amount}
+          onLayout={(e) => {
+            fieldPositions.current.transfer_amount = e.nativeEvent.layout.y;
+          }}
+        >
+          <TextInput
+            ref={(ref) => { inputRefs.current.transfer_amount = ref; }}
+            value={transfer_amount}
+            onChangeText={(v) => {
+              setTransferAmount(v);
+              if (errors.transfer_amount) setErrors((prev) => ({ ...prev, transfer_amount: '' }));
+            }}
+            placeholder={t("postForm.fields.transfer_amount_placeholder")}
+            placeholderTextColor="rgba(255,255,255,0.35)"
+            style={[styles.input, errors.transfer_amount && styles.inputError]}
+            keyboardType="numeric"
+          />
+        </Field>
+      </View>
+
+      <View style={isTablet ? styles.rowTablet : undefined}>
+        <Field 
+          label={t("postForm.fields.transfer_date")} 
+          style={isTablet && styles.halfField}
+          error={errors.transfer_date}
+          onLayout={(e) => {
+            fieldPositions.current.transfer_date = e.nativeEvent.layout.y;
+          }}
+        >
+          <Pressable 
+            style={[styles.dateBtn, errors.transfer_date && styles.inputError]} 
+            onPress={() => {
+              setShowDatePicker(true);
+              if (errors.transfer_date) setErrors((prev) => ({ ...prev, transfer_date: '' }));
+            }}
+          >
+            <Ionicons name="calendar-outline" size={18} color="rgba(255,255,255,0.65)" style={{ marginRight: 8 }} />
+            <Text style={styles.dateText}>{showTransferDateLabel}</Text>
           </Pressable>
-        )}
-      </Field>
 
-      <Field label={t("postForm.fields.website")}> 
-        <TextInput
-          value={website}
-          onChangeText={setWebsite}
-          placeholder={t("postForm.fields.website_placeholder")}
-          placeholderTextColor="rgba(255,255,255,0.35)"
-          style={styles.input}
-        />
-      </Field>
+          {showDatePicker && (
+            <DateTimePicker
+              value={transfer_date ?? new Date()}
+              mode="date"
+              display={Platform.OS === "ios" ? "spinner" : "default"}
+              onChange={(event, date) => {
+                if (Platform.OS !== "ios") setShowDatePicker(false);
+                if (date) {
+                  setTransferDate(date);
+                  if (errors.transfer_date) setErrors((prev) => ({ ...prev, transfer_date: '' }));
+                }
+              }}
+            />
+          )}
 
-      <Field label={t("postForm.fields.detail")}> 
+          {Platform.OS === "ios" && showDatePicker && (
+            <Pressable style={styles.smallBtn} onPress={() => setShowDatePicker(false)}>
+              <Text style={styles.smallBtnText}>{t("postForm.done")}</Text>
+            </Pressable>
+          )}
+        </Field>
+
+        <Field label={t("postForm.fields.website")} style={isTablet && styles.halfField}>
+          <TextInput
+            value={website}
+            onChangeText={setWebsite}
+            placeholder={t("postForm.fields.website_placeholder")}
+            placeholderTextColor="rgba(255,255,255,0.35)"
+            style={styles.input}
+          />
+        </Field>
+      </View>
+
+      <SectionHeader 
+        title={t("postForm.sections.additional_details")} 
+        subtitle={t("postForm.sections.additional_details_desc")} 
+      />
+
+      <Field label={t("postForm.fields.detail")}>
         <TextInput
           value={detail}
           onChangeText={setDetail}
@@ -805,7 +933,12 @@ export default function PostFormScreen({ route, navigation }: Props) {
         />
       </Field>
 
-      <Section title={t("postForm.sections.contact_channels")}>
+      <SectionHeader 
+        title={t("postForm.sections.contact_channels")} 
+        subtitle={t("postForm.sections.contact_channels_desc")} 
+      />
+
+      <View style={styles.sectionBox}>
         {telNumbers.map((telItem, index) =>
           telItem.mode === Mode.Deleted ? null : (
             <View key={telItem.id} style={styles.box}>
@@ -817,7 +950,11 @@ export default function PostFormScreen({ route, navigation }: Props) {
                 placeholderTextColor="rgba(255,255,255,0.35)"
                 style={styles.input}
               />
-              <Pressable style={styles.dangerBtn} onPress={() => removeTelNumber(index)}>
+              <Pressable 
+                style={styles.iconDeleteBtn} 
+                onPress={() => removeTelNumber(index)}
+              >
+                <Ionicons name="close-circle" size={20} color="#ff6b6b" />
                 <Text style={styles.dangerText}>{t("common.delete")}</Text>
               </Pressable>
             </View>
@@ -825,11 +962,17 @@ export default function PostFormScreen({ route, navigation }: Props) {
         )}
 
         <Pressable style={styles.outlineBtn} onPress={addTelNumber}>
+          <Ionicons name="add-circle-outline" size={20} color="#fff" style={{ marginRight: 6 }} />
           <Text style={styles.outlineText}>{t("postForm.actions.add_contact")}</Text>
         </Pressable>
-      </Section>
+      </View>
 
-      <Section title={t("postForm.sections.seller_accounts")}>
+      <SectionHeader 
+        title={t("postForm.sections.seller_accounts")} 
+        subtitle={t("postForm.sections.seller_accounts_desc")} 
+      />
+
+      <View style={styles.sectionBox}>
         {sellerAccounts.map((s, index) =>
           s.mode === Mode.Deleted ? null : (
             <View key={s.id} style={styles.box}>
@@ -872,7 +1015,11 @@ export default function PostFormScreen({ route, navigation }: Props) {
                 </View>
               </Field>
 
-              <Pressable style={styles.dangerBtn} onPress={() => removeSellerAccount(index)}>
+              <Pressable 
+                style={styles.iconDeleteBtn} 
+                onPress={() => removeSellerAccount(index)}
+              >
+                <Ionicons name="close-circle" size={20} color="#ff6b6b" />
                 <Text style={styles.dangerText}>{t("common.delete")}</Text>
               </Pressable>
             </View>
@@ -880,12 +1027,19 @@ export default function PostFormScreen({ route, navigation }: Props) {
         )}
 
         <Pressable style={styles.outlineBtn} onPress={addSellerAccount}>
+          <Ionicons name="add-circle-outline" size={20} color="#fff" style={{ marginRight: 6 }} />
           <Text style={styles.outlineText}>{t("postForm.actions.add_seller_account")}</Text>
         </Pressable>
-      </Section>
+      </View>
 
-      <Section title={t("postForm.sections.attachments")}>
+      <SectionHeader 
+        title={t("postForm.sections.attachments")} 
+        subtitle={t("postForm.sections.attachments_desc")} 
+      />
+
+      <View style={styles.sectionBox}>
         <Pressable style={styles.outlineBtn} onPress={pickImages}>
+          <Ionicons name="images-outline" size={20} color="#fff" style={{ marginRight: 6 }} />
           <Text style={styles.outlineText}>{t("postForm.actions.pick_images")}</Text>
         </Pressable>
 
@@ -921,13 +1075,27 @@ export default function PostFormScreen({ route, navigation }: Props) {
             return null;
           })}
         </View>
-      </Section>
+      </View>
 
-      <Field label={t("postForm.fields.province")}> 
-        <View style={styles.pickerWrap}>
+      <SectionHeader 
+        title={t("postForm.sections.publish_settings")} 
+        subtitle={t("postForm.sections.publish_settings_desc")} 
+      />
+
+      <Field 
+        label={t("postForm.fields.province")}
+        error={errors.province}
+        onLayout={(e) => {
+          fieldPositions.current.province = e.nativeEvent.layout.y;
+        }}
+      >
+        <View style={[styles.pickerWrap, errors.province && styles.inputError]}>
           <Picker
             selectedValue={province_id || ""}
-            onValueChange={(v) => setProvinceId(String(v) || undefined)}
+            onValueChange={(v) => {
+              setProvinceId(String(v) || undefined);
+              if (errors.province) setErrors((prev) => ({ ...prev, province: '' }));
+            }}
             dropdownIconColor="#fff"
             style={styles.picker}
           >
@@ -965,29 +1133,71 @@ export default function PostFormScreen({ route, navigation }: Props) {
 
       {!dirty && <Text style={styles.hint}>{t("postForm.hint.no_changes")}</Text>}
       {dirty && <Text style={styles.hint}>{t("postForm.hint.has_changes")}</Text>}
-    </ScrollView>
+
+      <View style={{ height: 80 }} />
+      </ScrollView>
+
+      {/* Sticky submit button */}
+      <View style={styles.stickyBottom}>
+        <Pressable
+          onPress={onSubmit}
+          disabled={saving}
+          style={({ pressed }) => [
+            styles.submitBtn,
+            (saving || pressed) && { opacity: saving ? 0.6 : 0.7 },
+          ]}
+        >
+          {saving ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <>
+              <Ionicons name="checkmark-circle" size={22} color="#fff" />
+              <Text style={styles.submitBtnText}>{t("common.save")}</Text>
+            </>
+          )}
+        </Pressable>
+      </View>
+    </KeyboardAvoidingView>
   );
 }
 
 // ====================== UI helpers ======================
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ 
+  label, 
+  children, 
+  style, 
+  error, 
+  onLayout 
+}: { 
+  label: string; 
+  children: React.ReactNode; 
+  style?: any; 
+  error?: string;
+  onLayout?: (event: any) => void;
+}) {
   return (
-    <View style={{ marginBottom: 14 }}>
+    <View 
+      onLayout={onLayout}
+      style={[{ marginBottom: 18 }, style]}
+    >
       <Text style={styles.label}>{label}</Text>
       {children}
+      {error ? <Text style={styles.fieldError}>{error}</Text> : null}
     </View>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function SectionHeader({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
-    <View style={{ marginTop: 12, marginBottom: 6 }}>
+    <View style={styles.sectionHeader}>
       <Text style={styles.sectionTitle}>{title}</Text>
-      <View style={styles.sectionBody}>{children}</View>
+      {subtitle && <Text style={styles.sectionSubtitle}>{subtitle}</Text>}
     </View>
   );
 }
+
+
 
 // ====================== styles ======================
 
@@ -1000,24 +1210,52 @@ const styles = StyleSheet.create({
 
   h1: { color: "white", fontSize: 18, fontWeight: "900", marginBottom: 12 },
 
-  label: { color: "rgba(255,255,255,0.75)", marginBottom: 6, fontWeight: "700" },
+  label: { color: "rgba(255,255,255,0.75)", marginBottom: 8, fontWeight: "700", fontSize: 14 },
   input: {
-    height: 48,
+    minHeight: 52,
     borderRadius: 12,
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     color: "white",
     backgroundColor: "#151515",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.12)",
+    fontSize: 15,
   },
-  textarea: { height: 110, paddingTop: 12, textAlignVertical: "top" },
+  inputError: {
+    borderColor: "rgba(255,100,100,0.5)",
+    borderWidth: 1.5,
+  },
+  fieldError: {
+    color: "#ff6b6b",
+    fontSize: 13,
+    marginTop: 6,
+    marginLeft: 2,
+    fontWeight: "600",
+  },
+  textarea: { height: 110, paddingTop: 14, textAlignVertical: "top" },
 
-  sectionTitle: { color: "white", fontSize: 16, fontWeight: "900", marginBottom: 10 },
-  sectionBody: {
+  sectionHeader: {
+    marginTop: 24,
+    marginBottom: 16,
+  },
+  sectionTitle: { 
+    color: "white", 
+    fontSize: 17, 
+    fontWeight: "900", 
+    marginBottom: 4,
+    letterSpacing: 0.3,
+  },
+  sectionSubtitle: {
+    color: "rgba(255,255,255,0.55)",
+    fontSize: 13,
+    fontWeight: "500",
+  },
+  sectionBox: {
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.12)",
     borderRadius: 14,
-    padding: 12,
+    padding: 14,
     backgroundColor: "#101010",
   },
 
@@ -1032,28 +1270,37 @@ const styles = StyleSheet.create({
   boxTitle: { color: "white", fontWeight: "800", marginBottom: 10 },
 
   outlineBtn: {
-    height: 44,
+    height: 48,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.18)",
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 6,
+    marginTop: 8,
+    flexDirection: "row",
   },
-  outlineText: { color: "white", fontWeight: "800" },
+  outlineText: { color: "white", fontWeight: "800", fontSize: 15 },
 
-  dangerBtn: {
-    marginTop: 10,
-    height: 40,
+  iconDeleteBtn: {
+    marginTop: 12,
+    height: 44,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "rgba(255,120,120,0.35)",
     alignItems: "center",
     justifyContent: "center",
+    flexDirection: "row",
+    gap: 6,
   },
-  dangerText: { color: "#ff6b6b", fontWeight: "800" },
+  dangerText: { color: "#ff6b6b", fontWeight: "800", fontSize: 14 },
 
-  hint: { marginTop: 10, color: "rgba(255,255,255,0.55)" },
+  hint: { 
+    marginTop: 16, 
+    marginBottom: 8,
+    color: "rgba(255,255,255,0.55)", 
+    fontSize: 13,
+    textAlign: "center",
+  },
 
   pickerWrap: {
     borderWidth: 1,
@@ -1065,15 +1312,16 @@ const styles = StyleSheet.create({
   picker: { color: "white" },
 
   dateBtn: {
-    height: 48,
+    minHeight: 52,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.12)",
     backgroundColor: "#151515",
-    justifyContent: "center",
-    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 14,
   },
-  dateText: { color: "white", fontWeight: "800" },
+  dateText: { color: "white", fontWeight: "700", fontSize: 15 },
   smallBtn: {
     marginTop: 8,
     height: 40,
@@ -1113,4 +1361,47 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   headerBtnText: { color: "#fff", fontWeight: "900" },
+
+  // Responsive tablet layout
+  rowTablet: {
+    flexDirection: "row",
+    gap: 12,
+    alignItems: "flex-start",
+  },
+  halfField: {
+    flex: 1,
+  },
+
+  // Sticky submit button
+  stickyBottom: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: "#0b0b0b",
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.1)",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 8,
+  },
+  submitBtn: {
+    height: 54,
+    borderRadius: 14,
+    backgroundColor: "#34c759",
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  submitBtnText: {
+    color: "#fff",
+    fontSize: 17,
+    fontWeight: "900",
+    letterSpacing: 0.5,
+  },
 });

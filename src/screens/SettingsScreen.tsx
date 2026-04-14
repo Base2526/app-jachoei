@@ -18,7 +18,6 @@ import Ionicons from "react-native-vector-icons/Ionicons";
 import dayjs from "dayjs";
 import { launchImageLibrary, Asset } from "react-native-image-picker";
 import { gql } from "@apollo/client";
-import AsyncStorage from "@react-native-async-storage/async-storage"; // ถ้าไม่ใช้ ลบได้
 import { client } from "../apollo/client";
 import { ENV } from "../config/env";
 import { useI18n } from "../i18n";
@@ -599,23 +598,13 @@ export default function SettingsScreen() {
     try {
       setLoggingOut(true);
 
-      logout();
+      await logout();
 
-      // 1) clear local storage/token (ปรับ key ให้ตรงของคุณ)
-      await AsyncStorage.multiRemove([
-        "access_token",
-        "refresh_token",
-        "session",
-        "user",
-      ]);
-
-      // 2) clear apollo cache
-      try {
-        await client.clearStore();
-      } catch {}
-
-      // 3) reset navigation -> Home
-      navigation.replace("ScamProtect");
+      // reset navigation -> Home after centralized logout cleanup completes
+      navigation.reset({
+        index: 0,
+        routes: [{ name: "ScamProtect" }],
+      });
     } catch (e: any) {
       Alert.alert(t("settings.logout_failed"), e?.message || t("common.retry"));
     } finally {

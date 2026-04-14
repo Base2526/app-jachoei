@@ -60,6 +60,8 @@ export const ThumbGrid: React.FC<Props> = ({
   const [visible, setVisible] = useState(false);
   const [current, setCurrent] = useState(0);
 
+  const innerRadius = useMemo(() => Math.max(0, radius - 2), [radius]);
+
   /** ===============================
    * Preview images (ImageViewing)
    * =============================== */
@@ -89,7 +91,7 @@ export const ThumbGrid: React.FC<Props> = ({
         onPress={() => openAt(idx)}
         style={[
           {
-            borderRadius: radius,
+            borderRadius: innerRadius,
             overflow: "hidden",
             backgroundColor: "#0f0f14",
           },
@@ -104,7 +106,7 @@ export const ThumbGrid: React.FC<Props> = ({
         {overlay}
       </TouchableOpacity>
     ),
-    [openAt, radius]
+    [innerRadius, openAt]
   );
 
   const boxStyle = useMemo(
@@ -141,29 +143,12 @@ export const ThumbGrid: React.FC<Props> = ({
 
     // 3 รูป
     if (thumbCount === 3) {
-      if (layout === "tablet") {
-        return (
-          <View style={[boxStyle, { flexDirection: "row", gap }]}>
-            <View style={{ flex: 1.28 }}>
-              {cell(list[0], 0, { height: "100%" })}
-            </View>
-            <View style={{ flex: 1, gap }}>
-              <View style={{ flex: 1 }}>{cell(list[1], 1, { flex: 1 })}</View>
-              <View style={{ flex: 1 }}>{cell(list[2], 2, { flex: 1 })}</View>
-            </View>
-          </View>
-        );
-      }
-
-      const topH = Math.round(height * 0.56);
-      const bottomH = height - topH - gap;
-
       return (
-        <View style={boxStyle}>
-          <View style={{ height: topH, marginBottom: gap }}>
-            {cell(list[0], 0, { flex: 1 })}
+        <View style={[boxStyle, { flexDirection: "row", gap }]}> 
+          <View style={{ flex: layout === "tablet" ? 1.14 : 1.08 }}>
+            {cell(list[0], 0, { height: "100%" })}
           </View>
-          <View style={{ height: bottomH, flexDirection: "row", gap }}>
+          <View style={{ flex: 1, gap }}>
             <View style={{ flex: 1 }}>{cell(list[1], 1, { flex: 1 })}</View>
             <View style={{ flex: 1 }}>{cell(list[2], 2, { flex: 1 })}</View>
           </View>

@@ -14,6 +14,10 @@ import {
   loadAuth,
   saveAuth,
 } from "./auth.storage";
+import { clearUserScopedLocalData } from "../lib/jachoeiLocalState";
+import { clearLocalPhoneUserScopedState } from "../lib/phoneActionsDb";
+import { syncBlockedNumbers } from "../native/CallBlocker";
+import { useGlobalChatStore } from "../store/globalChatStore";
 
 import { gql } from "@apollo/client";
 
@@ -164,6 +168,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    * logout
    * ======================= */
   const logout = async () => {
+    const currentUserId = String(user?.id || "").trim() || "guest";
+    console.log("[LOGOUT] start", { userId: currentUserId });
+
     // best-effort: unregister push token (if any) before clearing auth
     try {
       const fcmToken = await (async () => {
@@ -193,9 +200,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // ignore
     }
 
+    // Clear user-scoped local AsyncStorage keys.
+    await clearUserScopedLocalData(currentUserId).catch((error) => {
+      console.log("[LOGOUT_CLEAR_USER_DATA_ERROR]", String((error as any)?.message || error));
+    });
+
+    // Reset SQLite-backed local flags that should not leak across accounts.
+    const phoneReset = await clearLocalPhoneUserScopedState().catch(() => ({ resetBlockedRows: 0, removedLogRows: 0 }));
+    console.log("[LOGOUT_CLEAR_PHONE_LOCAL_STATE_DONE]", phoneReset);
+
+    // Ensure native blocked list does not retain previous user local state.
+    await syncBlockedNumbers([]).catch(() => {});
+
     await clearAuth();
+    await client.clearStore().catch(() => {});
+
+    // Reset in-memory store slices.
+    useGlobalChatStore.setState({
+      currentChatId: null,
+      unreadByChat: {},
+      appFocused: true,
+    });
+
     setToken(null);
     setUser(null);
+
+    console.log("[LOGOUT] done", { userId: currentUserId });
   };
 
   /* =======================

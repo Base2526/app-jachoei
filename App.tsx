@@ -33,6 +33,7 @@ import { installGlobalErrorHandlers } from "./src/lib/observability/globalErrors
 import { flushClientLogQueue } from "./src/lib/observability/clientLog";
 import { setLogRouteName } from "./src/lib/observability/logContext";
 import { PostViewScreen } from "./src/screens/PostViewScreen";
+import { EntityDetailScreen } from "./src/screens/EntityDetailScreen";
 import { BlockedLogsSearchScreen } from "./src/screens/BlockedLogsSearchScreen";
 import { ProfileScreen } from "./src/screens/ProfileScreen";
 import ChatScreen from "./src/screens/ChatUIScreen";
@@ -201,6 +202,27 @@ function Root({ initReady }: { initReady: boolean }) {
                   style={{ paddingHorizontal: 4 }}
                 >
                   <Ionicons name="chevron-back" size={26} color="#fff" />
+              </Pressable>
+            );
+          },
+        }}
+      />
+
+      <Stack.Screen
+        name="EntityDetail"
+        component={EntityDetailScreen}
+        options={{
+          headerShown: true,
+          title: "Details",
+          presentation: "card",
+          headerBackVisible: false,
+          headerLeft() {
+            return (
+              <Pressable
+                onPress={() => navigationRef.goBack()}
+                style={{ paddingHorizontal: 4 }}
+              >
+                <Ionicons name="chevron-back" size={26} color="#fff" />
               </Pressable>
             );
           },

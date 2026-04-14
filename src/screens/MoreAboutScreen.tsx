@@ -1,5 +1,6 @@
 import React from "react";
-import { Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
+import Ionicons from "react-native-vector-icons/Ionicons";
 
 import { useI18n } from "../i18n";
 import {
@@ -32,18 +33,35 @@ export const MoreAboutScreen: React.FC = () => {
 
       <MoreSectionHeader title={t("more.about_checks_title")} />
       <MoreCard>
-        <View style={moreCommonStyles.chipsWrap}>
-          <View style={moreCommonStyles.chip}>
-            <Text style={moreCommonStyles.chipText}>{t("more.about_checks_phone")}</Text>
-          </View>
-          <View style={moreCommonStyles.chip}>
-            <Text style={moreCommonStyles.chipText}>{t("more.about_checks_bank")}</Text>
-          </View>
-          <View style={moreCommonStyles.chip}>
-            <Text style={moreCommonStyles.chipText}>{t("more.about_checks_link")}</Text>
-          </View>
-          <View style={moreCommonStyles.chip}>
-            <Text style={moreCommonStyles.chipText}>{t("more.about_checks_page")}</Text>
+        <View style={styles.checksContainer}>
+          <Text style={styles.checksSubtitle}>
+            รองรับการตรวจสอบข้อมูลสำคัญ 4 ประเภท
+          </Text>
+          <View style={styles.featureGrid}>
+            <View style={styles.featureChip}>
+              <View style={styles.featureIconWrap}>
+                <Ionicons name="call" size={18} color="#3b82f6" />
+              </View>
+              <Text style={styles.featureLabel}>{t("more.about_checks_phone")}</Text>
+            </View>
+            <View style={styles.featureChip}>
+              <View style={styles.featureIconWrap}>
+                <Ionicons name="card" size={18} color="#10b981" />
+              </View>
+              <Text style={styles.featureLabel}>{t("more.about_checks_bank")}</Text>
+            </View>
+            <View style={styles.featureChip}>
+              <View style={styles.featureIconWrap}>
+                <Ionicons name="link" size={18} color="#f59e0b" />
+              </View>
+              <Text style={styles.featureLabel}>{t("more.about_checks_link")}</Text>
+            </View>
+            <View style={styles.featureChip}>
+              <View style={styles.featureIconWrap}>
+                <Ionicons name="flag" size={18} color="#8b5cf6" />
+              </View>
+              <Text style={styles.featureLabel}>{t("more.about_checks_page")}</Text>
+            </View>
           </View>
         </View>
       </MoreCard>
@@ -73,3 +91,50 @@ export const MoreAboutScreen: React.FC = () => {
     </MoreScrollView>
   );
 };
+
+const styles = StyleSheet.create({
+  checksContainer: {
+    padding: 16,
+  },
+  checksSubtitle: {
+    color: "#94a3b8",
+    fontSize: 13,
+    lineHeight: 19,
+    marginBottom: 16,
+    textAlign: "center",
+  },
+  featureGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  featureChip: {
+    width: "48%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "#171a24",
+    borderWidth: 1,
+    borderColor: "#2a3144",
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 14,
+    minHeight: 56,
+  },
+  featureIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  featureLabel: {
+    flex: 1,
+    color: "#f8fafc",
+    fontSize: 14,
+    fontWeight: "700",
+    lineHeight: 18,
+  },
+});

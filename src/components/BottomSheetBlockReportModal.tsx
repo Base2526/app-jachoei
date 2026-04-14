@@ -19,9 +19,11 @@ import {
   Platform,
   KeyboardAvoidingView,
   Dimensions,
+  ScrollView,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Ionicons from "react-native-vector-icons/Ionicons";
+import { useI18n } from "../i18n";
 
 export type ReportCategory = "SPAM" | "SCAM" | "SALES" | "HARASS" | "OTHER";
 
@@ -74,19 +76,19 @@ function normalizeTel(raw: string) {
   return hasPlus ? `+${digits}` : digits;
 }
 
-function computeRiskLabel(reportCount?: number, riskScore?: number) {
+function computeRiskMeta(reportCount?: number, riskScore?: number) {
   const c = reportCount ?? 0;
   const s = typeof riskScore === "number" ? riskScore : -1;
 
   if (s >= 0) {
-    if (s >= 80) return { label: "HIGH RISK", tone: "danger" as const };
-    if (s >= 45) return { label: "MEDIUM", tone: "warn" as const };
-    return { label: "LOW", tone: "muted" as const };
+    if (s >= 80) return { key: "blocked_modal.risk_high", tone: "danger" as const };
+    if (s >= 45) return { key: "blocked_modal.risk_medium", tone: "warn" as const };
+    return { key: "blocked_modal.risk_low", tone: "muted" as const };
   }
 
-  if (c >= 20) return { label: "HIGH RISK", tone: "danger" as const };
-  if (c >= 5) return { label: "MEDIUM", tone: "warn" as const };
-  return { label: "LOW", tone: "muted" as const };
+  if (c >= 20) return { key: "blocked_modal.risk_high", tone: "danger" as const };
+  if (c >= 5) return { key: "blocked_modal.risk_medium", tone: "warn" as const };
+  return { key: "blocked_modal.risk_low", tone: "muted" as const };
 }
 
 function toneStyle(tone: "danger" | "warn" | "muted") {
@@ -105,6 +107,7 @@ export const BottomSheetBlockReportModal = forwardRef<
   Props
 >((props, ref) => {
   const { isBlocked, onConfirm, onUndo } = props;
+  const { t } = useI18n();
 
   const [visible, setVisible] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -125,7 +128,7 @@ export const BottomSheetBlockReportModal = forwardRef<
   }, [payload?.tel, isBlocked]);
 
   const risk = useMemo(() => {
-    return computeRiskLabel(payload?.reportCount, payload?.riskScore);
+    return computeRiskMeta(payload?.reportCount, payload?.riskScore);
   }, [payload?.reportCount, payload?.riskScore]);
 
   const open = useCallback(
@@ -207,10 +210,41 @@ export const BottomSheetBlockReportModal = forwardRef<
   useImperativeHandle(ref, () => ({ open, close }), [open, close]);
 
   const primaryText = useMemo(() => {
-    if (blockedNow) return "Update Report";
-    if (!wantReport) return "บล็อก";
-    return "บล็อก + รายงาน";
-  }, [blockedNow, wantReport]);
+    if (blockedNow) return t("blocked_modal.update_report");
+    if (!wantReport) return t("blocked_modal.block_only");
+    return t("blocked_modal.block_and_report");
+  }, [blockedNow, wantReport, t]);
+
+  const categoryOptions = useMemo(
+    () => [
+      {
+        key: "SPAM" as const,
+        label: t("blocked_modal.category_spam"),
+        icon: "alert-circle-outline",
+      },
+      {
+        key: "SCAM" as const,
+        label: t("blocked_modal.category_scam"),
+        icon: "warning-outline",
+      },
+      {
+        key: "SALES" as const,
+        label: t("blocked_modal.category_sales"),
+        icon: "pricetag-outline",
+      },
+      {
+        key: "HARASS" as const,
+        label: t("blocked_modal.category_harass"),
+        icon: "hand-left-outline",
+      },
+      {
+        key: "OTHER" as const,
+        label: t("blocked_modal.category_other"),
+        icon: "ellipsis-horizontal",
+      },
+    ],
+    [t]
+  );
 
   const riskTone = toneStyle(risk.tone);
 
@@ -270,6 +304,8 @@ export const BottomSheetBlockReportModal = forwardRef<
     }
   }, [payload, onUndo, close]);
 
+  const sheetMaxHeight = Math.round(screenH * 0.88);
+
   if (!visible) return null;
 
   return (
@@ -282,130 +318,173 @@ export const BottomSheetBlockReportModal = forwardRef<
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         style={styles.kbWrap}
       >
-        <Animated.View style={[styles.sheet, { transform: [{ translateY }] }]}>
+        <Animated.View style={[styles.sheet, { maxHeight: sheetMaxHeight, transform: [{ translateY }] }]}> 
           <View style={styles.handle} />
 
           <View style={styles.header}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.hTitle}>
-                {blockedNow ? "จัดการเบอร์ที่บล็อกไว้" : "ก่อนบล็อก… ช่วยยืนยันหน่อย"}
-              </Text>
+            <View style={styles.headerMain}>
+              <View style={styles.titleRow}>
+                <Text style={styles.hTitle}>
+                  {blockedNow ? t("blocked_modal.manage_title") : t("blocked_modal.title")}
+                </Text>
+
+                <TouchableOpacity
+                  onPress={close}
+                  style={styles.closeBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("blocked_modal.close")}
+                >
+                  <Ionicons name="close" size={16} color="#cbd5e1" />
+                </TouchableOpacity>
+              </View>
 
               <View style={styles.telRow}>
-                <Ionicons name="call-outline" size={16} color="#9ca3af" />
-                <Text style={styles.telText}>{payload?.tel ?? "-"}</Text>
-
-                <View style={[styles.riskPill, { backgroundColor: riskTone.bg }]}>
-                  <Text style={[styles.riskPillText, { color: riskTone.fg }]}>
-                    {risk.label}
+                <View style={styles.phoneChip}>
+                  <Ionicons name="call-outline" size={14} color="#9ca3af" />
+                  <Text style={styles.telText} numberOfLines={1}>
+                    {payload?.tel ?? "-"}
                   </Text>
                 </View>
 
-                {typeof payload?.reportCount === "number" ? (
-                  <Text style={styles.reportCount}>• {payload.reportCount} reports</Text>
-                ) : null}
+                <View style={[styles.riskPill, { backgroundColor: riskTone.bg }]}> 
+                  <Text style={[styles.riskPillText, { color: riskTone.fg }]}> 
+                    {t(risk.key)}
+                  </Text>
+                </View>
               </View>
 
               {payload?.title ? (
-                <Text style={styles.subtle} numberOfLines={1}>
-                  จากโพสต์: {payload.title}
+                <Text style={styles.subtle} numberOfLines={2}>
+                  {t("blocked_modal.source_post", { title: payload.title })}
+                </Text>
+              ) : null}
+
+              {typeof payload?.reportCount === "number" ? (
+                <Text style={styles.reportCount}>
+                  {t("blocked_modal.report_count", { count: payload.reportCount })}
                 </Text>
               ) : null}
             </View>
-
-            <TouchableOpacity onPress={close} style={styles.closeBtn}>
-              <Ionicons name="close" size={18} color="#e5e7eb" />
-            </TouchableOpacity>
           </View>
 
-          <TouchableOpacity
-            onPress={() => setWantReport((v) => !v)}
-            style={styles.toggleRow}
-            activeOpacity={0.88}
+          <ScrollView
+            style={styles.scrollView}
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
           >
-            <View style={[styles.checkBox, wantReport && styles.checkBoxOn]}>
-              {wantReport ? <Ionicons name="checkmark" size={14} color="#111" /> : null}
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.toggleTitle}>Report to help others</Text>
-              <Text style={styles.toggleDesc} numberOfLines={2}>
-                เลือกหมวด + ใส่โน้ตสั้น ๆ (ไม่บังคับ)
-              </Text>
-            </View>
-          </TouchableOpacity>
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>{t("blocked_modal.report_section_title")}</Text>
 
-          {wantReport ? (
-            <>
-              <View style={styles.chipsWrap}>
-                <Chip label="Spam" icon="alert-circle-outline" active={category === "SPAM"} onPress={() => setCategory("SPAM")} />
-                <Chip label="Scam" icon="warning-outline" active={category === "SCAM"} onPress={() => setCategory("SCAM")} />
-                <Chip label="Sales/Ads" icon="pricetag-outline" active={category === "SALES"} onPress={() => setCategory("SALES")} />
-                <Chip label="Harassment" icon="hand-left-outline" active={category === "HARASS"} onPress={() => setCategory("HARASS")} />
-                <Chip label="Other" icon="ellipsis-horizontal" active={category === "OTHER"} onPress={() => setCategory("OTHER")} />
-              </View>
+              <TouchableOpacity
+                onPress={() => setWantReport((v) => !v)}
+                style={styles.reportToggleCard}
+                activeOpacity={0.9}
+              >
+                <View style={[styles.checkBox, wantReport && styles.checkBoxOn]}>
+                  {wantReport ? <Ionicons name="checkmark" size={14} color="#111" /> : null}
+                </View>
 
-              <View style={{ marginTop: 10 }}>
-                <Text style={styles.label}>Note (optional)</Text>
+                <View style={styles.sectionTextWrap}>
+                  <Text style={styles.toggleTitle}>{t("blocked_modal.report_help_title")}</Text>
+                  <Text style={styles.toggleDesc}>
+                    {t("blocked_modal.report_help_subtitle")}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+
+              {wantReport ? (
+                <View style={styles.chipsWrap}>
+                  {categoryOptions.map((item) => (
+                    <Chip
+                      key={item.key}
+                      label={item.label}
+                      icon={item.icon}
+                      active={category === item.key}
+                      onPress={() => setCategory(item.key)}
+                    />
+                  ))}
+                </View>
+              ) : null}
+            </View>
+
+            {wantReport ? (
+              <View style={styles.section}>
+                <View style={styles.sectionHeaderRow}>
+                  <Text style={styles.sectionLabel}>{t("blocked_modal.note_label")}</Text>
+                  <Text style={styles.counter}>{note.length}/120</Text>
+                </View>
+
                 <TextInput
                   value={note}
                   onChangeText={setNote}
-                  placeholder="เช่น โทรขายของ / หลอกโอน / ทวงหนี้ / ก่อกวน..."
+                  placeholder={t("blocked_modal.note_placeholder")}
                   placeholderTextColor="#6b7280"
                   style={styles.input}
                   maxLength={120}
                   multiline
+                  textAlignVertical="top"
                 />
-                <Text style={styles.counter}>{note.length}/120</Text>
               </View>
-            </>
-          ) : null}
-
-          <TouchableOpacity
-            onPress={() => setDontAskAgain((v) => !v)}
-            style={styles.toggleRow2}
-            activeOpacity={0.85}
-          >
-            <View style={[styles.checkBox, dontAskAgain && styles.checkBoxOn]}>
-              {dontAskAgain ? <Ionicons name="checkmark" size={14} color="#111" /> : null}
-            </View>
-            <Text style={styles.toggleTitle2}>ไม่ต้องถามอีกสำหรับเบอร์นี้</Text>
-          </TouchableOpacity>
-
-          <View style={styles.actions}>
-            <TouchableOpacity onPress={close} style={[styles.btn, styles.btnGhost]} disabled={busy}>
-              <Text style={styles.btnGhostText}>ยกเลิก</Text>
-            </TouchableOpacity>
-
-            {blockedNow ? (
-              <TouchableOpacity
-                onPress={onUnblock}
-                style={[styles.btn, styles.btnUnblock, busy && { opacity: 0.7 }]}
-                disabled={busy}
-              >
-                <View style={styles.btnRow}>
-                  <Ionicons name="lock-open-outline" size={16} color="#e5e7eb" />
-                  <Text style={[styles.btnPrimaryText, { color: "#e5e7eb" }]}>ยกเลิกบล็อก</Text>
-                </View>
-              </TouchableOpacity>
             ) : null}
 
-            <TouchableOpacity
-              onPress={onPrimary}
-              style={[styles.btn, styles.btnPrimary, busy && { opacity: 0.7 }]}
-              disabled={busy}
-            >
-              <View style={styles.btnRow}>
-                <Ionicons name={blockedNow ? ("save" as any) : "lock-closed"} size={16} color="#111" />
-                <Text style={[styles.btnPrimaryText, { color: "#111" }]}>
-                  {busy ? "กำลังทำรายการ..." : primaryText}
-                </Text>
-              </View>
-            </TouchableOpacity>
-          </View>
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>{t("blocked_modal.preference_title")}</Text>
 
-          <Text style={styles.hint}>
-            ทริค: ถ้ากดพลาด คุณสามารถไปแท็บ Blocked เพื่อยกเลิกบล็อกได้ตลอด
-          </Text>
+              <TouchableOpacity
+                onPress={() => setDontAskAgain((v) => !v)}
+                style={styles.preferenceRow}
+                activeOpacity={0.9}
+              >
+                <View style={[styles.checkBox, dontAskAgain && styles.checkBoxOn]}>
+                  {dontAskAgain ? <Ionicons name="checkmark" size={14} color="#111" /> : null}
+                </View>
+                <Text style={styles.preferenceText}>{t("blocked_modal.dont_ask_again")}</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+
+          <View style={styles.footer}>
+            <Text style={styles.hint}>{t("blocked_modal.footer_hint")}</Text>
+
+            <View style={styles.footerActions}>
+              <TouchableOpacity
+                onPress={close}
+                style={styles.footerCancel}
+                disabled={busy}
+              >
+                <Text style={styles.footerCancelText}>{t("blocked_modal.cancel")}</Text>
+              </TouchableOpacity>
+
+              <View style={styles.footerMainActions}>
+                {blockedNow ? (
+                  <TouchableOpacity
+                    onPress={onUnblock}
+                    style={[styles.btn, styles.btnUnblock, busy && styles.btnDisabled]}
+                    disabled={busy}
+                  >
+                    <View style={styles.btnRow}>
+                      <Ionicons name="lock-open-outline" size={16} color="#e5e7eb" />
+                      <Text style={styles.btnSecondaryText}>{t("blocked_modal.unblock")}</Text>
+                    </View>
+                  </TouchableOpacity>
+                ) : null}
+
+                <TouchableOpacity
+                  onPress={onPrimary}
+                  style={[styles.btn, styles.btnPrimary, busy && styles.btnDisabled]}
+                  disabled={busy}
+                >
+                  <View style={styles.btnRow}>
+                    <Ionicons name={blockedNow ? ("save" as any) : "lock-closed"} size={16} color="#111" />
+                    <Text style={styles.btnPrimaryText}>
+                      {busy ? t("blocked_modal.processing") : primaryText}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
         </Animated.View>
       </KeyboardAvoidingView>
     </Modal>
@@ -435,135 +514,265 @@ const styles = StyleSheet.create({
 
   sheet: {
     backgroundColor: "#0f0f14",
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
     borderWidth: 1,
     borderColor: "#1f1f26",
-    padding: 14,
-    paddingBottom: 16,
+    paddingTop: 12,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
   },
   handle: {
     alignSelf: "center",
-    width: 44,
-    height: 5,
+    width: 42,
+    height: 4,
     borderRadius: 999,
-    backgroundColor: "#2a2a35",
-    marginBottom: 10,
+    backgroundColor: "#32323d",
+    marginBottom: 12,
   },
 
   header: {
-    flexDirection: "row",
-    gap: 10,
-    alignItems: "flex-start",
-    paddingBottom: 10,
+    paddingBottom: 14,
     borderBottomWidth: 1,
-    borderBottomColor: "#1f1f26",
+    borderBottomColor: "#1b1b24",
   },
-  hTitle: { color: "#fff", fontSize: 16, fontWeight: "900" },
-  telRow: { marginTop: 8, flexDirection: "row", alignItems: "center", gap: 8 },
-  telText: { color: "#e5e7eb", fontSize: 15, fontWeight: "900" },
-  riskPill: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 },
-  riskPillText: { fontSize: 11, fontWeight: "900" },
-  reportCount: { color: "#9ca3af", fontSize: 12, fontWeight: "800" },
-  subtle: { color: "#9ca3af", fontSize: 12, marginTop: 6 },
+  headerMain: {
+    gap: 10,
+  },
+  titleRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  hTitle: {
+    flex: 1,
+    color: "#f8fafc",
+    fontSize: 18,
+    lineHeight: 22,
+    fontWeight: "900",
+  },
+  telRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  phoneChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    minWidth: 0,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 14,
+    backgroundColor: "#12121a",
+    borderWidth: 1,
+    borderColor: "#20202b",
+  },
+  telText: {
+    flexShrink: 1,
+    color: "#e5e7eb",
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  riskPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  riskPillText: {
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 0.2,
+  },
+  reportCount: {
+    color: "#7c8597",
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  subtle: {
+    color: "#8c94a6",
+    fontSize: 12,
+    lineHeight: 17,
+  },
 
   closeBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 10,
-    backgroundColor: "#1d1d25",
+    width: 30,
+    height: 30,
+    borderRadius: 999,
+    backgroundColor: "#171720",
     borderWidth: 1,
-    borderColor: "#2a2a35",
+    borderColor: "#272733",
     alignItems: "center",
     justifyContent: "center",
   },
 
-  toggleRow: {
-    marginTop: 12,
-    flexDirection: "row",
+  scrollView: {
+    flexGrow: 0,
+  },
+  scrollContent: {
+    paddingTop: 16,
+    paddingBottom: 8,
+    gap: 18,
+  },
+  section: {
     gap: 10,
+  },
+  sectionHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  sectionLabel: {
+    color: "#94a3b8",
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+  reportToggleCard: {
+    flexDirection: "row",
+    gap: 12,
     alignItems: "flex-start",
-    padding: 12,
-    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    borderRadius: 18,
+    backgroundColor: "#12121a",
+    borderWidth: 1,
+    borderColor: "#20202b",
+  },
+  sectionTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  toggleTitle: {
+    color: "#f8fafc",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  toggleDesc: {
+    color: "#8c94a6",
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 3,
+  },
+
+  preferenceRow: {
+    flexDirection: "row",
+    gap: 12,
+    alignItems: "flex-start",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 16,
     backgroundColor: "#111116",
     borderWidth: 1,
-    borderColor: "#1f1f26",
+    borderColor: "#1d1f28",
   },
-  toggleTitle: { color: "#fff", fontSize: 13, fontWeight: "900" },
-  toggleDesc: { color: "#9ca3af", fontSize: 12, marginTop: 2, lineHeight: 16 },
-
-  toggleRow2: {
-    marginTop: 10,
-    flexDirection: "row",
-    gap: 10,
-    alignItems: "center",
-    paddingVertical: 6,
+  preferenceText: {
+    flex: 1,
+    color: "#e5e7eb",
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "700",
   },
-  toggleTitle2: { color: "#e5e7eb", fontSize: 13, fontWeight: "900" },
 
   checkBox: {
     width: 20,
     height: 20,
     borderRadius: 6,
-    backgroundColor: "#1d1d25",
+    backgroundColor: "#1a1a22",
     borderWidth: 1,
-    borderColor: "#2a2a35",
+    borderColor: "#323241",
     alignItems: "center",
     justifyContent: "center",
     marginTop: 2,
   },
   checkBoxOn: { backgroundColor: "#34c759", borderColor: "#34c759" },
 
-  chipsWrap: { marginTop: 12, flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  chipsWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
   chip: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    paddingHorizontal: 10,
+    minHeight: 38,
+    paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 999,
-    backgroundColor: "#1d1d25",
+    backgroundColor: "#171720",
     borderWidth: 1,
     borderColor: "#2a2a35",
   },
   chipOn: { backgroundColor: "#34c759", borderColor: "#34c759" },
-  chipText: { color: "#e5e7eb", fontSize: 12, fontWeight: "900" },
+  chipText: { color: "#e5e7eb", fontSize: 12, fontWeight: "800" },
 
-  label: { color: "#9ca3af", fontSize: 12, fontWeight: "900", marginBottom: 6 },
   input: {
-    minHeight: 54,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 14,
+    minHeight: 92,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 16,
     backgroundColor: "#111116",
     borderWidth: 1,
-    borderColor: "#1f1f26",
+    borderColor: "#20202b",
     color: "#e5e7eb",
     fontSize: 13,
-    lineHeight: 18,
+    lineHeight: 19,
   },
-  counter: { color: "#6b7280", fontSize: 11, marginTop: 6, textAlign: "right" },
+  counter: {
+    color: "#6b7280",
+    fontSize: 11,
+    textAlign: "right",
+  },
 
-  actions: { flexDirection: "row", gap: 10, marginTop: 14 },
+  footer: {
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#1b1b24",
+    gap: 12,
+  },
+  footerActions: {
+    gap: 12,
+  },
+  footerCancel: {
+    alignSelf: "flex-start",
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+  },
+  footerCancelText: {
+    color: "#aab1c2",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  footerMainActions: {
+    flexDirection: "row",
+    gap: 10,
+  },
   btn: {
     flex: 1,
-    height: 46,
-    borderRadius: 14,
+    minHeight: 48,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
+    paddingHorizontal: 14,
   },
-  btnGhost: {
-    backgroundColor: "#1d1d25",
+  btnPrimary: { backgroundColor: "#34c759" },
+  btnUnblock: {
+    backgroundColor: "#16161d",
     borderWidth: 1,
     borderColor: "#2a2a35",
   },
-  btnGhostText: { color: "#e5e7eb", fontSize: 13, fontWeight: "900" },
-
-  btnPrimary: { backgroundColor: "#34c759" },
-  btnUnblock: { backgroundColor: "#111116", borderWidth: 1, borderColor: "#2a2a35" },
+  btnDisabled: {
+    opacity: 0.7,
+  },
 
   btnRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   btnPrimaryText: { fontSize: 13, fontWeight: "900", color: "#111" },
+  btnSecondaryText: { fontSize: 13, fontWeight: "800", color: "#e5e7eb" },
 
-  hint: { marginTop: 10, color: "#6b7280", fontSize: 11, lineHeight: 15 },
+  hint: { color: "#6b7280", fontSize: 11, lineHeight: 15 },
 });

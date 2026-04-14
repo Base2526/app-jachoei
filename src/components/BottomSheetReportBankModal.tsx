@@ -2,6 +2,7 @@
 import React, { forwardRef, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, TouchableOpacity, TextInput } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
+import { useI18n } from "../i18n";
 
 export type BankCategory = "SCAM" | "MONEY_MULE" | "SALES_ADS" | "DISPUTE" | "OTHER";
 
@@ -41,6 +42,8 @@ type Props = {
 
 export const BottomSheetReportBankModal = forwardRef<BottomSheetReportBankModalRef, Props>(
   (props, ref) => {
+    const { t } = useI18n();
+
     const [visible, setVisible] = useState(false);
     const [bankName, setBankName] = useState<string | null>(null);
     const [account, setAccount] = useState<string>("");
@@ -107,15 +110,17 @@ export const BottomSheetReportBankModal = forwardRef<BottomSheetReportBankModalR
 
     if (!visible) return null;
 
-    const primaryLabel = reported ? "Update Report" : "Report";
-    const primaryIcon = reported ? "save" : "megaphone";
+    const primaryLabel = reported
+      ? t("bank_report_modal.actions.update_report")
+      : t("bank_report_modal.actions.report");
+    const primaryIcon = reported ? "save-outline" : "megaphone-outline";
     const primaryStyle = styles.primary;
 
     return (
       <View style={styles.overlay}>
         <View style={styles.sheet}>
           <View style={styles.header}>
-            <Text style={styles.hTitle}>รายงานบัญชีธนาคาร</Text>
+            <Text style={styles.hTitle}>{t("bank_report_modal.title")}</Text>
 
             <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
               <Ionicons name="close" size={18} color="#e5e7eb" />
@@ -128,31 +133,31 @@ export const BottomSheetReportBankModal = forwardRef<BottomSheetReportBankModalR
 
           {reported ? (
             <Text style={styles.reportedText}>
-              ✓ คุณเคยรายงานบัญชีนี้แล้ว (ในเครื่อง)
+              {t("bank_report_modal.already_reported")}
             </Text>
           ) : (
             <Text style={styles.hintText}>
-              รายงานนี้จะส่งข้อมูลให้ระบบ/แอดมินตรวจสอบ (ไม่บล็อกในเครื่อง)
+              {t("bank_report_modal.hint")}
             </Text>
           )}
 
           <View style={styles.divider} />
 
-          <Text style={styles.section}>หมวดรายงาน</Text>
+          <Text style={styles.section}>{t("bank_report_modal.category_label")}</Text>
           <View style={styles.catRow}>
-            <CatBtn label="Scam" active={category === "SCAM"} onPress={() => setCategory("SCAM")} />
-            <CatBtn label="Money Mule" active={category === "MONEY_MULE"} onPress={() => setCategory("MONEY_MULE")} />
-            <CatBtn label="Sales/Ads" active={category === "SALES_ADS"} onPress={() => setCategory("SALES_ADS")} />
-            <CatBtn label="Dispute" active={category === "DISPUTE"} onPress={() => setCategory("DISPUTE")} />
-            <CatBtn label="Other" active={category === "OTHER"} onPress={() => setCategory("OTHER")} />
+            <CatBtn label={t("bank_report_modal.categories.scam")} active={category === "SCAM"} onPress={() => setCategory("SCAM")} />
+            <CatBtn label={t("bank_report_modal.categories.money_mule")} active={category === "MONEY_MULE"} onPress={() => setCategory("MONEY_MULE")} />
+            <CatBtn label={t("bank_report_modal.categories.sales_ads")} active={category === "SALES_ADS"} onPress={() => setCategory("SALES_ADS")} />
+            <CatBtn label={t("bank_report_modal.categories.dispute")} active={category === "DISPUTE"} onPress={() => setCategory("DISPUTE")} />
+            <CatBtn label={t("bank_report_modal.categories.other")} active={category === "OTHER"} onPress={() => setCategory("OTHER")} />
           </View>
 
-          <Text style={[styles.section, { marginTop: 14 }]}>รายละเอียด (ไม่บังคับ)</Text>
+          <Text style={[styles.section, { marginTop: 14 }]}>{t("bank_report_modal.note_label")}</Text>
           <View style={styles.noteBox}>
             <TextInput
               value={note}
               onChangeText={setNote}
-              placeholder="เช่น หลอกโอน / ใช้บัญชีรับโอน / ฯลฯ"
+              placeholder={t("bank_report_modal.note_placeholder")}
               placeholderTextColor="#6b7280"
               style={styles.noteInput}
               maxLength={160}
@@ -162,21 +167,31 @@ export const BottomSheetReportBankModal = forwardRef<BottomSheetReportBankModalR
           </View>
 
           <View style={styles.footer}>
-            <TouchableOpacity style={styles.cancelBtn} onPress={onClose} disabled={busy}>
-              <Text style={styles.cancelText}>ยกเลิก</Text>
-            </TouchableOpacity>
+            <ActionButton
+              icon="close-outline"
+              label={t("common.cancel")}
+              variant="neutral"
+              onPress={onClose}
+              disabled={busy}
+            />
 
             {reported ? (
-              <TouchableOpacity style={[styles.primaryBtn, styles.primaryDanger]} onPress={onUndo} disabled={busy}>
-                <Ionicons name={"close-circle" as any} size={16} color="#111" />
-                <Text style={styles.primaryText}>{busy ? "..." : "Undo report"}</Text>
-              </TouchableOpacity>
+              <ActionButton
+                icon="refresh-outline"
+                label={busy ? t("bank_report_modal.actions.processing") : t("bank_report_modal.actions.undo_report")}
+                variant="danger"
+                onPress={onUndo}
+                disabled={busy}
+              />
             ) : null}
 
-            <TouchableOpacity style={[styles.primaryBtn, primaryStyle]} onPress={onSubmit} disabled={busy}>
-              <Ionicons name={primaryIcon as any} size={16} color="#111" />
-              <Text style={styles.primaryText}>{busy ? "..." : primaryLabel}</Text>
-            </TouchableOpacity>
+            <ActionButton
+              icon={primaryIcon as any}
+              label={busy ? t("bank_report_modal.actions.processing") : primaryLabel}
+              variant="success"
+              onPress={onSubmit}
+              disabled={busy}
+            />
           </View>
         </View>
       </View>
@@ -188,6 +203,40 @@ function CatBtn(props: { label: string; active: boolean; onPress: () => void }) 
   return (
     <TouchableOpacity onPress={props.onPress} style={[styles.catBtn, props.active && styles.catBtnActive]}>
       <Text style={[styles.catText, props.active && styles.catTextActive]}>{props.label}</Text>
+    </TouchableOpacity>
+  );
+}
+
+function ActionButton(props: {
+  icon: string;
+  label: string;
+  variant: "neutral" | "danger" | "success";
+  onPress: () => void;
+  disabled?: boolean;
+}) {
+  const styleMap = {
+    neutral: styles.actionNeutral,
+    danger: styles.actionDanger,
+    success: styles.actionSuccess,
+  };
+
+  const textMap = {
+    neutral: styles.actionTextNeutral,
+    danger: styles.actionTextDark,
+    success: styles.actionTextDark,
+  };
+
+  const iconColor = props.variant === "neutral" ? "#e5e7eb" : "#101014";
+
+  return (
+    <TouchableOpacity
+      style={[styles.actionBtn, styleMap[props.variant], props.disabled && styles.actionDisabled]}
+      onPress={props.onPress}
+      disabled={props.disabled}
+      activeOpacity={0.82}
+    >
+      <Ionicons name={props.icon as any} size={16} color={iconColor} />
+      <Text numberOfLines={1} style={[styles.actionTextBase, textMap[props.variant]]}>{props.label}</Text>
     </TouchableOpacity>
   );
 }
@@ -245,27 +294,42 @@ const styles = StyleSheet.create({
   noteInput: { minHeight: 60, color: "#fff", fontSize: 13, fontWeight: "800" },
   counter: { marginTop: 6, color: "#6b7280", fontSize: 11, fontWeight: "900", alignSelf: "flex-end" },
 
-  footer: { marginTop: 14, flexDirection: "row", gap: 12 },
-  cancelBtn: {
-    flex: 1,
-    borderRadius: 14,
-    paddingVertical: 14,
-    alignItems: "center",
-    backgroundColor: "#1d1d25",
-    borderWidth: 1,
-    borderColor: "#2a2a35",
+  footer: {
+    marginTop: 16,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#1f1f26",
+    flexDirection: "row",
+    gap: 10,
   },
-  cancelText: { color: "#e5e7eb", fontSize: 13, fontWeight: "900" },
-
-  primaryBtn: {
-    flex: 1.3,
-    borderRadius: 14,
-    paddingVertical: 14,
+  actionBtn: {
+    flex: 1,
+    height: 46,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
-    gap: 8,
+    gap: 6,
+    paddingHorizontal: 8,
+    borderWidth: 1,
   },
+  actionNeutral: {
+    backgroundColor: "#1d1d25",
+    borderColor: "#2a2a35",
+  },
+  actionDanger: {
+    backgroundColor: "#ef4444",
+    borderColor: "#ef4444",
+  },
+  actionSuccess: {
+    backgroundColor: "#34c759",
+    borderColor: "#34c759",
+  },
+  actionDisabled: { opacity: 0.72 },
+  actionTextBase: { fontSize: 12, fontWeight: "900" },
+  actionTextNeutral: { color: "#e5e7eb" },
+  actionTextDark: { color: "#111" },
+
   primary: { backgroundColor: "#34c759" },
   primaryDanger: { backgroundColor: "#ef4444" },
   primaryText: { color: "#111", fontSize: 13, fontWeight: "900" },

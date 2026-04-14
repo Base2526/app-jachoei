@@ -108,7 +108,7 @@ export const MoreScreen: React.FC = () => {
           </MoreButtonRow>
         ) : null}
         {uiStatus === "enabled" ? (
-          <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 16 }}>
+          <View style={{ paddingHorizontal: 12, paddingTop: 12, paddingBottom: 16 }}>
             <Text style={{ color: "#34c759", fontSize: 13, fontWeight: "700" }}>
               {t("more.caller_spam_enabled_hint")}
             </Text>

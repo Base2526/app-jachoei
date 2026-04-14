@@ -1,17 +1,16 @@
 import React, { useMemo } from "react";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import Ionicons from "react-native-vector-icons/Ionicons";
-import { Text, View } from "react-native";
+import { StyleSheet, View, useWindowDimensions } from "react-native";
 
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
 
 import PhoneCenterLookupTab from "./PhoneCenterLookupTab";
 import { HomeScreen } from "./HomeScreen";
-import SafetyCenterMyListsTab from "./SafetyCenterMyListsTab";
 import { MoreScreen } from "./MoreScreen";
 
-import { HeaderAccountButton } from "../components/HeaderAccountButton";
+import { HeaderActionsBar } from "../components/HeaderActionsBar";
 import { useAuth } from "../auth/AuthProvider";
 import { useGlobalChatStore } from "../store/globalChatStore";
 import { useI18n } from "../i18n";
@@ -36,9 +35,11 @@ function useBadges() {
 }
 
 export const ScamProtectTabs: React.FC = () => {
+  const { width: windowWidth } = useWindowDimensions();
   const { t } = useI18n();
   const { logsCount } = useBadges();
   const { isLoggedIn } = useAuth();
+  const isCompactHeader = windowWidth < 360;
 
   const totalUnread = useGlobalChatStore((s: any) =>
     Object.values(s.unreadByChat || {}).reduce(
@@ -102,10 +103,15 @@ export const ScamProtectTabs: React.FC = () => {
   return (
     <Tab.Navigator
       screenOptions={{
-        headerStyle: { backgroundColor: "#111" },
+        headerStyle: {
+          backgroundColor: "#0b0f19",
+          borderBottomWidth: 1,
+          borderBottomColor: "#182235",
+        },
         headerTintColor: "#fff",
         headerTitleAlign: "center",
-        tabBarStyle: { backgroundColor: "#111", borderTopColor: "#222" },
+        headerShadowVisible: false,
+        tabBarStyle: { backgroundColor: "#0b0f19", borderTopColor: "#182235" },
         tabBarActiveTintColor: "#1e90ff",
         tabBarInactiveTintColor: "#888",
       }}
@@ -128,20 +134,38 @@ export const ScamProtectTabs: React.FC = () => {
             stackNav.navigate(name, params);
           };
 
+          const openSearch = () => goStack("BlockedLogsSearch");
+          const openNotifications = () => {
+            if (!isLoggedIn) {
+              goStack("SignIn");
+              return;
+            }
+            goStack("Notifications" as any);
+          };
+          const openChat = () => {
+            if (!isLoggedIn) {
+              goStack("SignIn");
+              return;
+            }
+            goStack("Chat");
+          };
+          const openCreatePost = () => {
+            if (!isLoggedIn) {
+              goStack("SignIn");
+              return;
+            }
+            goStack("PostForm");
+          };
+
           return {
             headerTitle: () => null,
-            headerLeft: () => (
-              <Text
-                style={{
-                  color: "#fff",
-                  fontSize: 16,
-                  fontWeight: "800",
-                  marginLeft: 14,
-                }}
-              >
-                {t("tabs.app_title")}
-              </Text>
-            ),
+            headerLeftContainerStyle: {
+              paddingLeft: 0,
+            },
+            headerRightContainerStyle: {
+              paddingRight: 14,
+            },
+            headerLeft: () => <View style={headerStyles.headerLeftSpacer} />,
 
             tabBarLabel: t("tabs.home"),
             tabBarBadge: logsBadge,
@@ -156,155 +180,45 @@ export const ScamProtectTabs: React.FC = () => {
             ),
 
             headerRight: () => (
-              <View style={{ flexDirection: "row", alignItems: "center" }}>
-                {/* ➕ ADD */}
-                <Ionicons
-                  name="add-outline"
-                  size={26}
-                  color="#fff"
-                  style={{ marginRight: 14 }}
-                  onPress={() => {
-                    if (!isLoggedIn) {
-                      goStack("SignIn");
-                      return;
-                    }
-                    goStack("PostForm");
-                  }}
-                />
-
-                {/* 💬 CHAT + BADGE */}
-                {isLoggedIn && (
-                  <View style={{ marginRight: 14 }}>
-                    <Ionicons
-                      name="chatbubble-ellipses-outline"
-                      size={22}
-                      color="#fff"
-                      onPress={() => goStack("Chat")}
-                    />
-                    {!!chatBadge && (
-                      <View
-                        style={{
-                          position: "absolute",
-                          right: -8,
-                          top: -6,
-                          minWidth: 16,
-                          height: 16,
-                          borderRadius: 8,
-                          backgroundColor: "#ff3b30",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          paddingHorizontal: 4,
-                        }}
-                      >
-                        <Text
-                          style={{
-                            color: "#fff",
-                            fontSize: 10,
-                            fontWeight: "900",
-                          }}
-                        >
-                          {chatBadge}
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-                )}
-
-                {/* 🔔 NOTIFICATIONS + BADGE */}
-                <View style={{ marginRight: 14 }}>
-                  <Ionicons
-                    name="notifications-outline"
-                    size={22}
-                    color="#fff"
-                    onPress={() => {
-                      if (!isLoggedIn) {
-                        goStack("SignIn");
-                        return;
-                      }
-                      // ✅ ปรับชื่อ route ให้ตรง RootStackParamList ของคุณ
-                      goStack("Notifications" as any);
-                    }}
-                  />
-                  {!!notifBadge && (
-                    <View
-                      style={{
-                        position: "absolute",
-                        right: -8,
-                        top: -6,
-                        minWidth: 16,
-                        height: 16,
-                        borderRadius: 8,
-                        backgroundColor: "#34c759",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        paddingHorizontal: 4,
-                      }}
-                    >
-                      <Text
-                        style={{
-                          color: "#111",
-                          fontSize: 10,
-                          fontWeight: "900",
-                        }}
-                      >
-                        {notifBadge}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-
-                {/* 🔍 SEARCH */}
-                <Ionicons
-                  name="search-outline"
-                  size={22}
-                  color="#fff"
-                  style={{ marginRight: 16 }}
-                  onPress={() => goStack("BlockedLogsSearch")}
-                />
-
-                <HeaderAccountButton />
-              </View>
+              <HeaderActionsBar
+                isCompact={isCompactHeader}
+                onSearch={openSearch}
+                onNotification={openNotifications}
+                onChat={openChat}
+                notificationBadge={notifBadge}
+                chatBadge={chatBadge}
+                searchA11y={t("common.search")}
+                notificationA11y={t("settings.notifications")}
+                chatA11y={t("chat.chats")}
+                menuTitle={t("tabs.more")}
+                menuCancelLabel={t("common.cancel")}
+                menuItems={[
+                  {
+                    label: t("postForm.title_create"),
+                    icon: "add-outline",
+                    onPress: openCreatePost,
+                  },
+                ]}
+                showProfile
+                showMore
+              />
             ),
           };
         }}
       />
 
-      {/* ================= Check Phone ================= */}
+      {/* ================= Phone Center ================= */}
       <Tab.Screen
         name="CheckPhone"
         component={PhoneCenterLookupTab}
         options={{
-          title: t("tabs.check_phone"),
+          headerShown: false,
+          title: "Phone Center",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="call-outline" size={size} color={color} />
           ),
         }}
       />
-
-      {/* ================= Blocked Logs (AUTH ONLY) ================= */}
-      {isLoggedIn ? (
-        <Tab.Screen
-          name="BlockedLogs"
-          component={SafetyCenterMyListsTab}
-          options={{
-            title: t("tabs.blocked"),
-            tabBarBadge: logsBadge,
-            tabBarBadgeStyle: {
-              backgroundColor: "#34c759",
-              color: "#111",
-              fontSize: 10,
-              fontWeight: "900",
-            },
-            tabBarIcon: ({ color, size }) => (
-              <Ionicons
-                name="shield-checkmark-outline"
-                size={size}
-                color={color}
-              />
-            ),
-          }}
-        />
-      ) : null}
 
       <Tab.Screen
         name="More"
@@ -315,9 +229,14 @@ export const ScamProtectTabs: React.FC = () => {
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="grid-outline" size={size} color={color} />
           ),
-          // headerRight: () => <HeaderAccountButton />,
         }}
       />
     </Tab.Navigator>
   );
 };
+
+const headerStyles = StyleSheet.create({
+  headerLeftSpacer: {
+    width: 0,
+  },
+});
