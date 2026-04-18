@@ -29,4 +29,5 @@ export type RootStackParamList = {
   MoreHelp: undefined;
   MorePrivacy: undefined;
   MoreAbout: undefined;
+  DeveloperOptions: undefined;
 };

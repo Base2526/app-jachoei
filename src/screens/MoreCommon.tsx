@@ -173,18 +173,20 @@ export function MoreMetaRow(props: {
   label: string;
   value?: string | null;
   loading?: boolean;
+  onPress?: () => void;
+  onLongPress?: () => void;
 }) {
-  const { label, value, loading } = props;
+  const { label, value, loading, onPress, onLongPress } = props;
 
   return (
-    <View style={styles.metaRow}>
+    <Pressable style={styles.metaRow} onPress={onPress} onLongPress={onLongPress}>
       <Text style={styles.metaLabel}>{label}</Text>
       {loading ? (
         <ActivityIndicator size="small" color={morePalette.muted} />
       ) : (
         <Text style={styles.metaValue}>{value || "-"}</Text>
       )}
-    </View>
+    </Pressable>
   );
 }
 

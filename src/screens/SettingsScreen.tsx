@@ -1059,6 +1059,10 @@ export default function SettingsScreen() {
             <Pressable style={styles.smallBtn} onPress={() => navigation.navigate("Diagnostics")}>
               <Text style={styles.smallBtnText}>Open diagnostics</Text>
             </Pressable>
+            <View style={{ height: 8 }} />
+            <Pressable style={styles.smallBtn} onPress={() => navigation.navigate("DeveloperOptions")}>
+              <Text style={styles.smallBtnText}>Open developer options</Text>
+            </Pressable>
           </Field>
         </>
       ) : null}
@@ -1072,6 +1076,7 @@ export default function SettingsScreen() {
     return renderSecurity();
   }, [
     active,
+    hiddenDiag.enabled,
     loadingMe,
     savingMe,
     loadingPosts,

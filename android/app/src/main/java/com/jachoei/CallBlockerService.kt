@@ -12,6 +12,7 @@ import android.os.IBinder
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import android.util.Log
+import org.json.JSONArray
 
 class CallBlockerService : CallScreeningService() {
 
@@ -191,8 +192,58 @@ class CallBlockerService : CallScreeningService() {
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_scam_phones_risk ON scam_phones(risk_level DESC);")
     }
 
+    private fun persistCallCheckLog(
+        phoneOriginal: String,
+        phoneNormalized: String,
+        variants: List<String>,
+        lookupStartedAtMs: Long,
+        lookupFinishedAtMs: Long,
+        matchFound: Boolean,
+        localBlockedRaw: Int,
+        riskLevel: Int,
+        reportCount: Int,
+        matchedSource: String,
+        finalAction: String,
+        reason: String,
+        decisionExplanation: String,
+    ) {
+        try {
+            CallCheckLogUtils.logCallCheck(
+                context = this,
+                input = CallCheckLogUtils.CallCheckLogInput(
+                    phoneOriginal = phoneOriginal,
+                    phoneNormalized = phoneNormalized,
+                    timestampMs = System.currentTimeMillis(),
+                    dbLookupStartedAtMs = lookupStartedAtMs,
+                    dbLookupFinishedAtMs = lookupFinishedAtMs,
+                    tableQueried = DB_TABLE,
+                    matchFound = matchFound,
+                    localBlocked = localBlockedRaw,
+                    globalRiskLevel = riskLevel,
+                    globalReportCount = reportCount,
+                    matchedSource = matchedSource,
+                    finalAction = finalAction,
+                    reason = reason,
+                    decisionExplanation = decisionExplanation,
+                    normalizationVariantsChecked = JSONArray(variants).toString(),
+                    lookupDurationMs = if (lookupFinishedAtMs >= lookupStartedAtMs) {
+                        (lookupFinishedAtMs - lookupStartedAtMs).toDouble()
+                    } else {
+                        0.0
+                    },
+                    deviceState = "android:${android.os.Build.VERSION.SDK_INT} ${android.os.Build.MANUFACTURER}/${android.os.Build.MODEL}",
+                    serviceState = "call_screening_service_active",
+                )
+            )
+        } catch (_: Exception) {
+            // best-effort only
+        }
+    }
+
     override fun onScreenCall(callDetails: Call.Details) {
         val t0 = SystemClock.elapsedRealtime()
+        var lookupStartedAtMs = 0L
+        var lookupFinishedAtMs = 0L
         try {
             ck(
                 "CALL_SCREEN_START",
@@ -263,11 +314,29 @@ class CallBlockerService : CallScreeningService() {
                         "reason" to "empty_or_private",
                     ),
                 )
+                val now = System.currentTimeMillis()
+                persistCallCheckLog(
+                    phoneOriginal = number,
+                    phoneNormalized = canonical,
+                    variants = variants.toList(),
+                    lookupStartedAtMs = now,
+                    lookupFinishedAtMs = now,
+                    matchFound = false,
+                    localBlockedRaw = 0,
+                    riskLevel = 0,
+                    reportCount = 0,
+                    matchedSource = "none",
+                    finalAction = "allowed",
+                    reason = "no_match",
+                    decisionExplanation = "Allowed because normalized phone is empty or private.",
+                )
                 respondToCall(callDetails, CallResponse.Builder().setDisallowCall(false).build())
                 return
             }
 
+            lookupStartedAtMs = System.currentTimeMillis()
             val status = lookupStatus(number)
+            lookupFinishedAtMs = System.currentTimeMillis()
             ck(
                 "CALL_SCREEN_LOOKUP_RESULT",
                 "rowsFound=${status.rowsFound} matched=${status.matchedPhoneNormalized ?: ""} variant=${status.matchedVariant ?: ""} local_blocked=${status.localBlockedRaw} risk=${status.riskLevel} deleted=${status.serverDeletedRaw}"
@@ -354,6 +423,21 @@ class CallBlockerService : CallScreeningService() {
                             "decision" to "BLOCK",
                         ),
                     )
+                    persistCallCheckLog(
+                        phoneOriginal = number,
+                        phoneNormalized = canonical,
+                        variants = variants.toList(),
+                        lookupStartedAtMs = lookupStartedAtMs,
+                        lookupFinishedAtMs = lookupFinishedAtMs,
+                        matchFound = status.rowsFound > 0,
+                        localBlockedRaw = status.localBlockedRaw,
+                        riskLevel = status.riskLevel,
+                        reportCount = status.reportCount,
+                        matchedSource = "local_block",
+                        finalAction = "blocked",
+                        reason = "local_block",
+                        decisionExplanation = "Blocked because local_blocked=1 matched normalized phone in local database.",
+                    )
                     respondToCall(callDetails, response)
                 }
 
@@ -406,6 +490,21 @@ class CallBlockerService : CallScreeningService() {
                             "decision" to "WARN",
                         ),
                     )
+                    persistCallCheckLog(
+                        phoneOriginal = number,
+                        phoneNormalized = canonical,
+                        variants = variants.toList(),
+                        lookupStartedAtMs = lookupStartedAtMs,
+                        lookupFinishedAtMs = lookupFinishedAtMs,
+                        matchFound = status.rowsFound > 0,
+                        localBlockedRaw = status.localBlockedRaw,
+                        riskLevel = status.riskLevel,
+                        reportCount = status.reportCount,
+                        matchedSource = "global_community",
+                        finalAction = "warned",
+                        reason = "global_warning",
+                        decisionExplanation = "Warned because global/community risk level reached spam threshold without local block.",
+                    )
                     respondToCall(callDetails, CallResponse.Builder().setDisallowCall(false).build())
                 }
 
@@ -431,6 +530,25 @@ class CallBlockerService : CallScreeningService() {
                             "reason" to "no_match",
                         ),
                     )
+                    persistCallCheckLog(
+                        phoneOriginal = number,
+                        phoneNormalized = canonical,
+                        variants = variants.toList(),
+                        lookupStartedAtMs = lookupStartedAtMs,
+                        lookupFinishedAtMs = lookupFinishedAtMs,
+                        matchFound = status.rowsFound > 0,
+                        localBlockedRaw = status.localBlockedRaw,
+                        riskLevel = status.riskLevel,
+                        reportCount = status.reportCount,
+                        matchedSource = if (status.rowsFound > 0) "global_community" else "none",
+                        finalAction = "allowed",
+                        reason = if (status.lookupReason == "db_error") "db_error" else "no_match",
+                        decisionExplanation = if (status.lookupReason == "db_error") {
+                            "Allowed due to database lookup error fallback."
+                        } else {
+                            "Allowed because no actionable local block or global warning match was found."
+                        },
+                    )
                     respondToCall(callDetails, CallResponse.Builder().setDisallowCall(false).build())
                 }
             }
@@ -449,6 +567,22 @@ class CallBlockerService : CallScreeningService() {
                     "buildType" to BuildConfig.BUILD_TYPE,
                     "vc" to BuildConfig.VERSION_CODE,
                 ),
+            )
+            val now = System.currentTimeMillis()
+            persistCallCheckLog(
+                phoneOriginal = extractRawNumber(callDetails),
+                phoneNormalized = "",
+                variants = emptyList(),
+                lookupStartedAtMs = if (lookupStartedAtMs > 0) lookupStartedAtMs else now,
+                lookupFinishedAtMs = if (lookupFinishedAtMs > 0) lookupFinishedAtMs else now,
+                matchFound = false,
+                localBlockedRaw = 0,
+                riskLevel = 0,
+                reportCount = 0,
+                matchedSource = "none",
+                finalAction = "allowed",
+                reason = "db_error",
+                decisionExplanation = "Allowed because call-screening path encountered an exception and used fail-safe response.",
             )
 
             Log.i(TAG, "FALLBACK_REASON=exception")
@@ -473,11 +607,13 @@ class CallBlockerService : CallScreeningService() {
         val localBlocked: Boolean,
         val isCommunitySpam: Boolean,
         val riskLevel: Int,
+        val reportCount: Int,
         val rowsFound: Int,
         val matchedPhoneNormalized: String?,
         val localBlockedRaw: Int,
         val serverDeletedRaw: Int,
         val matchedVariant: String?,
+        val lookupReason: String,
     )
 
     private fun openDbReadOnly(): SQLiteDatabase? {
@@ -620,7 +756,7 @@ class CallBlockerService : CallScreeningService() {
                     matchedVariant = null,
                     matchedRow = null,
                 )
-                return ScamPhoneStatus(false, false, 0, 0, null, 0, 0, null)
+                return ScamPhoneStatus(false, false, 0, 0, 0, null, 0, 0, null, "db_error")
             }
 
             // Keep screening-time work minimal; only run extra counts in verbose debug.
@@ -695,7 +831,7 @@ class CallBlockerService : CallScreeningService() {
                     lookupDurationMs = dt,
                     action = "NO_MATCH",
                 )
-                return ScamPhoneStatus(false, false, 0, 0, null, 0, 0, null)
+                return ScamPhoneStatus(false, false, 0, 0, 0, null, 0, 0, null, "no_match")
             }
 
             Log.d(
@@ -728,11 +864,13 @@ class CallBlockerService : CallScreeningService() {
                 localBlocked = lookup.localBlocked,
                 isCommunitySpam = lookup.communitySpam,
                 riskLevel = lookup.riskLevel,
+                reportCount = lookup.reportCount,
                 rowsFound = lookup.rowsFound,
                 matchedPhoneNormalized = lookup.matchedPhoneNormalized,
                 localBlockedRaw = lookup.localBlockedRaw,
                 serverDeletedRaw = lookup.serverDeletedRaw,
                 matchedVariant = lookup.matchedVariant,
+                lookupReason = "ok",
             )
         } catch (e: Exception) {
             Log.e(TAG, "lookupStatus error", e)
@@ -757,7 +895,7 @@ class CallBlockerService : CallScreeningService() {
                 lookupDurationMs = dt,
                 action = "LOOKUP_ERROR",
             )
-            return ScamPhoneStatus(false, false, 0, 0, null, 0, 0, null)
+            return ScamPhoneStatus(false, false, 0, 0, 0, null, 0, 0, null, "db_error")
         }
     }
 

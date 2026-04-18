@@ -43,6 +43,7 @@ import SettingScreen from "./src/screens/SettingsScreen";
 
 import NotificationPage from "./src/screens/NotificationPage";
 import DiagnosticsScreen from "./src/screens/DiagnosticsScreen";
+import DeveloperOptionsScreen from "./src/screens/DeveloperOptionsScreen";
 import { MoreHelpScreen } from "./src/screens/MoreHelpScreen";
 import { MorePrivacyScreen } from "./src/screens/MorePrivacyScreen";
 import { MoreAboutScreen } from "./src/screens/MoreAboutScreen";
@@ -450,6 +451,27 @@ function Root({ initReady }: { initReady: boolean }) {
         options={{
           headerShown: true,
           title: "Diagnostics",
+          presentation: "card",
+          headerBackVisible: false,
+          headerLeft(props) {
+            return (
+              <Pressable
+                onPress={() => navigationRef.goBack()}
+                style={{ paddingHorizontal: 4 }}
+              >
+                <Ionicons name="chevron-back" size={26} color="#fff" />
+              </Pressable>
+            );
+          },
+        }}
+      />
+
+      <Stack.Screen
+        name="DeveloperOptions"
+        component={DeveloperOptionsScreen}
+        options={{
+          headerShown: true,
+          title: t("developer.title"),
           presentation: "card",
           headerBackVisible: false,
           headerLeft(props) {

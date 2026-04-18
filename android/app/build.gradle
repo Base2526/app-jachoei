@@ -34,7 +34,7 @@ android {
         applicationId "com.jachoei"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 50
+        versionCode 51
         versionName "1.0"
 
         def architectures = (project.findProperty('reactNativeArchitectures') ?: '')

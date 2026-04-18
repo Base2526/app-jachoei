@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useCallback, useEffect, useRef } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 
@@ -9,13 +9,69 @@ import {
   MoreMetaRow,
   MoreScrollView,
   MoreSectionHeader,
-  moreCommonStyles,
   useAppDeviceInfo,
 } from "./MoreCommon";
+import { useHiddenDiagnosticsMode } from "../lib/hiddenDiagnostics";
+import { toastSuccess } from "../lib/toast";
 
 export const MoreAboutScreen: React.FC = () => {
   const { t } = useI18n();
   const deviceInfo = useAppDeviceInfo();
+  const hiddenDiag = useHiddenDiagnosticsMode();
+
+  const tapCountRef = useRef(0);
+  const tapStartRef = useRef(0);
+  const tapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const TAP_TARGET = 7;
+  const TAP_WINDOW_MS = 5000;
+
+  const resetTapState = useCallback(() => {
+    tapCountRef.current = 0;
+    tapStartRef.current = 0;
+    if (tapTimerRef.current) {
+      clearTimeout(tapTimerRef.current);
+      tapTimerRef.current = null;
+    }
+  }, []);
+
+  const onDeveloperTap = useCallback(() => {
+    if (hiddenDiag.enabled) {
+      toastSuccess("Developer mode is already enabled");
+      return;
+    }
+
+    const now = Date.now();
+    const start = tapStartRef.current;
+    if (!start || now - start > TAP_WINDOW_MS) {
+      resetTapState();
+      tapStartRef.current = now;
+      tapTimerRef.current = setTimeout(() => {
+        resetTapState();
+      }, TAP_WINDOW_MS);
+    }
+
+    tapCountRef.current += 1;
+    const remaining = Math.max(0, TAP_TARGET - tapCountRef.current);
+
+    if (remaining > 0) {
+      toastSuccess(`You are ${remaining} steps away from developer mode`);
+      return;
+    }
+
+    resetTapState();
+    (async () => {
+      await hiddenDiag.setEnabled(true);
+      toastSuccess("Developer mode enabled");
+    })().catch(() => {
+      toastSuccess("Developer mode enabled");
+    });
+  }, [hiddenDiag, resetTapState]);
+
+  useEffect(() => {
+    return () => {
+      resetTapState();
+    };
+  }, [resetTapState]);
 
   return (
     <MoreScrollView>
@@ -76,6 +132,7 @@ export const MoreAboutScreen: React.FC = () => {
           label={t("more.about_version_label")}
           value={deviceInfo?.appVersion ?? null}
           loading={!deviceInfo}
+          onPress={onDeveloperTap}
         />
         <MoreMetaRow
           label={t("more.about_build_label")}
