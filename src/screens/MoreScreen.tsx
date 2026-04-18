@@ -17,6 +17,7 @@ import {
   MoreSectionHeader,
   useAppDeviceInfo,
 } from "./MoreCommon";
+import { useHiddenDiagnosticsMode } from "../lib/hiddenDiagnostics";
 
 type MoreTabNavigation = BottomTabNavigationProp<TabsParamList, "More">;
 
@@ -24,7 +25,8 @@ export const MoreScreen: React.FC = () => {
   const navigation = useNavigation<MoreTabNavigation>();
   const { t } = useI18n();
   const deviceInfo = useAppDeviceInfo();
-  const { uiStatus, refreshing, refreshStatus } = useCallScreeningStatus();
+  const { uiStatus, refreshStatus } = useCallScreeningStatus();
+  const hiddenDiag = useHiddenDiagnosticsMode();
 
   const aboutVersion = useMemo(() => {
     if (!deviceInfo?.appVersion) return t("more.about_desc");
@@ -172,6 +174,21 @@ export const MoreScreen: React.FC = () => {
           description={aboutVersion}
           onPress={() => openRootScreen("MoreAbout")}
         />
+        {hiddenDiag.enabled ? (
+          <MoreActionRow
+            icon="construct-outline"
+            title="Developer Options"
+            description="Internal diagnostics, export, and upload tools"
+            onPress={() => {
+              const parent = navigation.getParent();
+              if (parent) {
+                parent.navigate("DeveloperOptions" as never);
+                return;
+              }
+              navigation.navigate("DeveloperOptions" as never);
+            }}
+          />
+        ) : null}
       </MoreCard>
 
       <MoreIntroCard

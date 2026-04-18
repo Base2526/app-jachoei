@@ -4,7 +4,37 @@ import { NativeModules } from "react-native";
 
 export const HIDDEN_DIAGNOSTICS_KEY = "jachoei.hidden_debug_mode.v1";
 
-async function readEnabled(): Promise<boolean> {
+type HiddenDiagListener = (enabled: boolean) => void;
+
+let cachedEnabled = false;
+let cacheHydrated = false;
+let hydratePromise: Promise<boolean> | null = null;
+const listeners = new Set<HiddenDiagListener>();
+
+function notifyListeners(next: boolean) {
+  listeners.forEach((listener) => {
+    try {
+      listener(next);
+    } catch {
+      // ignore listener errors
+    }
+  });
+}
+
+function publishEnabled(next: boolean) {
+  cachedEnabled = !!next;
+  cacheHydrated = true;
+  notifyListeners(cachedEnabled);
+}
+
+function subscribeHiddenDiagnostics(listener: HiddenDiagListener) {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+async function readEnabledFromStorage(): Promise<boolean> {
   try {
     const raw = await AsyncStorage.getItem(HIDDEN_DIAGNOSTICS_KEY);
     return raw === "1" || raw === "true";
@@ -30,24 +60,40 @@ async function writeEnabled(next: boolean): Promise<void> {
   }
 }
 
+async function ensureHydrated(): Promise<boolean> {
+  if (cacheHydrated) return cachedEnabled;
+  if (!hydratePromise) {
+    hydratePromise = (async () => {
+      const v = await readEnabledFromStorage();
+      publishEnabled(v);
+      return v;
+    })().finally(() => {
+      hydratePromise = null;
+    });
+  }
+  return hydratePromise;
+}
+
 export async function getHiddenDiagnosticsEnabled(): Promise<boolean> {
-  return readEnabled();
+  return ensureHydrated();
 }
 
 export async function setHiddenDiagnosticsEnabled(next: boolean): Promise<void> {
-  await writeEnabled(!!next);
+  const v = !!next;
+  publishEnabled(v);
+  await writeEnabled(v);
 }
 
 export function useHiddenDiagnosticsMode() {
-  const [enabled, setEnabledState] = useState(false);
-  const [loaded, setLoaded] = useState(false);
+  const [enabled, setEnabledState] = useState(cachedEnabled);
+  const [loaded, setLoaded] = useState(cacheHydrated);
   const inflightRef = useRef(false);
 
   const reload = useCallback(async () => {
     if (inflightRef.current) return;
     inflightRef.current = true;
     try {
-      const v = await readEnabled();
+      const v = await ensureHydrated();
       setEnabledState(v);
       setLoaded(true);
 
@@ -69,10 +115,16 @@ export function useHiddenDiagnosticsMode() {
     void reload();
   }, [reload]);
 
+  useEffect(() => {
+    return subscribeHiddenDiagnostics((next) => {
+      setEnabledState(next);
+      setLoaded(true);
+    });
+  }, []);
+
   const setEnabled = useCallback(async (next: boolean) => {
     const v = !!next;
-    setEnabledState(v);
-    setLoaded(true);
+    publishEnabled(v);
     await writeEnabled(v);
   }, []);
 

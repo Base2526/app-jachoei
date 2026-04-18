@@ -9,6 +9,8 @@ import android.util.Log
 import android.content.Context
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.lang.ref.WeakReference
 import java.util.ArrayDeque
 import org.json.JSONArray
@@ -637,6 +639,7 @@ class CallBlockerModule(private val reactContext: ReactApplicationContext) :
             )
             ensureScamPhonesTable(db)
             ensureBlockedLogsTable(db)
+            CallCheckLogUtils.ensureTable(db)
 
             if (BuildConfig.DEBUG) {
                 try {
@@ -1066,6 +1069,209 @@ class CallBlockerModule(private val reactContext: ReactApplicationContext) :
             promise.resolve(true)
         } catch (e: Exception) {
             promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun getCallCheckLogs(limit: Int, promise: Promise) {
+        if (!diagnosticsEnabled()) {
+            promise.reject("DIAG_DISABLED", "getCallCheckLogs requires hidden diagnostics mode")
+            return
+        }
+
+        try {
+            val rows = CallCheckLogUtils.listLogs(reactContext, limit)
+            val arr = Arguments.createArray()
+            for (row in rows) {
+                val m = Arguments.createMap()
+                m.putDouble("id", row.id.toDouble())
+                m.putString("phone_original", row.phoneOriginal)
+                m.putString("phone_normalized", row.phoneNormalized)
+                m.putDouble("timestamp", row.timestampMs.toDouble())
+                m.putDouble("db_lookup_started_at", row.dbLookupStartedAtMs.toDouble())
+                m.putDouble("db_lookup_finished_at", row.dbLookupFinishedAtMs.toDouble())
+                m.putString("table_queried", row.tableQueried)
+                m.putBoolean("match_found", row.matchFound)
+                m.putInt("local_blocked", row.localBlocked)
+                m.putInt("global_risk_level", row.globalRiskLevel)
+                m.putInt("global_report_count", row.globalReportCount)
+                m.putString("matched_source", row.matchedSource)
+                m.putString("final_action", row.finalAction)
+                m.putString("reason", row.reason)
+                m.putString("decision_explanation", row.decisionExplanation)
+                m.putString("normalization_variants_checked", row.normalizationVariantsChecked)
+                m.putDouble("lookup_duration_ms", row.lookupDurationMs)
+                m.putString("device_state", row.deviceState)
+                m.putString("service_state", row.serviceState)
+                m.putString("created_at", row.createdAt)
+                arr.pushMap(m)
+            }
+            promise.resolve(arr)
+        } catch (e: Exception) {
+            promise.reject("CALL_CHECK_LOGS_ERROR", e)
+        }
+    }
+
+    @ReactMethod
+    fun clearCallCheckLogs(promise: Promise) {
+        if (!diagnosticsEnabled()) {
+            promise.resolve(false)
+            return
+        }
+        try {
+            val deleted = CallCheckLogUtils.clearLogs(reactContext)
+            val out = Arguments.createMap()
+            out.putBoolean("ok", true)
+            out.putInt("deleted", deleted)
+            promise.resolve(out)
+        } catch (e: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun copyDatabaseForExport(promise: Promise) {
+        if (!diagnosticsEnabled()) {
+            promise.reject("DIAG_DISABLED", "copyDatabaseForExport requires hidden diagnostics mode")
+            return
+        }
+
+        try {
+            val src = getDbFile()
+            if (!src.exists()) {
+                promise.reject("DB_NOT_FOUND", "database file not found")
+                return
+            }
+
+            val dir = File(reactContext.cacheDir, "exports")
+            if (!dir.exists()) dir.mkdirs()
+            val dst = File(dir, "scam-protect-export-${System.currentTimeMillis()}.db")
+
+            FileInputStream(src).channel.use { inChannel ->
+                FileOutputStream(dst).channel.use { outChannel ->
+                    outChannel.transferFrom(inChannel, 0, inChannel.size())
+                }
+            }
+
+            val out = Arguments.createMap()
+            out.putBoolean("ok", true)
+            out.putString("sourcePath", src.absolutePath)
+            out.putString("exportPath", dst.absolutePath)
+            out.putDouble("sizeBytes", dst.length().toDouble())
+            out.putDouble("exportedAt", System.currentTimeMillis().toDouble())
+            promise.resolve(out)
+        } catch (e: Exception) {
+            promise.reject("COPY_DB_ERROR", e)
+        }
+    }
+
+    @ReactMethod
+    fun runDbHealthCheck(promise: Promise) {
+        if (!diagnosticsEnabled()) {
+            promise.reject("DIAG_DISABLED", "runDbHealthCheck requires hidden diagnostics mode")
+            return
+        }
+
+        try {
+            val db = openDb() ?: run {
+                promise.reject("DB_NOT_FOUND", "Database not found")
+                return
+            }
+
+            val requiredTables = listOf("scam_phones", "blocked_logs", "call_check_logs")
+            val requiredScamPhoneColumns = listOf(
+                "phone_normalized",
+                "risk_level",
+                "local_blocked",
+                "server_deleted",
+                "report_count",
+                "server_updated_at"
+            )
+
+            val tableExists = Arguments.createMap()
+            val tableCounts = Arguments.createMap()
+            val schemaIssues = Arguments.createArray()
+
+            val tableNames = ArrayList<String>()
+            db.rawQuery(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+                null
+            ).use { c ->
+                val idx = c.getColumnIndex("name")
+                while (c.moveToNext()) {
+                    if (idx >= 0 && !c.isNull(idx)) tableNames.add(c.getString(idx))
+                }
+            }
+
+            for (t in requiredTables) {
+                val exists = tableNames.contains(t)
+                tableExists.putBoolean(t, exists)
+                if (!exists) {
+                    schemaIssues.pushString("Missing table: $t")
+                    continue
+                }
+
+                try {
+                    db.rawQuery("SELECT COUNT(*) AS c FROM $t", null).use { c ->
+                        val n = if (c.moveToFirst() && !c.isNull(0)) c.getInt(0) else 0
+                        tableCounts.putInt(t, n)
+                    }
+                } catch (_: Exception) {
+                    tableCounts.putInt(t, -1)
+                }
+            }
+
+            val scamPhoneCols = LinkedHashSet<String>()
+            db.rawQuery("PRAGMA table_info(scam_phones)", null).use { c ->
+                val idx = c.getColumnIndex("name")
+                while (c.moveToNext()) {
+                    if (idx >= 0 && !c.isNull(idx)) scamPhoneCols.add(c.getString(idx))
+                }
+            }
+            for (col in requiredScamPhoneColumns) {
+                if (!scamPhoneCols.contains(col)) {
+                    schemaIssues.pushString("Missing scam_phones column: $col")
+                }
+            }
+
+            val syncState = Arguments.createMap()
+            try {
+                db.rawQuery(
+                    "SELECT last_full_sync_at, last_delta_sync_at, last_version, local_rows FROM sync_state WHERE id = 1",
+                    null
+                ).use { c ->
+                    if (c.moveToFirst()) {
+                        syncState.putString("last_full_sync_at", if (!c.isNull(0)) c.getString(0) else "")
+                        syncState.putString("last_delta_sync_at", if (!c.isNull(1)) c.getString(1) else "")
+                        syncState.putString("last_version", if (!c.isNull(2)) c.getString(2) else "")
+                        syncState.putInt("local_rows", if (!c.isNull(3)) c.getInt(3) else 0)
+                    }
+                }
+            } catch (_: Exception) {
+                // optional table
+            }
+
+            db.close()
+
+            val issuesCount = schemaIssues.size()
+            val healthStatus = if (issuesCount == 0) "healthy" else if (issuesCount <= 2) "warning" else "unhealthy"
+
+            val out = Arguments.createMap()
+            out.putString("db_health_status", healthStatus)
+            out.putBoolean("schema_validation_result", issuesCount == 0)
+            out.putArray("schema_issues", schemaIssues)
+            out.putMap("table_exists", tableExists)
+            out.putMap("table_counts", tableCounts)
+            out.putMap("sync_state", syncState)
+            out.putString("dbPath", getDbFile().absolutePath)
+            out.putString("dbName", DB_NAME)
+            out.putString("package_name", reactContext.packageName)
+            out.putString("application_id", BuildConfig.APPLICATION_ID)
+            out.putString("build_type", BuildConfig.BUILD_TYPE)
+            out.putDouble("call_check_logs_count", CallCheckLogUtils.count(reactContext).toDouble())
+            promise.resolve(out)
+        } catch (e: Exception) {
+            promise.reject("DB_HEALTH_ERROR", e)
         }
     }
 

@@ -15,6 +15,7 @@ data class ScamPhoneLookupTrace(
     val localBlockedRaw: Int,
     val serverDeletedRaw: Int,
     val riskLevel: Int,
+    val reportCount: Int,
     val localBlocked: Boolean,
     val communitySpam: Boolean,
     val finalDecision: String,
@@ -37,6 +38,7 @@ object ScamPhoneLookup {
             localBlockedRaw = 0,
             serverDeletedRaw = 0,
             riskLevel = 0,
+            reportCount = 0,
             localBlocked = false,
             communitySpam = false,
             finalDecision = "ALLOW",
@@ -97,6 +99,7 @@ object ScamPhoneLookup {
         val localBlockedRaw = (best?.get("local_blocked") as? Int) ?: 0
         val serverDeletedRaw = (best?.get("server_deleted") as? Int) ?: 0
         val riskLevel = (best?.get("risk_level") as? Int) ?: 0
+        val reportCount = (best?.get("report_count") as? Int) ?: 0
         val localBlocked = localBlockedRaw == 1
         val communitySpam = best != null && !localBlocked && serverDeletedRaw == 0 && riskLevel >= spamWarnRiskThreshold
         val finalDecision = when {
@@ -125,6 +128,7 @@ object ScamPhoneLookup {
             localBlockedRaw = localBlockedRaw,
             serverDeletedRaw = serverDeletedRaw,
             riskLevel = riskLevel,
+            reportCount = reportCount,
             localBlocked = localBlocked,
             communitySpam = communitySpam,
             finalDecision = finalDecision,

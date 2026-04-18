@@ -126,6 +126,51 @@ export function exportDbDebug(): Promise<string> {
   return CallBlocker.exportDbDebug();
 }
 
+export type CallCheckLogItem = {
+  id: number;
+  phone_original: string;
+  phone_normalized: string;
+  timestamp: number;
+  db_lookup_started_at: number;
+  db_lookup_finished_at: number;
+  table_queried: string;
+  match_found: boolean;
+  local_blocked: number;
+  global_risk_level: number;
+  global_report_count: number;
+  matched_source: string;
+  final_action: "blocked" | "warned" | "allowed" | string;
+  reason: "local_block" | "user_override" | "global_warning" | "no_match" | "db_error" | string;
+  decision_explanation: string;
+  normalization_variants_checked: string;
+  lookup_duration_ms: number;
+  device_state: string;
+  service_state: string;
+  created_at: string;
+};
+
+export function getCallCheckLogs(limit = 200): Promise<CallCheckLogItem[]> {
+  return CallBlocker.getCallCheckLogs(Math.max(1, limit));
+}
+
+export function clearCallCheckLogs(): Promise<{ ok: boolean; deleted: number } | boolean> {
+  return CallBlocker.clearCallCheckLogs();
+}
+
+export function copyDatabaseForExport(): Promise<{
+  ok: boolean;
+  sourcePath: string;
+  exportPath: string;
+  sizeBytes: number;
+  exportedAt: number;
+}> {
+  return CallBlocker.copyDatabaseForExport();
+}
+
+export function runDbHealthCheck(): Promise<Record<string, any>> {
+  return CallBlocker.runDbHealthCheck();
+}
+
 export function setHiddenDiagnosticsEnabled(enabled: boolean): Promise<boolean> {
   return CallBlocker.setHiddenDiagnosticsEnabled(!!enabled);
 }
